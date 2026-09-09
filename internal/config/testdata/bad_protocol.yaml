@@ -1,0 +1,7 @@
+default: gemini
+providers:
+  - name: gemini
+    protocol: gemini
+    model: gemini-pro
+    base_url: https://example.com
+    api_key: key

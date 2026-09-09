@@ -1,0 +1,6 @@
+default: claude
+providers:
+  - name: claude
+    protocol: anthropic
+    model: claude-sonnet-5
+    base_url: https://api.anthropic.com
