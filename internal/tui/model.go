@@ -35,6 +35,7 @@ type entry struct {
 	err      error
 	started  time.Time
 	elapsed  time.Duration
+	doneAt   time.Time
 	done     bool
 	rendered string
 }
@@ -193,6 +194,7 @@ func (m Model) handleStreamEvent(ev llm.StreamEvent) (tea.Model, tea.Cmd) {
 		return m, waitForEvent(m.events)
 	case llm.StreamEventDone:
 		last.elapsed = time.Since(last.started)
+		last.doneAt = time.Now()
 		last.done = true
 		last.rendered = m.render(last.text)
 		m.session.Commit(m.pendingUser, last.text)
@@ -224,7 +226,7 @@ func (m Model) render(md string) string {
 	if err != nil {
 		return md
 	}
-	return strings.TrimRight(out, "\n")
+	return strings.Trim(out, "\n")
 }
 
 func waitForEvent(ch <-chan llm.StreamEvent) tea.Cmd {

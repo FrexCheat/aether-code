@@ -119,7 +119,7 @@ func TestSendCommitsOnDone(t *testing.T) {
 	if len(fake.lastReq.Messages) != 1 || fake.lastReq.System != prompt.System {
 		t.Errorf("request = %+v", fake.lastReq)
 	}
-	if !strings.Contains(m.renderChat(), "Hi") || !strings.Contains(m.renderChat(), "s)") {
+	if !strings.Contains(m.renderChat(), "Hi") || !strings.Contains(m.renderChat(), "· done") {
 		t.Errorf("chat should show text and elapsed:\n%s", m.renderChat())
 	}
 }

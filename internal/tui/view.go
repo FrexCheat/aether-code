@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
+	"charm.land/glamour/v2/styles"
 	"charm.land/lipgloss/v2"
 )
 
@@ -29,7 +30,15 @@ func (m *Model) layout() {
 	m.input.SetWidth(max(m.width-6, 10)) // border 2 + padding 2 + prompt slack
 
 	wrap := max(m.width-2, 20)
-	if r, err := glamour.NewTermRenderer(glamour.WithStylePath("dark"), glamour.WithWordWrap(wrap)); err == nil {
+	// Start from the dark style but remove the document margin and the
+	// surrounding blank lines so rendered replies sit flush with their
+	// role label and keep turn spacing consistent.
+	sc := styles.DarkStyleConfig
+	var zeroMargin uint
+	sc.Document.Margin = &zeroMargin
+	sc.Document.BlockPrefix = ""
+	sc.Document.BlockSuffix = ""
+	if r, err := glamour.NewTermRenderer(glamour.WithStyles(sc), glamour.WithWordWrap(wrap)); err == nil {
 		m.renderer = r
 	}
 }
@@ -65,7 +74,8 @@ func (m Model) renderChat() string {
 			default:
 				b.WriteString(e.rendered)
 				b.WriteString("\n")
-				b.WriteString(styleDim.Render(fmt.Sprintf("(%ds)", int(e.elapsed.Seconds()))))
+				b.WriteString(styleDim.Render(fmt.Sprintf("%ds · done %s",
+					int(e.elapsed.Seconds()), e.doneAt.Format("3:04 PM"))))
 			}
 			b.WriteString("\n\n")
 		}

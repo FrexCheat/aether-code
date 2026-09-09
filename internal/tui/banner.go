@@ -9,13 +9,17 @@ import (
 // asciiLogo is a block-character rendering of the AetherCode mark in logo.txt:
 // a stylised "A" with a detached top bar, a long left leg, a crossbar and a
 // foot at the bottom right.
-const asciiLogo = `     ▄▄▄▄▄▄▄▄▄▄
-    ▄█▀     ▄█▀
-   ▄█▀      █▀
-  ▄█▀▀▀▀▀▀▀▀█▀▀▀
- ▄█▀      ▄█▀
- ▀▀▀      ▀▀▀▀▀▀▀▀`
+const asciiLogo = `
+      ┌╌╌╌╌▗
+      └╌╌╌╌╌▘
 
+        /▞  ▚\
+       /▞    ▚\
+      /▞
+     /▟████████▙
+    /▟█
+▅▅▅▅▅▅▅▅     ▅▅▅▅▅▅▅▅
+`
 const readyText = "Ready. Type a message and press Enter. /quit to exit."
 
 // renderBanner draws the startup banner: logo on the left, application name,
