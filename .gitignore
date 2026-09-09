@@ -1,0 +1,12 @@
+# Local config containing API keys
+aethercode.yaml
+
+# Build outputs
+/aethercode
+/bin/
+*.test
+
+logo.txt
+
+# Local spec documents
+docs/
