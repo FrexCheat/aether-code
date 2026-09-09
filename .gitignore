@@ -10,3 +10,6 @@ logo.txt
 
 # Local spec documents
 docs/
+
+# Local Claude Code skills
+.claude/
