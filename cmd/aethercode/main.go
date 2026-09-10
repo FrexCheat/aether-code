@@ -9,7 +9,7 @@ import (
 	"os"
 
 	"github.com/FrexCheat/aether-code/internal/config"
-	"github.com/FrexCheat/aether-code/internal/llm/factory"
+	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/FrexCheat/aether-code/internal/tui"
 	"github.com/FrexCheat/aether-code/internal/version"
 )
@@ -24,7 +24,7 @@ func main() {
 		fail(err)
 	}
 	active := cfg.Active()
-	provider, err := factory.New(active)
+	provider, err := llm.NewClient(active, nil)
 	if err != nil {
 		fail(err)
 	}

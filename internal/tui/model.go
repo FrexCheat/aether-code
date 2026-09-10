@@ -14,13 +14,14 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
 
+	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
-	"github.com/FrexCheat/aether-code/internal/session"
+	"github.com/FrexCheat/aether-code/internal/prompt"
 )
 
 // Options configures the TUI.
 type Options struct {
-	Provider     llm.Provider
+	Provider     llm.Client
 	ProviderName string
 	ModelName    string
 	Thinking     bool
@@ -30,7 +31,7 @@ type Options struct {
 
 // entry is one record in the chat area.
 type entry struct {
-	role     llm.Role
+	role     conversation.Role
 	text     string
 	err      error
 	started  time.Time
@@ -43,7 +44,7 @@ type entry struct {
 // Model is the Bubble Tea model for the chat UI.
 type Model struct {
 	opts    Options
-	session *session.Session
+	conv    *conversation.Manager
 	entries []entry
 
 	viewport viewport.Model
@@ -82,7 +83,7 @@ func newModel(opts Options) Model {
 
 	return Model{
 		opts:     opts,
-		session:  session.New(),
+		conv:     conversation.NewManager(),
 		viewport: vp,
 		input:    in,
 	}
@@ -150,13 +151,13 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 	case cmdQuit:
 		return m.quit()
 	case cmdClear:
-		m.session.Clear()
+		m.conv.Clear()
 		m.entries = nil
 		m.input.Reset()
 		m.refresh()
 		return m, nil
 	case cmdUnknown:
-		m.entries = append(m.entries, entry{role: llm.RoleAssistant, err: errors.New(hint), done: true})
+		m.entries = append(m.entries, entry{role: conversation.RoleAssistant, err: errors.New(hint), done: true})
 		m.input.Reset()
 		m.refresh()
 		return m, nil
@@ -169,15 +170,22 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 // startStream begins a new turn for text and returns the commands that drive it.
 func (m *Model) startStream(text string) tea.Cmd {
 	m.entries = append(m.entries,
-		entry{role: llm.RoleUser, text: text, done: true},
-		entry{role: llm.RoleAssistant, started: time.Now()},
+		entry{role: conversation.RoleUser, text: text, done: true},
+		entry{role: conversation.RoleAssistant, started: time.Now()},
 	)
 	m.pendingUser = text
 	m.input.Reset()
 
+	msgs := append(m.conv.GetMessages(), conversation.Message{Role: conversation.RoleUser, Content: text})
+	req := llm.Request{
+		System:   prompt.System,
+		Messages: msgs,
+		Thinking: m.opts.Thinking,
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
-	m.events = m.opts.Provider.Stream(ctx, m.session.BuildRequest(text, m.opts.Thinking))
+	m.events = m.opts.Provider.Stream(ctx, req)
 	m.streaming = true
 	return tea.Batch(waitForEvent(m.events), tick())
 }
@@ -187,24 +195,28 @@ func (m Model) handleStreamEvent(ev llm.StreamEvent) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	last := &m.entries[len(m.entries)-1]
-	switch ev.Type {
-	case llm.StreamEventTextDelta:
-		last.text += ev.Text
-		m.refresh()
-		return m, waitForEvent(m.events)
-	case llm.StreamEventDone:
+	switch e := ev.(type) {
+	case llm.TextDelta:
+		last.text += e.Text
+	case llm.ThinkingDelta, llm.ThinkingComplete, llm.ToolCallStart, llm.ToolCallDelta, llm.ToolCallComplete:
+		// Rendered in a later phase; keep the stream draining.
+	case llm.StreamEnd:
 		last.elapsed = time.Since(last.started)
 		last.doneAt = time.Now()
 		last.done = true
 		last.rendered = m.render(last.text)
-		m.session.Commit(m.pendingUser, last.text)
+		m.conv.AddUserMessage(m.pendingUser)
+		m.conv.AddAssistantMessage(last.text)
 		m.finishStream()
-	case llm.StreamEventError:
-		last.err = ev.Err
+	case llm.StreamError:
+		last.err = e.Err
 		last.done = true
 		m.finishStream()
 	}
 	m.refresh()
+	if m.streaming {
+		return m, waitForEvent(m.events)
+	}
 	return m, nil
 }
 

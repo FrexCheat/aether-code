@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/FrexCheat/aether-code/internal/prompt"
 )
@@ -37,7 +38,7 @@ func (f *fakeProvider) Stream(ctx context.Context, req llm.Request) <-chan llm.S
 	return ch
 }
 
-func newTestModel(p llm.Provider) Model {
+func newTestModel(p llm.Client) Model {
 	m := newModel(Options{Provider: p, ProviderName: "fake", ModelName: "fake-1", Version: "test", WorkDir: "/tmp"})
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	return mm.(Model)
@@ -101,10 +102,10 @@ func TestKeyEnterString(t *testing.T) {
 
 func TestSendCommitsOnDone(t *testing.T) {
 	tickInterval = time.Millisecond
-	fake := &fakeProvider{events: []llm.StreamEvent{{Type: llm.StreamEventTextDelta, Text: "Hi"}, {Type: llm.StreamEventDone}}}
+	fake := &fakeProvider{events: []llm.StreamEvent{llm.TextDelta{Text: "Hi"}, llm.StreamEnd{}}}
 	m := send(t, newTestModel(fake), "hello")
-	if m.session.Len() != 2 {
-		t.Errorf("session.Len = %d, want 2", m.session.Len())
+	if m.conv.Len() != 2 {
+		t.Errorf("conv.Len = %d, want 2", m.conv.Len())
 	}
 	if len(m.entries) != 2 {
 		t.Fatalf("entries = %d, want 2", len(m.entries))
@@ -125,10 +126,10 @@ func TestSendCommitsOnDone(t *testing.T) {
 }
 
 func TestSendDoesNotCommitOnError(t *testing.T) {
-	fake := &fakeProvider{events: []llm.StreamEvent{{Type: llm.StreamEventError, Err: errors.New("boom")}}}
+	fake := &fakeProvider{events: []llm.StreamEvent{llm.StreamError{Err: errors.New("boom")}}}
 	m := send(t, newTestModel(fake), "hello")
-	if m.session.Len() != 0 {
-		t.Errorf("session.Len = %d, want 0", m.session.Len())
+	if m.conv.Len() != 0 {
+		t.Errorf("conv.Len = %d, want 0", m.conv.Len())
 	}
 	last := m.entries[len(m.entries)-1]
 	if last.err == nil || !strings.Contains(last.err.Error(), "boom") {
@@ -143,14 +144,14 @@ func TestSendDoesNotCommitOnError(t *testing.T) {
 }
 
 func TestSecondTurnCarriesHistory(t *testing.T) {
-	fake := &fakeProvider{events: []llm.StreamEvent{{Type: llm.StreamEventTextDelta, Text: "A"}, {Type: llm.StreamEventDone}}}
+	fake := &fakeProvider{events: []llm.StreamEvent{llm.TextDelta{Text: "A"}, llm.StreamEnd{}}}
 	m := send(t, newTestModel(fake), "q1")
 	m = send(t, m, "q2")
 	msgs := fake.lastReq.Messages
 	if len(msgs) != 3 {
 		t.Fatalf("messages = %d, want 3", len(msgs))
 	}
-	wantRoles := []llm.Role{llm.RoleUser, llm.RoleAssistant, llm.RoleUser}
+	wantRoles := []conversation.Role{conversation.RoleUser, conversation.RoleAssistant, conversation.RoleUser}
 	for i, r := range wantRoles {
 		if msgs[i].Role != r {
 			t.Errorf("messages[%d].Role = %s, want %s", i, msgs[i].Role, r)
@@ -162,11 +163,11 @@ func TestSecondTurnCarriesHistory(t *testing.T) {
 }
 
 func TestClearResetsSession(t *testing.T) {
-	fake := &fakeProvider{events: []llm.StreamEvent{{Type: llm.StreamEventDone}}}
+	fake := &fakeProvider{events: []llm.StreamEvent{llm.StreamEnd{}}}
 	m := send(t, newTestModel(fake), "q1")
 	m = send(t, m, "/clear")
-	if m.session.Len() != 0 || len(m.entries) != 0 {
-		t.Errorf("after /clear: Len=%d entries=%d", m.session.Len(), len(m.entries))
+	if m.conv.Len() != 0 || len(m.entries) != 0 {
+		t.Errorf("after /clear: Len=%d entries=%d", m.conv.Len(), len(m.entries))
 	}
 	if fake.calls.Load() != 1 {
 		t.Errorf("/clear must not call Stream, calls = %d", fake.calls.Load())
