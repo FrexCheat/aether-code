@@ -178,7 +178,7 @@ func closeTurn(t *Transcript, idx int, ev llm.StreamEvent, conv *conversation.Ma
 	if !ok || turn.Status != TurnStreaming {
 		return
 	}
-	switch ev.(type) {
+	switch ev := ev.(type) {
 	case llm.StreamEnd:
 		for _, p := range turn.Parts {
 			switch p := p.(type) {
@@ -194,9 +194,7 @@ func closeTurn(t *Transcript, idx int, ev llm.StreamEvent, conv *conversation.Ma
 		conv.AddUserMessage(turn.Question)
 		conv.AddAssistantMessage(turnText(turn))
 	case llm.StreamError:
-		if se, ok := ev.(llm.StreamError); ok {
-			turn.Err = se.Err
-		}
+		turn.Err = ev.Err
 		turn.Status = TurnFailed
 	}
 }
