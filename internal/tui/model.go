@@ -4,15 +4,14 @@ package tui
 
 import (
 	"context"
-	"errors"
 	"strings"
-	"time"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
+	"charm.land/glamour/v2/styles"
 
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
@@ -29,38 +28,22 @@ type Options struct {
 	WorkDir      string
 }
 
-// entry is one record in the chat area.
-type entry struct {
-	role     conversation.Role
-	text     string
-	err      error
-	started  time.Time
-	elapsed  time.Duration
-	doneAt   time.Time
-	done     bool
-	rendered string
-}
-
-// Model is the Bubble Tea model for the chat UI.
+// Model is the Bubble Tea model for the chat UI. It is a thin controller: the
+// transcript state lives in turn.go, stream plumbing in streaming.go, and
+// rendering in render.go — every visible state change enters through Update.
 type Model struct {
-	opts    Options
-	conv    *conversation.Manager
-	entries []entry
+	opts Options
+	conv *conversation.Manager
+
+	transcript Transcript
+	live       *liveStream // nil when idle
 
 	viewport viewport.Model
 	input    textinput.Model
 	width    int
 	height   int
-
-	streaming   bool
-	events      <-chan llm.StreamEvent
-	cancel      context.CancelFunc
-	pendingUser string
-	renderer    *glamour.TermRenderer
+	renderer *glamour.TermRenderer
 }
-
-type streamEventMsg llm.StreamEvent
-type tickMsg time.Time
 
 // Run starts the program and blocks until it exits.
 func Run(opts Options) error {
@@ -94,12 +77,28 @@ func (m Model) Init() tea.Cmd {
 	return m.input.Focus()
 }
 
-// Update implements tea.Model.
+// refresh pushes the new frame into the viewport, following the bottom only
+// when the user is already there. It must run inside Update (where Model is
+// addressable), never in View: bubbletea renders from a snapshot and any
+// viewport motion done in View would be lost before the next frame. It is the
+// only place that writes rendered content into the viewport, and it always
+// runs right after a state change.
+func (m *Model) refresh() {
+	atBottom := m.viewport.AtBottom()
+	m.viewport.SetContent(renderTranscript(m))
+	if atBottom {
+		m.viewport.GotoBottom()
+	}
+}
+
+// Update implements tea.Model. It is the single entry point for every visible
+// state change: size, keys, stream batches and ticks are all dispatched here,
+// and every arm ends with a refresh so the viewport never goes stale.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.layout()
+		m.relayout()
 		m.refresh()
 		return m, nil
 
@@ -108,14 +107,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m.quit()
 		case "enter":
-			return m.handleEnter()
+			return m.refreshAfter(m.handleEnter())
 		}
 
-	case streamEventMsg:
-		return m.handleStreamEvent(llm.StreamEvent(msg))
+	case streamBatchMsg:
+		return m.refreshAfter(m.handleStreamBatch(msg))
 
 	case tickMsg:
-		if m.streaming {
+		if m.live != nil {
 			m.refresh()
 			return m, tick()
 		}
@@ -131,16 +130,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m Model) quit() (tea.Model, tea.Cmd) {
-	if m.cancel != nil {
-		m.cancel()
+// refreshAfter runs refresh after a handler that returns a new Model value.
+func (m Model) refreshAfter(mm tea.Model, cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	if nm, ok := mm.(Model); ok {
+		nm.refresh()
+		return nm, cmd
+	}
+	return mm, cmd
+}
+
+func (m Model) quit() (Model, tea.Cmd) {
+	if m.live != nil {
+		m.live.cancel()
 	}
 	return m, tea.Quit
 }
 
-func (m Model) handleEnter() (tea.Model, tea.Cmd) {
-	if m.streaming {
-		return m, nil
+func (m Model) handleEnter() (Model, tea.Cmd) {
+	if m.live != nil {
+		return m, nil // input is ignored while a turn is in flight
 	}
 	text := strings.TrimSpace(m.input.Value())
 	if text == "" {
@@ -152,12 +160,12 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 		return m.quit()
 	case cmdClear:
 		m.conv.Clear()
-		m.entries = nil
+		m.transcript.Reset()
 		m.input.Reset()
 		m.refresh()
 		return m, nil
 	case cmdUnknown:
-		m.entries = append(m.entries, entry{role: conversation.RoleAssistant, err: errors.New(hint), done: true})
+		m.transcript.Append(&Notice{Text: hint, Severity: SeverityError})
 		m.input.Reset()
 		m.refresh()
 		return m, nil
@@ -167,16 +175,13 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 	return m, c
 }
 
-// startStream begins a new turn for text and returns the commands that drive it.
+// startStream opens a new turn and wires the provider stream into the loop.
+// The question lives on the Turn; there is no side-channel copy of it.
 func (m *Model) startStream(text string) tea.Cmd {
-	m.entries = append(m.entries,
-		entry{role: conversation.RoleUser, text: text, done: true},
-		entry{role: conversation.RoleAssistant, started: time.Now()},
-	)
-	m.pendingUser = text
-	m.input.Reset()
+	idx := openTurn(&m.transcript, text)
+	turn, _ := m.transcript.At(idx).(*Turn)
 
-	msgs := append(m.conv.GetMessages(), conversation.Message{Role: conversation.RoleUser, Content: text})
+	msgs := append(m.conv.GetMessages(), conversation.Message{Role: conversation.RoleUser, Content: turn.Question})
 	req := llm.Request{
 		System:   prompt.System,
 		Messages: msgs,
@@ -184,49 +189,58 @@ func (m *Model) startStream(text string) tea.Cmd {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	m.cancel = cancel
-	m.events = m.opts.Provider.Stream(ctx, req)
-	m.streaming = true
-	return tea.Batch(waitForEvent(m.events), tick())
+	m.live = &liveStream{events: m.opts.Provider.Stream(ctx, req), cancel: cancel}
+	m.input.Reset()
+	return tea.Batch(waitStream(m.live.events), tick())
 }
 
-func (m Model) handleStreamEvent(ev llm.StreamEvent) (tea.Model, tea.Cmd) {
-	if len(m.entries) == 0 {
-		return m, nil
+// handleStreamBatch folds a coalesced batch of events into the live turn.
+// It returns a Model value so Update's dynamic type stays stable: every arm
+// of Update yields exactly Model, never *Model.
+func (m *Model) handleStreamBatch(batch streamBatchMsg) (Model, tea.Cmd) {
+	idx := m.transcript.Len() - 1 // the live turn is always the last item
+	for _, ev := range batch {
+		applyEvent(&m.transcript, idx, ev, m.conv)
 	}
-	last := &m.entries[len(m.entries)-1]
-	switch e := ev.(type) {
-	case llm.TextDelta:
-		last.text += e.Text
-	case llm.ThinkingDelta, llm.ThinkingComplete, llm.ToolCallStart, llm.ToolCallDelta, llm.ToolCallComplete:
-		// Rendered in a later phase; keep the stream draining.
-	case llm.StreamEnd:
-		last.elapsed = time.Since(last.started)
-		last.doneAt = time.Now()
-		last.done = true
-		last.rendered = m.render(last.text)
-		m.conv.AddUserMessage(m.pendingUser)
-		m.conv.AddAssistantMessage(last.text)
-		m.finishStream()
-	case llm.StreamError:
-		last.err = e.Err
-		last.done = true
-		m.finishStream()
+	if turn, ok := m.transcript.At(idx).(*Turn); ok && turn.Status != TurnStreaming {
+		if m.live != nil {
+			m.live.cancel() // terminal event: release the stream context
+			m.live = nil
+		}
+		return *m, nil
 	}
-	m.refresh()
-	if m.streaming {
-		return m, waitForEvent(m.events)
+	if m.live != nil {
+		return *m, waitStream(m.live.events)
 	}
-	return m, nil
+	return *m, nil
 }
 
-func (m *Model) finishStream() {
-	m.streaming = false
-	if m.cancel != nil {
-		m.cancel()
-		m.cancel = nil
+// relayout distributes the terminal height between the fixed regions and the
+// chat viewport, and rebuilds the markdown renderer for the new width.
+func (m *Model) relayout() {
+	if m.width <= 0 || m.height <= 0 {
+		return
 	}
-	m.events = nil
+	chatH := m.height - bannerHeight(m.opts.Version, m.opts.WorkDir, m.width) - inputBoxHeight - statusBarHeight
+	if chatH < 1 {
+		chatH = 1
+	}
+	m.viewport.SetWidth(m.width)
+	m.viewport.SetHeight(chatH)
+	m.input.SetWidth(max(m.width-6, 10)) // border 2 + padding 2 + prompt slack
+
+	wrap := max(m.width-2, 20)
+	// Start from the dark style but remove the document margin and the
+	// surrounding blank lines so rendered replies sit flush with their
+	// role label and keep turn spacing consistent.
+	sc := styles.DarkStyleConfig
+	var zeroMargin uint
+	sc.Document.Margin = &zeroMargin
+	sc.Document.BlockPrefix = ""
+	sc.Document.BlockSuffix = ""
+	if r, err := glamour.NewTermRenderer(glamour.WithStyles(sc), glamour.WithWordWrap(wrap)); err == nil {
+		m.renderer = r
+	}
 }
 
 // render converts finished markdown to styled terminal text.
@@ -239,21 +253,4 @@ func (m Model) render(md string) string {
 		return md
 	}
 	return strings.Trim(out, "\n")
-}
-
-func waitForEvent(ch <-chan llm.StreamEvent) tea.Cmd {
-	return func() tea.Msg {
-		ev, ok := <-ch
-		if !ok {
-			return nil
-		}
-		return streamEventMsg(ev)
-	}
-}
-
-// tickInterval is the timer refresh period; tests shorten it.
-var tickInterval = time.Second
-
-func tick() tea.Cmd {
-	return tea.Tick(tickInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
 }

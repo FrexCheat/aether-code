@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -82,6 +83,8 @@ func run(cmd tea.Cmd) []tea.Msg {
 		return out
 	case tickMsg:
 		return nil
+	case streamBatchMsg:
+		return []tea.Msg{v}
 	}
 	return []tea.Msg{msg}
 }
@@ -92,6 +95,19 @@ func send(t *testing.T, m Model, text string) Model {
 	t.Helper()
 	m.input.SetValue(text)
 	return drive(t, m, enter())
+}
+
+// lastTurn returns the most recent Turn in the transcript.
+func lastTurn(t *testing.T, m Model) *Turn {
+	t.Helper()
+	if m.transcript.Len() == 0 {
+		t.Fatal("transcript is empty")
+	}
+	turn, ok := m.transcript.At(m.transcript.Len() - 1).(*Turn)
+	if !ok {
+		t.Fatalf("last item is %T, want *Turn", m.transcript.At(m.transcript.Len()-1))
+	}
+	return turn
 }
 
 func TestKeyEnterString(t *testing.T) {
@@ -107,21 +123,22 @@ func TestSendCommitsOnDone(t *testing.T) {
 	if m.conv.Len() != 2 {
 		t.Errorf("conv.Len = %d, want 2", m.conv.Len())
 	}
-	if len(m.entries) != 2 {
-		t.Fatalf("entries = %d, want 2", len(m.entries))
+	if m.transcript.Len() != 1 {
+		t.Fatalf("transcript = %d items, want 1 turn", m.transcript.Len())
 	}
-	last := m.entries[1]
-	if !last.done || last.err != nil || last.text != "Hi" {
-		t.Errorf("last entry = %+v", last)
+	last := lastTurn(t, m)
+	if last.Status != TurnDone || last.Err != nil || turnText(last) != "Hi" {
+		t.Errorf("last turn = %+v", last)
 	}
-	if m.streaming {
-		t.Error("streaming should be false after Done")
+	if m.live != nil {
+		t.Error("stream should be idle after Done")
 	}
 	if len(fake.lastReq.Messages) != 1 || fake.lastReq.System != prompt.System {
 		t.Errorf("request = %+v", fake.lastReq)
 	}
-	if !strings.Contains(m.renderChat(), "Hi") || !strings.Contains(m.renderChat(), "· done") {
-		t.Errorf("chat should show text and elapsed:\n%s", m.renderChat())
+	chat := renderTranscript(&m)
+	if !strings.Contains(chat, "Hi") || !strings.Contains(chat, "· done") {
+		t.Errorf("chat should show text and elapsed:\n%s", chat)
 	}
 }
 
@@ -131,15 +148,18 @@ func TestSendDoesNotCommitOnError(t *testing.T) {
 	if m.conv.Len() != 0 {
 		t.Errorf("conv.Len = %d, want 0", m.conv.Len())
 	}
-	last := m.entries[len(m.entries)-1]
-	if last.err == nil || !strings.Contains(last.err.Error(), "boom") {
-		t.Errorf("last entry = %+v", last)
+	last := lastTurn(t, m)
+	if last.Status != TurnFailed || last.Err == nil || !strings.Contains(last.Err.Error(), "boom") {
+		t.Errorf("last turn = %+v", last)
 	}
-	if m.streaming {
-		t.Error("streaming should be false after Error")
+	if last.Question != "hello" {
+		t.Errorf("failed turn should keep the question, got %q", last.Question)
 	}
-	if !strings.Contains(m.renderChat(), "Error: boom") {
-		t.Errorf("chat should show error:\n%s", m.renderChat())
+	if m.live != nil {
+		t.Error("stream should be idle after Error")
+	}
+	if !strings.Contains(renderTranscript(&m), "Error: boom") {
+		t.Errorf("chat should show error:\n%s", renderTranscript(&m))
 	}
 }
 
@@ -166,8 +186,8 @@ func TestClearResetsSession(t *testing.T) {
 	fake := &fakeProvider{events: []llm.StreamEvent{llm.StreamEnd{}}}
 	m := send(t, newTestModel(fake), "q1")
 	m = send(t, m, "/clear")
-	if m.conv.Len() != 0 || len(m.entries) != 0 {
-		t.Errorf("after /clear: Len=%d entries=%d", m.conv.Len(), len(m.entries))
+	if m.conv.Len() != 0 || m.transcript.Len() != 0 {
+		t.Errorf("after /clear: Len=%d items=%d", m.conv.Len(), m.transcript.Len())
 	}
 	if fake.calls.Load() != 1 {
 		t.Errorf("/clear must not call Stream, calls = %d", fake.calls.Load())
@@ -180,9 +200,15 @@ func TestUnknownCommandNoStream(t *testing.T) {
 	if fake.calls.Load() != 0 {
 		t.Errorf("Stream called %d times", fake.calls.Load())
 	}
-	last := m.entries[len(m.entries)-1]
-	if last.err == nil || !strings.Contains(last.err.Error(), "Unknown command") {
-		t.Errorf("last entry = %+v", last)
+	if m.transcript.Len() != 1 {
+		t.Fatalf("transcript = %d items, want 1 notice", m.transcript.Len())
+	}
+	n, ok := m.transcript.At(0).(*Notice)
+	if !ok {
+		t.Fatalf("last item is %T, want *Notice", m.transcript.At(0))
+	}
+	if !strings.Contains(n.Text, "Unknown command") {
+		t.Errorf("notice = %+v", n)
 	}
 }
 
@@ -192,11 +218,11 @@ func TestEnterIgnoredWhileStreaming(t *testing.T) {
 	m.input.SetValue("first")
 	mm, _ := m.Update(enter()) // do not run the blocking waitForEvent cmd
 	m = mm.(Model)
-	if !m.streaming {
-		t.Fatal("expected streaming after first enter")
+	if m.live == nil {
+		t.Fatal("expected live stream after first enter")
 	}
-	if !strings.Contains(m.renderChat(), "Imagining…") {
-		t.Errorf("chat should show progress indicator:\n%s", m.renderChat())
+	if !strings.Contains(renderTranscript(&m), "Imagining…") {
+		t.Errorf("chat should show progress indicator:\n%s", renderTranscript(&m))
 	}
 	m.input.SetValue("second")
 	mm, _ = m.Update(enter())
@@ -204,8 +230,52 @@ func TestEnterIgnoredWhileStreaming(t *testing.T) {
 	if fake.calls.Load() != 1 {
 		t.Errorf("Stream calls = %d, want 1", fake.calls.Load())
 	}
-	if m.cancel != nil {
-		m.cancel()
+	if m.live != nil {
+		m.live.cancel()
+	}
+}
+
+func TestHalfLineHiddenWhileStreaming(t *testing.T) {
+	fake := &fakeProvider{events: []llm.StreamEvent{llm.TextDelta{Text: "half"}, llm.TextDelta{Text: " line"}}}
+	m := send(t, newTestModel(fake), "q")
+	chat := renderTranscript(&m)
+	if strings.Contains(chat, "half") {
+		t.Errorf("in-progress half line must stay hidden:\n%s", chat)
+	}
+	m = drive(t, m, streamBatchMsg([]llm.StreamEvent{llm.TextDelta{Text: "\n"}, llm.StreamEnd{}}))
+	chat = ansi.Strip(renderTranscript(&m))
+	if !strings.Contains(chat, "half line") {
+		t.Errorf("completed line should appear:\n%s", chat)
+	}
+}
+
+func TestScrollDoesNotYankWhenScrolledUp(t *testing.T) {
+	m := newTestModel(&fakeProvider{})
+	// Fill the transcript far beyond the viewport height so scrolling up is
+	// actually possible (SetContent clamps to bottom when content fits).
+	for i := range 60 {
+		m.transcript.Append(&Notice{Text: fmt.Sprintf("line %d", i)})
+	}
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = mm.(Model)
+	mm, _ = m.Update(streamBatchMsg(nil)) // one refresh pass
+	m = mm.(Model)
+	m.viewport.SetYOffset(0) // scroll to top
+	if m.viewport.AtBottom() {
+		t.Fatal("viewport should not be at bottom after scrolling up")
+	}
+	mm, _ = m.Update(streamBatchMsg(nil))
+	m = mm.(Model)
+	if got := m.viewport.YOffset(); got != 0 {
+		t.Errorf("refresh while scrolled up moved offset to %d, want 0", got)
+	}
+	// Back at the bottom, following resumes.
+	m.viewport.GotoBottom()
+	m.transcript.Append(&Notice{Text: "tail"})
+	mm, _ = m.Update(streamBatchMsg(nil))
+	m = mm.(Model)
+	if !m.viewport.AtBottom() {
+		t.Error("viewport should follow again once the user is at the bottom")
 	}
 }
 

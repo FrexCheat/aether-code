@@ -12,6 +12,7 @@ var (
 				BorderForeground(lipgloss.Color("8")).
 				Padding(0, 1)
 	styleStatusBar = lipgloss.NewStyle().Reverse(true)
+	styleNoticePrefix = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
 	styleBanner    = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 	styleTitle     = lipgloss.NewStyle().Bold(true)
 	styleReady     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
