@@ -1,11 +1,11 @@
 // Package tui implements the interactive terminal interface: banner, chat
-// viewport, input box, status bar, whole-turn streaming commit, spinner and
-// slash commands.
+// viewport, input box, status bar, per-block reply commit, spinner and slash
+// commands.
 //
 // Data flow is deliberately flat: a committed []entry history plus a single
-// in-flight liveStream. Reply text is not streamed onto the screen — it is
-// committed whole when the turn reaches a terminal event, so the only thing
-// that changes during a turn is the animated spinner/timer line.
+// in-flight liveStream. Reply text is not streamed onto the screen — each
+// text content block commits whole when the block ends (TextComplete), so
+// while a turn runs the only animated thing is the bubbles spinner line.
 package tui
 
 import (
@@ -88,7 +88,7 @@ func newModel(opts Options) Model {
 		conv:     opts.Conv,
 		viewport: vp,
 		input:    in,
-		spinner:  spinner.New(spinner.WithSpinner(spinner.Points)),
+		spinner:  spinner.New(spinner.WithSpinner(spinner.Dot)),
 	}
 }
 
@@ -156,13 +156,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamBatchMsg:
 		return m.handleStreamBatch(msg)
 
-	case tickMsg:
-		if m.live != nil {
-			m.spinner, _ = m.spinner.Update(m.spinner.Tick())
-			m.refresh()
-			return m, tick()
+	case spinner.TickMsg:
+		// The spinner's own tick chain drives the live frames. While idle the
+		// chain is allowed to die (no animation to run); each turn restarts it
+		// with m.spinner.Tick in startStream.
+		if m.live == nil {
+			return m, nil
 		}
-		return m, nil
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		m.refresh()
+		return m, cmd
 	}
 
 	var cmds []tea.Cmd
@@ -253,7 +257,7 @@ func (m *Model) startStream(text string) tea.Cmd {
 		start:    timeNow(),
 	}
 	m.input.Reset()
-	return tea.Batch(waitStream(m.live.events), tick())
+	return tea.Batch(waitStream(m.live.events), m.spinner.Tick)
 }
 
 // handleStreamBatch folds a coalesced batch of events into the live turn and
@@ -282,6 +286,10 @@ func (m *Model) foldEvent(ev agent.AgentEvent) {
 		if m.live != nil {
 			m.live.text.WriteString(e.Text)
 		}
+	case agent.TextComplete:
+		// One text content block finished: commit it as its own assistant
+		// entry so a segment spoken before a tool call stays above that call.
+		m.flushText()
 	case agent.ToolCallBegin:
 		m.entries = append(m.entries, newToolEntry(e.ToolName, toolTitle(e.ToolName, e.Args)))
 	case agent.ToolCallEnd:
@@ -309,9 +317,24 @@ func editDiff(e agent.ToolCallEnd) string {
 	return e.Result.Output
 }
 
-// closeLive settles the in-flight turn: TurnEnd appends the assistant entry;
-// TurnError appends an error notice. History commits already happened inside
-// the agent — this only touches the display entries.
+// flushText commits the live stream's accumulated reply text as one assistant
+// entry and clears the buffer. It fires when a text content block ends
+// (TextComplete), as a provider fallback on ToolCallBegin, and at turn end
+// for whatever is left. Empty buffers produce no entry.
+func (m *Model) flushText() {
+	if m.live == nil {
+		return
+	}
+	if text := m.live.text.String(); text != "" {
+		m.entries = append(m.entries, newAssistantEntry(text))
+		m.live.text.Reset()
+	}
+}
+
+// closeLive settles the in-flight turn: remaining text flushes, TurnEnd
+// appends the whole-turn done footer, TurnError appends an error notice.
+// History commits already happened inside the agent — this only touches the
+// display entries.
 func (m *Model) closeLive(ev agent.AgentEvent) {
 	ls := m.live
 	if ls == nil {
@@ -321,10 +344,10 @@ func (m *Model) closeLive(ev agent.AgentEvent) {
 		ls.cancel()
 		m.live = nil
 	}()
+	m.flushText()
 	switch ev := ev.(type) {
 	case agent.TurnEnd:
-		text := ls.text.String()
-		m.entries = append(m.entries, newAssistantEntry(text, timeSince(ls.start), timeNow()))
+		m.entries = append(m.entries, newTurnEntry(timeSince(ls.start), timeNow()))
 	case agent.TurnError:
 		m.entries = append(m.entries, newNoticeEntry("Error: "+ev.Err.Error(), true))
 	}

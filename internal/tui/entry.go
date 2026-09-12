@@ -21,6 +21,7 @@ const (
 	entryAssistant                  // committed assistant reply
 	entryNotice                     // system notice (incl. errors)
 	entryTool                       // one tool call (running → settled)
+	entryTurn                       // turn-level done footer (whole agent loop)
 )
 
 // toolState is the lifecycle of a tool entry between ToolCallBegin/End.
@@ -32,10 +33,10 @@ const (
 	toolFailed
 )
 
-// entry is one committed, displayable line of history. User and notice entries
-// carry only text; assistant entries additionally carry the timing used for
-// the message-bottom footer (the completion form of the streaming timer); tool
-// entries carry the call's title, state, duration and edit diff.
+// entry is one committed, displayable line of history. User, assistant and
+// notice entries carry only text; tool entries carry the call's title, state,
+// duration and edit diff; the turn entry closes one agent loop with its whole
+// duration (the completion form of the live spinner timer).
 type entry struct {
 	kind     entryKind
 	text     string
@@ -55,8 +56,14 @@ func newUserEntry(text string) entry {
 	return entry{kind: entryUser, text: text}
 }
 
-func newAssistantEntry(text string, elapsed time.Duration, doneAt time.Time) entry {
-	return entry{kind: entryAssistant, text: text, elapsed: elapsed, doneAt: doneAt}
+func newAssistantEntry(text string) entry {
+	return entry{kind: entryAssistant, text: text}
+}
+
+// newTurnEntry closes one agent loop: elapsed spans the whole turn from the
+// user's question to the terminal event, tool executions included.
+func newTurnEntry(elapsed time.Duration, doneAt time.Time) entry {
+	return entry{kind: entryTurn, elapsed: elapsed, doneAt: doneAt}
 }
 
 func newNoticeEntry(text string, isError bool) entry {

@@ -51,11 +51,6 @@ func renderEntry(b *strings.Builder, m *Model, e *entry) {
 			return strings.Trim(r, "\n")
 		})
 		b.WriteString(out)
-		b.WriteString("\n")
-		// The footer is the completion form of the streaming timer shown at
-		// the bottom of the same message while the turn was in flight.
-		b.WriteString(styleDim.Render(fmt.Sprintf("%ds · done %s",
-			int(e.elapsed.Seconds()), e.doneAt.Format("3:04 PM"))))
 		b.WriteString("\n\n")
 	case entryNotice:
 		b.WriteString(styleNoticePrefix.Render("! AetherCode"))
@@ -68,6 +63,12 @@ func renderEntry(b *strings.Builder, m *Model, e *entry) {
 		b.WriteString("\n\n")
 	case entryTool:
 		renderToolEntry(b, m, e)
+	case entryTurn:
+		// The completion form of the live spinner timer: one footer per agent
+		// loop, not per message.
+		b.WriteString(styleDim.Render(fmt.Sprintf("%ds · done %s",
+			int(e.elapsed.Seconds()), e.doneAt.Format("3:04 PM"))))
+		b.WriteString("\n\n")
 	}
 }
 
@@ -80,7 +81,6 @@ func renderToolEntry(b *strings.Builder, m *Model, e *entry) {
 		b.WriteString(styleAssistantPrefix.Render("● "))
 		b.WriteString(e.text)
 		b.WriteString(" " + m.spinner.View())
-		b.WriteString("\n\n")
 	case toolDone, toolFailed:
 		b.WriteString(styleDim.Render("  ⎿ "))
 		if e.state == toolDone {
@@ -115,9 +115,9 @@ func renderDiffLines(diff string) string {
 	return strings.Join(lines, "\n")
 }
 
-// renderLive shows the assistant marker plus the animated spinner and elapsed
-// seconds at the bottom of the in-flight message — the only thing that changes
-// during streaming, since reply text is committed whole on completion.
+// renderLive shows the assistant marker plus the bubbles spinner and the
+// whole-turn elapsed seconds at the bottom of the in-flight turn — the turn
+// is the only unit the timer measures (tool entries carry their own).
 func renderLive(b *strings.Builder, m *Model) {
 	b.WriteString(styleAssistantPrefix.Render("● AetherCode"))
 	b.WriteString("\n")

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
@@ -52,7 +53,8 @@ func newTestModel(p llm.Client) Model {
 }
 
 // drive feeds msg to Update, then executes returned commands until none remain.
-// tickMsg results are not re-fed, so the loop terminates once the stream ends.
+// spinner.TickMsg results are not re-fed, so the loop terminates once the
+// stream ends.
 func drive(t *testing.T, m Model, msg tea.Msg) Model {
 	t.Helper()
 	queue := []tea.Msg{msg}
@@ -87,7 +89,7 @@ func run(cmd tea.Cmd) []tea.Msg {
 			out = append(out, run(c)...)
 		}
 		return out
-	case tickMsg:
+	case spinner.TickMsg:
 		return nil
 	case streamBatchMsg:
 		return []tea.Msg{v}
@@ -104,18 +106,17 @@ func send(t *testing.T, m Model, text string) Model {
 }
 
 func TestSendCommitsWholeOnDone(t *testing.T) {
-	tickInterval = time.Millisecond
 	fake := &fakeProvider{events: []llm.StreamEvent{llm.TextDelta{Text: "Hi"}, llm.StreamEnd{}}}
 	m := send(t, newTestModel(fake), "hello")
 	if m.conv.Len() != 2 {
 		t.Errorf("conv.Len = %d, want 2", m.conv.Len())
 	}
-	if len(m.entries) != 2 { // user + assistant
-		t.Fatalf("entries = %d, want 2", len(m.entries))
+	if len(m.entries) != 3 { // user + assistant + turn footer
+		t.Fatalf("entries = %d, want 3", len(m.entries))
 	}
-	last := lastEntry(t, m)
-	if last.kind != entryAssistant || last.text != "Hi" {
-		t.Errorf("assistant entry = %+v", last)
+	reply := m.entries[len(m.entries)-2]
+	if reply.kind != entryAssistant || reply.text != "Hi" {
+		t.Errorf("assistant entry = %+v", reply)
 	}
 	if m.live != nil {
 		t.Error("stream should be idle after Done")
@@ -125,7 +126,7 @@ func TestSendCommitsWholeOnDone(t *testing.T) {
 	}
 	chat := ansi.Strip(renderTop(&m))
 	if !strings.Contains(chat, "hello") || !strings.Contains(chat, "Hi") || !strings.Contains(chat, "· done") {
-		t.Errorf("chat should show question, reply and footer:\n%s", chat)
+		t.Errorf("chat should show question, reply and turn footer:\n%s", chat)
 	}
 }
 
@@ -158,7 +159,7 @@ func TestSpinnerAdvancesOnTick(t *testing.T) {
 	mm, _ := m.Update(enter())
 	m = mm.(Model)
 	f1 := m.spinner.View()
-	mm, _ = m.Update(tickMsg{})
+	mm, _ = m.Update(spinner.TickMsg{})
 	m = mm.(Model)
 	f2 := m.spinner.View()
 	if f1 == f2 {
