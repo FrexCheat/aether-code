@@ -14,6 +14,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -188,7 +189,32 @@ func (c *openAIClient) buildParams(req Request) responses.ResponseNewParams {
 		if m.Role == conversation.RoleAssistant {
 			role = responses.EasyInputMessageRoleAssistant
 		}
-		items = append(items, responses.ResponseInputItemParamOfMessage(m.Content, role))
+		if len(m.Blocks) == 0 {
+			items = append(items, responses.ResponseInputItemParamOfMessage(m.Content, role))
+			continue
+		}
+		for _, b := range m.Blocks {
+			switch b := b.(type) {
+			case conversation.TextBlock:
+				items = append(items, responses.ResponseInputItemParamOfMessage(b.Text, role))
+			case conversation.ToolUseBlock:
+				// Args go back as a JSON string; encoding/json sorts map keys,
+				// so replays are byte-stable.
+				argsJSON, err := json.Marshal(b.Args)
+				if err != nil {
+					argsJSON = []byte("{}")
+				}
+				items = append(items,
+					responses.ResponseInputItemParamOfFunctionCall(string(argsJSON), b.ID, b.Name))
+			case conversation.ToolResultBlock:
+				item := responses.ResponseInputItemParamOfFunctionCallOutput(b.Content)
+				item.OfFunctionCallOutput.CallID = openai.String(b.ToolUseID)
+				items = append(items, item)
+			case conversation.ThinkingBlock:
+				// The Responses API has no replayable reasoning-item shape that
+				// matches the unified model; reasoning is skipped on replay.
+			}
+		}
 	}
 	params := responses.ResponseNewParams{
 		Model: shared.ResponsesModel(c.model),
@@ -200,7 +226,38 @@ func (c *openAIClient) buildParams(req Request) responses.ResponseNewParams {
 	if req.Thinking {
 		params.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffortMedium}
 	}
+	if len(req.Tools) > 0 {
+		params.Tools = translateOpenAITools(req.Tools)
+	}
 	return params
+}
+
+// translateOpenAITools converts the neutral schema shape into Responses API
+// function tools. Strict validation is off: our schemas come from hand-written
+// tool definitions and partial-JSON arguments must not be rejected server-side.
+func translateOpenAITools(tools []map[string]any) []responses.ToolUnionParam {
+	result := make([]responses.ToolUnionParam, 0, len(tools))
+	for _, t := range tools {
+		// GetAllSchemas("openai") delivers the JSON Schema under "parameters";
+		// hand-built requests may still use the neutral "input_schema" key.
+		schema, _ := t["parameters"].(map[string]any)
+		if schema == nil {
+			schema, _ = t["input_schema"].(map[string]any)
+		}
+		if schema == nil {
+			schema = map[string]any{}
+		}
+		ft := responses.FunctionToolParam{
+			Name:       t["name"].(string),
+			Parameters: schema,
+			Strict:     openai.Bool(false),
+		}
+		if d, ok := t["description"].(string); ok {
+			ft.Description = openai.String(d)
+		}
+		result = append(result, responses.ToolUnionParam{OfFunction: &ft})
+	}
+	return result
 }
 
 // mapOpenAIError classifies a transport/API error returned by the SDK's

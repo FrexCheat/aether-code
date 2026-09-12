@@ -91,6 +91,11 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 			curSig      string
 			curToolID   string
 			curToolName string
+			// curToolSeed holds the input delivered at content_block_start;
+			// on the streaming wire it is only the "{}" placeholder, so the
+			// real arguments always come from curToolArgs below. The seed is
+			// a fallback for blocks whose input arrives complete at start.
+			curToolSeed json.RawMessage
 			curToolArgs strings.Builder
 		)
 
@@ -103,8 +108,8 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 					curSig = block.Signature
 				case anthropic.ToolUseBlock:
 					curToolID, curToolName = block.ID, block.Name
+					curToolSeed = block.Input
 					curToolArgs.Reset()
-					curToolArgs.Write(block.Input)
 					if !send(ToolCallStart{ToolName: block.Name, ToolID: block.ID}) {
 						return
 					}
@@ -137,14 +142,21 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 					curSig = ""
 				}
 				if curToolID != "" {
+					// Assemble the fragmented input_json_delta slices; fall
+					// back to the block-start seed when no deltas arrived.
+					raw := curToolArgs.String()
+					if strings.TrimSpace(raw) == "" {
+						raw = string(curToolSeed)
+					}
 					if !send(ToolCallComplete{
 						ToolID:    curToolID,
 						ToolName:  curToolName,
-						Arguments: parseToolArgs(curToolArgs.String()),
+						Arguments: parseToolArgs(raw),
 					}) {
 						return
 					}
 					curToolID = ""
+					curToolSeed = nil
 				}
 			case anthropic.MessageDeltaEvent:
 				stopReason = string(ev.Delta.StopReason)
@@ -182,11 +194,11 @@ func (c *anthropicClient) buildParams(req Request) anthropic.MessageNewParams {
 	merged := mergeConsecutive(req.Messages)
 	msgs := make([]anthropic.MessageParam, 0, len(merged))
 	for _, m := range merged {
-		block := anthropic.NewTextBlock(m.Content)
+		blocks := translateBlocks(m)
 		if m.Role == conversation.RoleAssistant {
-			msgs = append(msgs, anthropic.NewAssistantMessage(block))
+			msgs = append(msgs, anthropic.NewAssistantMessage(blocks...))
 		} else {
-			msgs = append(msgs, anthropic.NewUserMessage(block))
+			msgs = append(msgs, anthropic.NewUserMessage(blocks...))
 		}
 	}
 	params := anthropic.MessageNewParams{
@@ -200,12 +212,80 @@ func (c *anthropicClient) buildParams(req Request) anthropic.MessageNewParams {
 	if req.Thinking {
 		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(anthropicThinkingBudget)
 	}
+	if len(req.Tools) > 0 {
+		params.Tools = translateTools(req.Tools)
+	}
 	return params
 }
 
-// mergeConsecutive collapses consecutive messages of the same role by joining
-// their Content with "\n\n", as required by the Anthropic API docs
-// ("Consecutive user or assistant turns will be combined into a single turn").
+// translateBlocks converts one unified message into Anthropic content blocks.
+// Messages without blocks keep the plain-text path; block messages translate
+// each fragment by type.
+func translateBlocks(m conversation.Message) []anthropic.ContentBlockParamUnion {
+	if len(m.Blocks) == 0 {
+		return []anthropic.ContentBlockParamUnion{anthropic.NewTextBlock(m.Content)}
+	}
+	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(m.Blocks))
+	for _, b := range m.Blocks {
+		switch b := b.(type) {
+		case conversation.TextBlock:
+			blocks = append(blocks, anthropic.NewTextBlock(b.Text))
+		case conversation.ThinkingBlock:
+			blocks = append(blocks, anthropic.NewThinkingBlock(b.Signature, b.Text))
+		case conversation.ToolUseBlock:
+			blocks = append(blocks, anthropic.NewToolUseBlock(b.ID, b.Args, b.Name))
+		case conversation.ToolResultBlock:
+			blocks = append(blocks, anthropic.NewToolResultBlock(b.ToolUseID, b.Content, b.IsError))
+		}
+	}
+	return blocks
+}
+
+// translateTools converts the neutral schema shape into Anthropic tool params.
+func translateTools(tools []map[string]any) []anthropic.ToolUnionParam {
+	result := make([]anthropic.ToolUnionParam, 0, len(tools))
+	for _, t := range tools {
+		tool := anthropic.ToolParam{Name: t["name"].(string)}
+		if d, ok := t["description"].(string); ok {
+			tool.Description = anthropic.String(d)
+		}
+		if schema, ok := t["input_schema"].(map[string]any); ok {
+			input := anthropic.ToolInputSchemaParam{Type: "object"}
+			if props, ok := schema["properties"]; ok {
+				input.Properties = props
+			}
+			switch reqs := schema["required"].(type) {
+			case []string:
+				input.Required = reqs
+			case []any:
+				for _, r := range reqs {
+					if s, ok := r.(string); ok {
+						input.Required = append(input.Required, s)
+					}
+				}
+			}
+			for k, v := range schema {
+				switch k {
+				case "properties", "required", "type":
+				default:
+					if input.ExtraFields == nil {
+						input.ExtraFields = map[string]any{}
+					}
+					input.ExtraFields[k] = v
+				}
+			}
+			tool.InputSchema = input
+		}
+		result = append(result, anthropic.ToolUnionParam{OfTool: &tool})
+	}
+	return result
+}
+
+// mergeConsecutive collapses consecutive messages of the same role, as
+// required by the Anthropic API docs ("Consecutive user or assistant turns
+// will be combined into a single turn"). Text-only messages join Content with
+// "\n\n"; block-carrying messages concatenate their block lists, keeping the
+// tool_use/tool_result pairing intact.
 func mergeConsecutive(in []conversation.Message) []conversation.Message {
 	if len(in) == 0 {
 		return nil
@@ -213,11 +293,25 @@ func mergeConsecutive(in []conversation.Message) []conversation.Message {
 	out := make([]conversation.Message, 0, len(in))
 	cur := in[0]
 	for _, m := range in[1:] {
-		if m.Role == cur.Role {
-			cur.Content = cur.Content + "\n\n" + m.Content
-		} else {
+		if m.Role != cur.Role {
 			out = append(out, cur)
 			cur = m
+			continue
+		}
+		switch {
+		case len(m.Blocks) == 0:
+			if len(cur.Blocks) == 0 {
+				cur.Content += "\n\n" + m.Content
+			} else {
+				cur.Blocks = append(cur.Blocks, conversation.TextBlock{Text: m.Content})
+			}
+		case len(cur.Blocks) == 0 && cur.Content == "":
+			cur.Blocks = m.Blocks
+		case len(cur.Blocks) == 0:
+			cur.Blocks = append([]conversation.Block{conversation.TextBlock{Text: cur.Content}}, m.Blocks...)
+			cur.Content = ""
+		default:
+			cur.Blocks = append(cur.Blocks, m.Blocks...)
 		}
 	}
 	out = append(out, cur)

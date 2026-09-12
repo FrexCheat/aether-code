@@ -57,26 +57,6 @@ func collect(t *testing.T, ch <-chan StreamEvent) []StreamEvent {
 	}
 }
 
-func joinText(evs []StreamEvent) string {
-	var b string
-	for _, e := range evs {
-		if d, ok := e.(TextDelta); ok {
-			b += d.Text
-		}
-	}
-	return b
-}
-
-func collectTextDeltas(evs []StreamEvent) []TextDelta {
-	var out []TextDelta
-	for _, e := range evs {
-		if d, ok := e.(TextDelta); ok {
-			out = append(out, d)
-		}
-	}
-	return out
-}
-
 func simpleReq(thinking bool) Request {
 	return Request{
 		System:   "You are AetherCode.",

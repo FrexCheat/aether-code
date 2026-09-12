@@ -225,6 +225,149 @@ func TestAnthropicMergesConsecutiveSameRole(t *testing.T) {
 	}
 }
 
+// TestAnthropicStreamToolCallAssemblesFragmentedJSON proves the adapter
+// stitches the input_json_delta fragments of one tool_use block into the
+// complete Arguments map — the wire never delivers the JSON whole.
+func TestAnthropicStreamToolCallAssemblesFragmentedJSON(t *testing.T) {
+	srv := newServer(t, "anthropic", "tool_use.sse", &capture{})
+	defer srv.Close()
+	evs := collect(t, newAnthropicTestClient(srv).Stream(context.Background(), simpleReq(false)))
+
+	var text strings.Builder
+	var start ToolCallStart
+	var deltas []ToolCallDelta
+	var complete ToolCallComplete
+	for _, e := range evs {
+		switch v := e.(type) {
+		case TextDelta:
+			text.WriteString(v.Text)
+		case ToolCallStart:
+			start = v
+		case ToolCallDelta:
+			deltas = append(deltas, v)
+		case ToolCallComplete:
+			complete = v
+		}
+	}
+	if text.String() != "Let me read that." {
+		t.Errorf("text = %q", text.String())
+	}
+	if start.ToolName != "read_file" || start.ToolID != "toolu_01" {
+		t.Errorf("start = %+v", start)
+	}
+	// Three fragments arrived; each is a partial JSON slice, none valid alone.
+	if len(deltas) != 3 {
+		t.Fatalf("deltas = %d, want 3", len(deltas))
+	}
+	if complete.ToolID != "toolu_01" || complete.ToolName != "read_file" {
+		t.Errorf("complete = %+v", complete)
+	}
+	if complete.Arguments["file_path"] != "internal/a.go" {
+		t.Errorf("assembled arguments = %+v, want file_path=internal/a.go", complete.Arguments)
+	}
+	// Terminal state: the stream reports the tool_use stop reason.
+	last := evs[len(evs)-1]
+	end, ok := last.(StreamEnd)
+	if !ok || end.StopReason != "tool_use" {
+		t.Errorf("last = %+v, want StreamEnd(tool_use)", last)
+	}
+}
+
+func TestAnthropicRequestBodyWithTools(t *testing.T) {
+	cap := &capture{}
+	srv := newServer(t, "anthropic", "text_only.sse", cap)
+	defer srv.Close()
+	req := Request{
+		System: "sys",
+		Tools: []map[string]any{
+			{
+				"name":        "read_file",
+				"description": "Read a file from disk",
+				"input_schema": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"file_path": map[string]any{"type": "string"},
+					},
+					"required": []string{"file_path"},
+				},
+			},
+		},
+		Messages: []conversation.Message{
+			{Role: conversation.RoleUser, Content: "q"},
+			{Role: conversation.RoleAssistant, Blocks: []conversation.Block{
+				conversation.TextBlock{Text: "checking"},
+				conversation.ToolUseBlock{ID: "tu_1", Name: "read_file", Args: map[string]any{"file_path": "a.go"}},
+			}},
+			{Role: conversation.RoleUser, Blocks: []conversation.Block{
+				conversation.ToolResultBlock{ToolUseID: "tu_1", Content: "file body"},
+			}},
+		},
+	}
+	collect(t, newAnthropicTestClient(srv).Stream(context.Background(), req))
+
+	var body struct {
+		Tools []struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			InputSchema struct {
+				Type       string         `json:"type"`
+				Properties map[string]any `json:"properties"`
+				Required   []string       `json:"required"`
+			} `json:"input_schema"`
+		} `json:"tools"`
+		Messages []struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type      string         `json:"type"`
+				Text      string         `json:"text"`
+				ID        string         `json:"id"`
+				Name      string         `json:"name"`
+				Input     map[string]any `json:"input"`
+				ToolUseID string         `json:"tool_use_id"`
+				IsError   bool           `json:"is_error"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(cap.get(), &body); err != nil {
+		t.Fatalf("%v\n%s", err, cap.get())
+	}
+	if len(body.Tools) != 1 {
+		t.Fatalf("tools = %+v, want 1", body.Tools)
+	}
+	tool := body.Tools[0]
+	if tool.Name != "read_file" || tool.Description != "Read a file from disk" {
+		t.Errorf("tool = %+v", tool)
+	}
+	if tool.InputSchema.Type != "object" || tool.InputSchema.Required[0] != "file_path" {
+		t.Errorf("input_schema = %+v", tool.InputSchema)
+	}
+	if _, ok := tool.InputSchema.Properties["file_path"]; !ok {
+		t.Errorf("properties missing file_path: %+v", tool.InputSchema)
+	}
+	if len(body.Messages) != 3 {
+		t.Fatalf("messages len = %d: %+v", len(body.Messages), body.Messages)
+	}
+	assistant := body.Messages[1]
+	if assistant.Role != "assistant" || len(assistant.Content) != 2 {
+		t.Fatalf("assistant = %+v", assistant)
+	}
+	if assistant.Content[0].Type != "text" || assistant.Content[0].Text != "checking" {
+		t.Errorf("assistant text block = %+v", assistant.Content[0])
+	}
+	tu := assistant.Content[1]
+	if tu.Type != "tool_use" || tu.ID != "tu_1" || tu.Name != "read_file" || tu.Input["file_path"] != "a.go" {
+		t.Errorf("tool_use block = %+v", tu)
+	}
+	result := body.Messages[2]
+	if result.Role != "user" || len(result.Content) != 1 {
+		t.Fatalf("result message = %+v", result)
+	}
+	tr := result.Content[0]
+	if tr.Type != "tool_result" || tr.ToolUseID != "tu_1" || tr.IsError {
+		t.Errorf("tool_result block = %+v", tr)
+	}
+}
+
 func TestAnthropicStreamCancel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

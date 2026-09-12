@@ -12,6 +12,7 @@ import (
 
 	"github.com/FrexCheat/aether-code/internal/config"
 	"github.com/FrexCheat/aether-code/internal/conversation"
+	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
 func newOpenAITestClient(srv *httptest.Server) Client {
@@ -212,6 +213,97 @@ func TestOpenAIStreamRequestBody(t *testing.T) {
 	}
 }
 
+func TestOpenAIRequestBodyWithTools(t *testing.T) {
+	cap := &capture{}
+	srv := newServer(t, "openai", "text_only.sse", cap)
+	defer srv.Close()
+	req := Request{
+		System: "sys",
+		Tools: []map[string]any{
+			{
+				"name":        "read_file",
+				"description": "Read a file from disk",
+				"input_schema": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"file_path": map[string]any{"type": "string"},
+					},
+					"required": []string{"file_path"},
+				},
+			},
+		},
+		Messages: []conversation.Message{
+			{Role: conversation.RoleUser, Content: "q"},
+			{Role: conversation.RoleAssistant, Blocks: []conversation.Block{
+				conversation.TextBlock{Text: "checking"},
+				conversation.ToolUseBlock{ID: "fc_1", Name: "read_file", Args: map[string]any{"file_path": "a.go"}},
+			}},
+			{Role: conversation.RoleUser, Blocks: []conversation.Block{
+				conversation.ToolResultBlock{ToolUseID: "fc_1", Content: "file body"},
+			}},
+		},
+	}
+	collect(t, newOpenAITestClient(srv).Stream(context.Background(), req))
+
+	var body struct {
+		Tools []struct {
+			Type        string `json:"type"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Parameters  map[string]any
+			Strict      bool `json:"strict"`
+		} `json:"tools"`
+		Input []struct {
+			Type      string `json:"type"`
+			Role      string `json:"role"`
+			Content   string `json:"content"`
+			CallID    string `json:"call_id"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+			Output    string `json:"output"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(cap.get(), &body); err != nil {
+		t.Fatalf("%v\n%s", err, cap.get())
+	}
+	if len(body.Tools) != 1 {
+		t.Fatalf("tools = %+v, want 1", body.Tools)
+	}
+	tool := body.Tools[0]
+	if tool.Type != "function" || tool.Name != "read_file" || tool.Description != "Read a file from disk" {
+		t.Errorf("tool = %+v", tool)
+	}
+	if tool.Strict {
+		t.Errorf("strict should be false: %+v", tool)
+	}
+	if _, ok := tool.Parameters["properties"]; !ok {
+		t.Errorf("parameters missing properties: %+v", tool.Parameters)
+	}
+	// Input: user message, assistant text (separate message item per block),
+	// function_call item, function_call_output item.
+	if len(body.Input) != 4 {
+		t.Fatalf("input len = %d: %s", len(body.Input), cap.get())
+	}
+	if body.Input[0].Role != "user" || body.Input[0].Content != "q" {
+		t.Errorf("input[0] = %+v", body.Input[0])
+	}
+	if body.Input[1].Role != "assistant" || body.Input[1].Content != "checking" {
+		t.Errorf("input[1] = %+v", body.Input[1])
+	}
+	fc := body.Input[2]
+	if fc.Type != "function_call" || fc.CallID != "fc_1" || fc.Name != "read_file" {
+		t.Errorf("function_call item = %+v", fc)
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(fc.Arguments), &args); err != nil || args["file_path"] != "a.go" {
+		t.Errorf("arguments = %q (err=%v)", fc.Arguments, err)
+	}
+	out := body.Input[3]
+	if out.Type != "function_call_output" || out.CallID != "fc_1" || out.Output != "file body" {
+		t.Errorf("function_call_output item = %+v", out)
+	}
+}
+
 func TestOpenAIStreamCancel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -238,5 +330,45 @@ func TestOpenAIStreamCancel(t *testing.T) {
 	se, ok := lastError(evs)
 	if !ok || !errors.Is(se.Err, context.Canceled) {
 		t.Errorf("last = %+v, want StreamError(context.Canceled)", evs[len(evs)-1])
+	}
+}
+
+// TestOpenAIRegistrySchemasSurviveTranslation runs the real pipeline —
+// tools.Registry.GetAllSchemas("openai") feeding buildParams — to prove the
+// registry's "parameters" key is consumed. A key-name mismatch here used to
+// send parameters:{} on the wire and got every request rejected with 400
+// "Invalid schema for function ...".
+func TestOpenAIRegistrySchemasSurviveTranslation(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(&tools.ReadFileTool{WorkDir: t.TempDir()})
+	cap := &capture{}
+	srv := newServer(t, "openai", "text_only.sse", cap)
+	defer srv.Close()
+	c := newOpenAITestClient(srv).(*openAIClient)
+	req := simpleReq(false)
+	req.Tools = reg.GetAllSchemas("openai")
+	collect(t, c.Stream(context.Background(), req))
+
+	var body struct {
+		Tools []struct {
+			Name       string         `json:"name"`
+			Parameters map[string]any `json:"parameters"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(cap.get(), &body); err != nil {
+		t.Fatalf("%v\n%s", err, cap.get())
+	}
+	if len(body.Tools) != 1 {
+		t.Fatalf("tools = %+v, want 1", body.Tools)
+	}
+	if body.Tools[0].Name != "read_file" {
+		t.Errorf("name = %q", body.Tools[0].Name)
+	}
+	if body.Tools[0].Parameters["type"] != "object" {
+		t.Errorf("parameters = %+v, want a type:object schema, not {}", body.Tools[0].Parameters)
+	}
+	props, _ := body.Tools[0].Parameters["properties"].(map[string]any)
+	if _, ok := props["file_path"]; !ok {
+		t.Errorf("parameters.properties missing file_path: %+v", body.Tools[0].Parameters)
 	}
 }
