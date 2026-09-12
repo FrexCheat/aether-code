@@ -4,7 +4,8 @@
 // Responses API accepts arbitrary role sequences), and error classification.
 // API key is never embedded in returned error strings.
 //
-// Wire events map onto the unified stream as: output_text.delta → TextDelta,
+// Wire events map onto the unified stream as: output_text.delta → TextDelta
+// with the message item's output_item.done → TextComplete,
 // reasoning_text.delta / reasoning_summary_text.delta → ThinkingDelta,
 // function_call items → ToolCallStart / ToolCallDelta (arguments.delta) /
 // ToolCallComplete (arguments.done), response.completed usage →
@@ -89,12 +90,26 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 		}
 		tools := map[int64]*pendingTool{}
 
+		// inText tracks the message item carrying the visible reply; its
+		// output_item.done is the unified TextComplete.
+		inText := false
+
 		for stream.Next() {
 			switch ev := stream.Current().AsAny().(type) {
 			case responses.ResponseOutputItemAddedEvent:
-				if fc, ok := ev.Item.AsAny().(responses.ResponseFunctionToolCall); ok {
-					tools[ev.OutputIndex] = &pendingTool{name: fc.Name}
-					if !send(ToolCallStart{ToolName: fc.Name, ToolID: fc.CallID}) {
+				switch item := ev.Item.AsAny().(type) {
+				case responses.ResponseOutputMessage:
+					inText = true
+				case responses.ResponseFunctionToolCall:
+					tools[ev.OutputIndex] = &pendingTool{name: item.Name}
+					if !send(ToolCallStart{ToolName: item.Name, ToolID: item.CallID}) {
+						return
+					}
+				}
+			case responses.ResponseOutputItemDoneEvent:
+				if _, ok := ev.Item.AsAny().(responses.ResponseOutputMessage); ok && inText {
+					inText = false
+					if !send(TextComplete{}) {
 						return
 					}
 				}

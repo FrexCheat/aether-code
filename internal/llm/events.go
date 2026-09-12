@@ -7,12 +7,19 @@ package llm
 
 // StreamEvent is the sealed sum of all events emitted by Client.Stream.
 //
-// Implementations include TextDelta, ThinkingDelta, ThinkingComplete,
-// ToolCallStart, ToolCallDelta, ToolCallComplete, StreamEnd and StreamError.
-// Consumers should use a type switch.
+// Implementations include TextDelta, TextComplete, ThinkingDelta,
+// ThinkingComplete, ToolCallStart, ToolCallDelta, ToolCallComplete, StreamEnd
+// and StreamError. Consumers should use a type switch.
 type StreamEvent interface{ streamEvent() }
 
 type TextDelta struct{ Text string }
+
+// TextComplete marks the end of one text content block: everything
+// TextDelta delivered since the last TextComplete is one finished segment.
+// Anthropic emits it at the text block's content_block_stop; OpenAI at the
+// message item's output_item.done.
+type TextComplete struct{}
+
 type ThinkingDelta struct{ Text string }
 type ThinkingComplete struct {
 	Thinking  string
@@ -50,6 +57,7 @@ type StreamEnd struct {
 type StreamError struct{ Err error }
 
 func (TextDelta) streamEvent()        {}
+func (TextComplete) streamEvent()     {}
 func (ThinkingDelta) streamEvent()    {}
 func (ThinkingComplete) streamEvent() {}
 func (ToolCallStart) streamEvent()    {}

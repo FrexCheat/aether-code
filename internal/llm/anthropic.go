@@ -4,9 +4,10 @@
 // same-role merging per the API docs), and error classification. API key is
 // never embedded in returned error strings.
 //
-// Wire events map onto the unified stream as: text_delta → TextDelta,
-// thinking_delta → ThinkingDelta, signature_delta accumulates into
-// ThinkingComplete at content_block_stop, tool_use blocks → ToolCallStart /
+// Wire events map onto the unified stream as: text_delta → TextDelta with the
+// text block's content_block_stop → TextComplete, thinking_delta →
+// ThinkingDelta, signature_delta accumulates into ThinkingComplete at
+// content_block_stop, tool_use blocks → ToolCallStart /
 // ToolCallDelta (input_json_delta) / ToolCallComplete, message_delta usage →
 // StreamEnd.Usage.
 
@@ -91,6 +92,7 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 			curSig      string
 			curToolID   string
 			curToolName string
+			curText     bool // inside a text block; TextComplete fires at its stop
 			// curToolSeed holds the input delivered at content_block_start;
 			// on the streaming wire it is only the "{}" placeholder, so the
 			// real arguments always come from curToolArgs below. The seed is
@@ -103,6 +105,8 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 			switch ev := stream.Current().AsAny().(type) {
 			case anthropic.ContentBlockStartEvent:
 				switch block := ev.ContentBlock.AsAny().(type) {
+				case anthropic.TextBlock:
+					curText = true
 				case anthropic.ThinkingBlock:
 					curThinking.Reset()
 					curSig = block.Signature
@@ -134,14 +138,19 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 					}
 				}
 			case anthropic.ContentBlockStopEvent:
-				if curThinking.Len() > 0 {
+				switch {
+				case curText:
+					curText = false
+					if !send(TextComplete{}) {
+						return
+					}
+				case curThinking.Len() > 0:
 					if !send(ThinkingComplete{Thinking: curThinking.String(), Signature: curSig}) {
 						return
 					}
 					curThinking.Reset()
 					curSig = ""
-				}
-				if curToolID != "" {
+				case curToolID != "":
 					// Assemble the fragmented input_json_delta slices; fall
 					// back to the block-start seed when no deltas arrived.
 					raw := curToolArgs.String()
