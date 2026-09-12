@@ -17,7 +17,7 @@ func TestAddOrder(t *testing.T) {
 		t.Fatalf("len = %d, want %d", len(got), len(want))
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if got[i].Role != want[i].Role || got[i].Content != want[i].Content {
 			t.Errorf("messages[%d] = %+v, want %+v", i, got[i], want[i])
 		}
 	}
@@ -34,6 +34,48 @@ func TestGetMessagesCopy(t *testing.T) {
 	got = append(got, Message{Role: RoleUser, Content: "extra"})
 	if m.Len() != 1 || m.GetMessages()[0].Content != "q1" {
 		t.Errorf("history aliased: %+v", m.GetMessages())
+	}
+}
+
+func TestBlocksAppendAndCopy(t *testing.T) {
+	m := NewManager()
+	m.AddUserMessage("q")
+	m.AddAssistantBlocks(
+		TextBlock{Text: "let me check"},
+		ToolUseBlock{ID: "t1", Name: "read_file", Args: map[string]any{"path": "a.go"}},
+	)
+	m.AddToolResults(
+		ToolResultBlock{ToolUseID: "t1", Content: "contents"},
+		ToolResultBlock{ToolUseID: "t2", Content: "boom", IsError: true},
+	)
+
+	got := m.GetMessages()
+	if len(got) != 3 {
+		t.Fatalf("len = %d, want 3", len(got))
+	}
+	if len(got[1].Blocks) != 2 {
+		t.Fatalf("assistant blocks = %d, want 2", len(got[1].Blocks))
+	}
+	tu, ok := got[1].Blocks[1].(ToolUseBlock)
+	if !ok || tu.ID != "t1" || tu.Name != "read_file" {
+		t.Errorf("blocks[1] = %#v, want ToolUseBlock t1", got[1].Blocks[1])
+	}
+	res, ok := got[2].Blocks[0].(ToolResultBlock)
+	if !ok || res.ToolUseID != "t1" || res.IsError {
+		t.Errorf("results[0] = %#v, want ToolResultBlock t1 ok", got[2].Blocks[0])
+	}
+	if res2, ok := got[2].Blocks[1].(ToolResultBlock); !ok || !res2.IsError {
+		t.Errorf("results[1] = %#v, want error ToolResultBlock", got[2].Blocks[1])
+	}
+}
+
+func TestBlocksGetMessagesCopy(t *testing.T) {
+	m := NewManager()
+	m.AddAssistantBlocks(ToolUseBlock{ID: "t1", Name: "bash"})
+	got := m.GetMessages()
+	got[0].Blocks[0] = ToolUseBlock{ID: "tampered"}
+	if m.GetMessages()[0].Blocks[0].(ToolUseBlock).ID != "t1" {
+		t.Errorf("blocks aliased: %#v", m.GetMessages()[0].Blocks)
 	}
 }
 
