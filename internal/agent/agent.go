@@ -26,6 +26,11 @@ type AgentEvent interface{ agentEvent() }
 
 type TextDelta struct{ Text string }
 
+// TextComplete marks the end of one text content block. The UI commits the
+// accumulated reply as one assistant entry when it arrives, so a reply
+// segment spoken before a tool call displays above that call.
+type TextComplete struct{}
+
 type ThinkingDelta struct{ Text string }
 
 type ThinkingComplete struct {
@@ -57,6 +62,7 @@ type TurnEnd struct {
 type TurnError struct{ Err error }
 
 func (TextDelta) agentEvent()        {}
+func (TextComplete) agentEvent()     {}
 func (ThinkingDelta) agentEvent()    {}
 func (ThinkingComplete) agentEvent() {}
 func (ToolCallBegin) agentEvent()    {}
@@ -124,6 +130,10 @@ func (o *Orchestrator) RunTurn(ctx context.Context, userText string) <-chan Agen
 			case llm.TextDelta:
 				text.WriteString(e.Text)
 				if !send(TextDelta{Text: e.Text}) {
+					return
+				}
+			case llm.TextComplete:
+				if !send(TextComplete{}) {
 					return
 				}
 			case llm.ThinkingDelta:
