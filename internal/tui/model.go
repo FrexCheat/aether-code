@@ -20,17 +20,16 @@ import (
 	"charm.land/glamour/v2"
 	"charm.land/glamour/v2/styles"
 
+	"github.com/FrexCheat/aether-code/internal/agent"
 	"github.com/FrexCheat/aether-code/internal/conversation"
-	"github.com/FrexCheat/aether-code/internal/llm"
-	"github.com/FrexCheat/aether-code/internal/prompt"
 )
 
 // Options configures the TUI.
 type Options struct {
-	Provider     llm.Client
+	Agent        *agent.Orchestrator
+	Conv         *conversation.Manager // shared with the agent: both sides see one history
 	ProviderName string
 	ModelName    string
-	Thinking     bool
 	Version      string
 	WorkDir      string
 }
@@ -86,7 +85,7 @@ func newModel(opts Options) Model {
 
 	return Model{
 		opts:     opts,
-		conv:     conversation.NewManager(),
+		conv:     opts.Conv,
 		viewport: vp,
 		input:    in,
 		spinner:  spinner.New(spinner.WithSpinner(spinner.Points)),
@@ -241,21 +240,14 @@ func continueValue(value string) string {
 	return strings.TrimSuffix(strings.TrimRight(value, " \t"), `\`) + "\n"
 }
 
-// startStream opens a new turn and wires the provider stream into the loop.
-// The question is appended as a user entry and held on the liveStream for the
-// history commit; there is no side-channel copy of it.
+// startStream opens a new turn and wires the agent's event stream into the
+// loop. The question is appended as a user entry and held on the liveStream;
+// the agent owns the history commit for the whole turn.
 func (m *Model) startStream(text string) tea.Cmd {
-	msgs := append(m.conv.GetMessages(), conversation.Message{Role: conversation.RoleUser, Content: text})
-	req := llm.Request{
-		System:   prompt.System,
-		Messages: msgs,
-		Thinking: m.opts.Thinking,
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	m.entries = append(m.entries, newUserEntry(text))
 	m.live = &liveStream{
-		events:   m.opts.Provider.Stream(ctx, req),
+		events:   m.opts.Agent.RunTurn(ctx, text),
 		cancel:   cancel,
 		question: text,
 		start:    timeNow(),
@@ -282,28 +274,45 @@ func (m *Model) handleStreamBatch(batch streamBatchMsg) (Model, tea.Cmd) {
 	return *m, nil
 }
 
-// foldEvent folds one stream event. Text deltas accumulate on the live
-// stream; terminal events commit the reply whole. Thinking and tool events
-// are received but stored nowhere this phase — only the assistant text output
-// is surfaced (spec "不做的事").
-func (m *Model) foldEvent(ev llm.StreamEvent) {
+// foldEvent folds one agent event. Text deltas accumulate on the live stream;
+// tool events open and settle tool entries; terminal events close the turn.
+func (m *Model) foldEvent(ev agent.AgentEvent) {
 	switch e := ev.(type) {
-	case llm.TextDelta:
+	case agent.TextDelta:
 		if m.live != nil {
 			m.live.text.WriteString(e.Text)
 		}
-	case llm.StreamEnd, llm.StreamError:
+	case agent.ToolCallBegin:
+		m.entries = append(m.entries, newToolEntry(e.ToolName, toolTitle(e.ToolName, e.Args)))
+	case agent.ToolCallEnd:
+		// Settle the last running entry for this tool name. Calls run in
+		// order, so the newest running entry with this name is the match.
+		for i := len(m.entries) - 1; i >= 0; i-- {
+			en := &m.entries[i]
+			if en.kind == entryTool && en.toolName == e.ToolName && en.state == toolRunning {
+				en.settleTool(e.Result.IsError, e.Elapsed, editDiff(e))
+				break
+			}
+		}
+	case agent.TurnEnd, agent.TurnError:
 		m.closeLive(ev)
 	default:
-		// ThinkingDelta, ThinkingComplete, ToolCallStart/D/Complete: ignored.
+		// ThinkingDelta, ThinkingComplete: not surfaced this phase.
 	}
 }
 
-// closeLive settles the in-flight turn: StreamEnd commits question + text to
-// history and appends the assistant entry; StreamError only appends an error
-// notice and leaves history untouched. This is the only place that writes to
-// the conversation history.
-func (m *Model) closeLive(ev llm.StreamEvent) {
+// editDiff returns the diff text for edit_file results, empty for other tools.
+func editDiff(e agent.ToolCallEnd) string {
+	if e.ToolName != "edit_file" {
+		return ""
+	}
+	return e.Result.Output
+}
+
+// closeLive settles the in-flight turn: TurnEnd appends the assistant entry;
+// TurnError appends an error notice. History commits already happened inside
+// the agent — this only touches the display entries.
+func (m *Model) closeLive(ev agent.AgentEvent) {
 	ls := m.live
 	if ls == nil {
 		return
@@ -313,12 +322,10 @@ func (m *Model) closeLive(ev llm.StreamEvent) {
 		m.live = nil
 	}()
 	switch ev := ev.(type) {
-	case llm.StreamEnd:
+	case agent.TurnEnd:
 		text := ls.text.String()
 		m.entries = append(m.entries, newAssistantEntry(text, timeSince(ls.start), timeNow()))
-		m.conv.AddUserMessage(ls.question)
-		m.conv.AddAssistantMessage(text)
-	case llm.StreamError:
+	case agent.TurnError:
 		m.entries = append(m.entries, newNoticeEntry("Error: "+ev.Err.Error(), true))
 	}
 }

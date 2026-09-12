@@ -1,13 +1,18 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/FrexCheat/aether-code/internal/agent"
+	"github.com/FrexCheat/aether-code/internal/conversation"
+	"github.com/FrexCheat/aether-code/internal/llm"
+	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
 // freeze the clock so lifecycle timing (elapsed, doneAt) is deterministic.
@@ -55,11 +60,13 @@ func TestWholeTurnCommitOnStreamEnd(t *testing.T) {
 	}
 }
 
-func TestErrorDoesNotCommitHistory(t *testing.T) {
+func TestErrorDoesNotCommitAssistantReply(t *testing.T) {
 	fake := &fakeProvider{events: []llm.StreamEvent{llm.StreamError{Err: errors.New("boom")}}}
 	m := send(t, newTestModel(fake), "q")
-	if m.conv.Len() != 0 {
-		t.Fatalf("conv.Len = %d, want 0", m.conv.Len())
+	// The user question is committed by the agent before streaming; the
+	// failed turn's assistant reply is not.
+	if m.conv.Len() != 1 {
+		t.Fatalf("conv.Len = %d, want 1 (user question only)", m.conv.Len())
 	}
 	last := lastEntry(t, m)
 	if last.kind != entryNotice || !last.isError {
@@ -70,22 +77,95 @@ func TestErrorDoesNotCommitHistory(t *testing.T) {
 	}
 }
 
-func TestThinkingAndToolEventsIgnored(t *testing.T) {
+func TestThinkingIgnored(t *testing.T) {
 	fake := &fakeProvider{events: []llm.StreamEvent{
 		llm.TextDelta{Text: "visible"},
 		llm.ThinkingDelta{Text: "hidden-thinking"},
-		llm.ToolCallStart{ToolID: "1", ToolName: "bash"},
-		llm.ToolCallComplete{ToolID: "1", ToolName: "bash", Arguments: map[string]any{"x": 1}},
 		llm.TextDelta{Text: "!"},
 		llm.StreamEnd{},
 	}}
 	m := send(t, newTestModel(fake), "q")
 	last := lastEntry(t, m)
 	if last.text != "visible!" {
-		t.Fatalf("assistant text = %q, thinking/tool must be ignored", last.text)
+		t.Fatalf("assistant text = %q, thinking must be ignored", last.text)
 	}
 	if strings.Contains(ansi.Strip(renderTop(&m)), "hidden-thinking") {
 		t.Error("thinking must not render")
+	}
+}
+
+// fakeEditTool is a registered edit_file stand-in whose result carries a diff.
+type fakeEditTool struct{}
+
+func (fakeEditTool) Name() string             { return "edit_file" }
+func (fakeEditTool) Description() string      { return "fake" }
+func (fakeEditTool) Category() tools.Category { return tools.CategoryWrite }
+func (fakeEditTool) Schema() map[string]any   { return map[string]any{"name": "edit_file"} }
+func (fakeEditTool) Execute(context.Context, map[string]any) tools.ToolResult {
+	return tools.ToolResult{Output: "-      2  beta\n+      2  BETA"}
+}
+
+func TestToolEntryLifecycleAndDiff(t *testing.T) {
+	conv := conversation.NewManager()
+	reg := tools.NewRegistry()
+	reg.Register(fakeEditTool{})
+	ag := agent.New(&fakeProvider{events: []llm.StreamEvent{
+		llm.ToolCallComplete{ToolID: "tu_1", ToolName: "edit_file",
+			Arguments: map[string]any{"file_path": "main.go"}},
+		llm.StreamEnd{StopReason: "tool_use"},
+	}}, reg, conv, "sys", false, "anthropic")
+	m := newModel(Options{Agent: ag, Conv: conv, Version: "test", WorkDir: "/tmp"})
+	m = send(t, m, "edit it")
+
+	// Entries: user, tool (settled), assistant (empty text).
+	if len(m.entries) != 3 {
+		t.Fatalf("entries = %d, want 3", len(m.entries))
+	}
+	tool := m.entries[1]
+	if tool.kind != entryTool || tool.toolName != "edit_file" || tool.state != toolDone {
+		t.Fatalf("tool entry = %+v", tool)
+	}
+	if tool.text != "Edit main.go" {
+		t.Errorf("tool title = %q, want %q", tool.text, "Edit main.go")
+	}
+
+	chat := ansi.Strip(renderTop(&m))
+	if !strings.Contains(chat, "⎿ ✓ Edit main.go") || !strings.Contains(chat, "(0.0s)") {
+		t.Errorf("tool status line missing:\n%s", chat)
+	}
+	if !strings.Contains(chat, "beta") || !strings.Contains(chat, "BETA") {
+		t.Errorf("diff content missing:\n%s", chat)
+	}
+	// Colored: the raw render must carry the green/red styles.
+	raw := renderTop(&m)
+	if !strings.Contains(raw, styleDiffAdd.Render("+      2  BETA")) {
+		t.Errorf("diff add line not colored:\n%s", raw)
+	}
+	// History: user → assistant(blocks: tool_use) → user(tool_result).
+	if conv.Len() != 3 {
+		t.Fatalf("conv.Len = %d, want 3", conv.Len())
+	}
+	if _, ok := conv.GetMessages()[1].Blocks[0].(conversation.ToolUseBlock); !ok {
+		t.Errorf("assistant block = %#v", conv.GetMessages()[1].Blocks[0])
+	}
+}
+
+func TestUnknownToolRendersFailed(t *testing.T) {
+	conv := conversation.NewManager()
+	ag := agent.New(&fakeProvider{events: []llm.StreamEvent{
+		llm.ToolCallComplete{ToolID: "tu_x", ToolName: "no_such_tool", Arguments: map[string]any{}},
+		llm.StreamEnd{StopReason: "tool_use"},
+	}}, tools.NewRegistry(), conv, "sys", false, "anthropic")
+	m := newModel(Options{Agent: ag, Conv: conv, Version: "test", WorkDir: "/tmp"})
+	m = send(t, m, "do it")
+
+	tool := m.entries[1]
+	if tool.kind != entryTool || tool.state != toolFailed {
+		t.Fatalf("tool entry = %+v, want failed tool entry", tool)
+	}
+	chat := ansi.Strip(renderTop(&m))
+	if !strings.Contains(chat, "⎿ ✗") {
+		t.Errorf("failed tool marker missing:\n%s", chat)
 	}
 }
 

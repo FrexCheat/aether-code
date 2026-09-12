@@ -11,9 +11,11 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/FrexCheat/aether-code/internal/agent"
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/FrexCheat/aether-code/internal/prompt"
+	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
 // fakeProvider replays a fixed event list and records the last request.
@@ -39,7 +41,12 @@ func (f *fakeProvider) Stream(ctx context.Context, req llm.Request) <-chan llm.S
 }
 
 func newTestModel(p llm.Client) Model {
-	m := newModel(Options{Provider: p, ProviderName: "fake", ModelName: "fake-1", Version: "test", WorkDir: "/tmp"})
+	conv := conversation.NewManager()
+	ag := agent.New(p, tools.NewRegistry(), conv, prompt.System, false, "anthropic")
+	m := newModel(Options{
+		Agent: ag, Conv: conv, ProviderName: "fake", ModelName: "fake-1",
+		Version: "test", WorkDir: "/tmp",
+	})
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	return mm.(Model)
 }
@@ -132,7 +139,7 @@ func TestStreamingTextHiddenUntilCommit(t *testing.T) {
 		t.Fatal("expected live stream after enter")
 	}
 	// Fold a text-only batch (no terminal event): text accumulates but is hidden.
-	mm, _ = m.Update(streamBatchMsg([]llm.StreamEvent{llm.TextDelta{Text: "secret"}}))
+	mm, _ = m.Update(streamBatchMsg([]agent.AgentEvent{agent.TextDelta{Text: "secret"}}))
 	m = mm.(Model)
 	chat := ansi.Strip(renderTop(&m))
 	if strings.Contains(chat, "secret") {
@@ -217,6 +224,11 @@ func TestEnterIgnoredWhileStreaming(t *testing.T) {
 	m = mm.(Model)
 	if m.live == nil {
 		t.Fatal("expected live stream after first enter")
+	}
+	// The agent calls Stream from its own goroutine; wait for it to land.
+	deadline := time.Now().Add(2 * time.Second)
+	for fake.calls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
 	}
 	m.input.SetValue("second")
 	mm, _ = m.Update(enter())

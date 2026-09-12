@@ -66,7 +66,53 @@ func renderEntry(b *strings.Builder, m *Model, e *entry) {
 			b.WriteString(e.text)
 		}
 		b.WriteString("\n\n")
+	case entryTool:
+		renderToolEntry(b, m, e)
 	}
+}
+
+// renderToolEntry draws one tool call: the "● title" header with an inline
+// spinner while running, then "⎿ ✓/✗ title (elapsed)" with the edit diff
+// colored line by line once settled — mewcode's presentation.
+func renderToolEntry(b *strings.Builder, m *Model, e *entry) {
+	switch e.state {
+	case toolRunning:
+		b.WriteString(styleAssistantPrefix.Render("● "))
+		b.WriteString(e.text)
+		b.WriteString(" " + m.spinner.View())
+		b.WriteString("\n\n")
+	case toolDone, toolFailed:
+		b.WriteString(styleDim.Render("  ⎿ "))
+		if e.state == toolDone {
+			b.WriteString(styleToolDone.Render("✓ " + e.text))
+		} else {
+			b.WriteString(styleToolFailed.Render("✗ " + e.text))
+		}
+		b.WriteString(styleDim.Render(fmt.Sprintf(" (%.1fs)", e.elapsed.Seconds())))
+		b.WriteString("\n")
+		if e.diff != "" {
+			b.WriteString(renderDiffLines(e.diff))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+}
+
+// renderDiffLines colors BuildDiff output line by line: "- " removals red,
+// "+ " additions green, everything else (context / header lines) dim.
+func renderDiffLines(diff string) string {
+	lines := strings.Split(diff, "\n")
+	for i, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "+"):
+			lines[i] = styleDiffAdd.Render(line)
+		case strings.HasPrefix(line, "-"):
+			lines[i] = styleDiffRemove.Render(line)
+		default:
+			lines[i] = styleDim.Render(line)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // renderLive shows the assistant marker plus the animated spinner and elapsed
