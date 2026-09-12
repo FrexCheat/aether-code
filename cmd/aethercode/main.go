@@ -8,8 +8,12 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/FrexCheat/aether-code/internal/agent"
 	"github.com/FrexCheat/aether-code/internal/config"
+	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
+	"github.com/FrexCheat/aether-code/internal/prompt"
+	"github.com/FrexCheat/aether-code/internal/tools"
 	"github.com/FrexCheat/aether-code/internal/tui"
 	"github.com/FrexCheat/aether-code/internal/version"
 )
@@ -24,15 +28,29 @@ func main() {
 		fail(err)
 	}
 	active := cfg.Active()
-	provider, err := llm.NewClient(active, nil)
+	client, err := llm.NewClient(active, nil)
 	if err != nil {
 		fail(err)
 	}
+
+	// One shared read-state cache: read_file records, write/edit gate on it.
+	fsc := tools.NewFileStateCache()
+	registry := tools.NewRegistry()
+	registry.Register(&tools.ReadFileTool{WorkDir: cwd, FileStateCache: fsc})
+	registry.Register(&tools.WriteFileTool{WorkDir: cwd, FileStateCache: fsc})
+	registry.Register(&tools.EditFileTool{WorkDir: cwd, FileStateCache: fsc})
+	registry.Register(&tools.BashTool{WorkDir: cwd})
+	registry.Register(&tools.GlobTool{WorkDir: cwd})
+	registry.Register(&tools.GrepTool{WorkDir: cwd})
+
+	conv := conversation.NewManager()
+	orchestrator := agent.New(client, registry, conv, prompt.System, active.Thinking, string(active.Protocol))
+
 	if err := tui.Run(tui.Options{
-		Provider:     provider,
+		Agent:        orchestrator,
+		Conv:         conv,
 		ProviderName: active.Name,
 		ModelName:    active.Model,
-		Thinking:     active.Thinking,
 		Version:      version.Version,
 		WorkDir:      cwd,
 	}); err != nil {
