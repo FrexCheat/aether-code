@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"strings"
-
 	"charm.land/lipgloss/v2"
 )
 
@@ -12,7 +10,6 @@ import (
 const asciiLogo = `
       ┌╌╌╌╌▗
       └╌╌╌╌╌▘
-
         /▞  ▚\
        /▞    ▚\
       /▞
@@ -20,7 +17,7 @@ const asciiLogo = `
     /▟█
 ▅▅▅▅▅▅▅▅     ▅▅▅▅▅▅▅▅
 `
-const readyText = "Ready. Type a message and press Enter. /quit to exit."
+const readyText = "Ready. Press Enter to send · /clear /quit · Shift+drag to copy"
 
 // renderBanner draws the startup banner: logo on the left, application name,
 // version and working directory on the right. If the terminal is too narrow
@@ -40,9 +37,4 @@ func renderBanner(version, workDir string, width int) string {
 
 func renderReady() string {
 	return styleReady.Render(readyText)
-}
-
-// bannerHeight is the number of lines the banner plus the ready line occupy.
-func bannerHeight(version, workDir string, width int) int {
-	return lipgloss.Height(renderBanner(version, workDir, width)) + strings.Count(readyText, "\n") + 1
 }

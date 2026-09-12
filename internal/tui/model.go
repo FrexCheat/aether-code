@@ -1,5 +1,11 @@
 // Package tui implements the interactive terminal interface: banner, chat
-// area, input box, status bar, streaming consumption and slash commands.
+// viewport, input box, status bar, whole-turn streaming commit, spinner and
+// slash commands.
+//
+// Data flow is deliberately flat: a committed []entry history plus a single
+// in-flight liveStream. Reply text is not streamed onto the screen — it is
+// committed whole when the turn reaches a terminal event, so the only thing
+// that changes during a turn is the animated spinner/timer line.
 package tui
 
 import (
@@ -7,7 +13,8 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
@@ -29,17 +36,18 @@ type Options struct {
 }
 
 // Model is the Bubble Tea model for the chat UI. It is a thin controller: the
-// transcript state lives in turn.go, stream plumbing in streaming.go, and
+// committed history lives in entry.go, stream plumbing in streaming.go, and
 // rendering in render.go — every visible state change enters through Update.
 type Model struct {
 	opts Options
 	conv *conversation.Manager
 
-	transcript Transcript
-	live       *liveStream // nil when idle
+	entries []entry
+	live    *liveStream // nil when idle
 
 	viewport viewport.Model
-	input    textinput.Model
+	input    textarea.Model
+	spinner  spinner.Model
 	width    int
 	height   int
 	renderer *glamour.TermRenderer
@@ -52,10 +60,22 @@ func Run(opts Options) error {
 }
 
 func newModel(opts Options) Model {
-	in := textinput.New()
-	in.Prompt = "❯ "
+	in := textarea.New()
+	in.Prompt = ""
 	in.Placeholder = "Send a message..."
-	in.Focus()
+	in.ShowLineNumbers = false
+	in.CharLimit = 0
+	// The input grows with its content up to MaxHeight lines and settles back
+	// to a single line when cleared, instead of a fixed-size box. Width is
+	// set on each relayout; MaxWidth stays 0 so a wide terminal never clips
+	// the box at the component's default 500 columns.
+	in.MinHeight = 1
+	in.MaxHeight = 8
+	in.MaxWidth = 0
+	in.DynamicHeight = true
+	// The default dark styles paint the focused line black; see inputStyles.
+	in.SetStyles(inputStyles())
+	in.Focus() // set focus on the instance that is stored in Model (Init would only touch a copy)
 
 	vp := viewport.New()
 	vp.KeyMap = viewport.KeyMap{
@@ -69,6 +89,7 @@ func newModel(opts Options) Model {
 		conv:     conversation.NewManager(),
 		viewport: vp,
 		input:    in,
+		spinner:  spinner.New(spinner.WithSpinner(spinner.Points)),
 	}
 }
 
@@ -78,22 +99,45 @@ func (m Model) Init() tea.Cmd {
 }
 
 // refresh pushes the new frame into the viewport, following the bottom only
-// when the user is already there. It must run inside Update (where Model is
+// when the user is already there. It runs inside Update (where Model is
 // addressable), never in View: bubbletea renders from a snapshot and any
-// viewport motion done in View would be lost before the next frame. It is the
-// only place that writes rendered content into the viewport, and it always
-// runs right after a state change.
+// viewport motion done in View would be lost before the next frame.
 func (m *Model) refresh() {
 	atBottom := m.viewport.AtBottom()
-	m.viewport.SetContent(renderTranscript(m))
+	// The input grows/shrinks as its content does, so the chat area has to be
+	// re-derived from it before the frame is laid out.
+	m.syncViewportHeight()
+	m.viewport.SetContent(renderTop(m))
 	if atBottom {
 		m.viewport.GotoBottom()
 	}
 }
 
+// syncViewportHeight resizes the chat viewport to whatever is left above the
+// input box and status bar, so the stacked regions always add up to the window
+// height and the input never pushes the status bar off screen.
+func (m *Model) syncViewportHeight() {
+	if m.width <= 0 || m.height <= 0 {
+		return
+	}
+	chatH := m.height - inputViewHeight(m) - statusBarHeight
+	if chatH < 1 {
+		chatH = 1
+	}
+	m.viewport.SetHeight(chatH)
+}
+
+// inputViewHeight is the rendered height of the input box: the textarea's
+// content plus the rounded border's top and bottom. styleInputBox has no
+// vertical padding, so it is simply content + 2.
+func inputViewHeight(m *Model) int {
+	return m.input.Height() + 2
+}
+
 // Update implements tea.Model. It is the single entry point for every visible
 // state change: size, keys, stream batches and ticks are all dispatched here,
-// and every arm ends with a refresh so the viewport never goes stale.
+// and arms that change content end with a refresh so the viewport never goes
+// stale.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -107,14 +151,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m.quit()
 		case "enter":
-			return m.refreshAfter(m.handleEnter())
+			return m.handleEnter()
 		}
 
 	case streamBatchMsg:
-		return m.refreshAfter(m.handleStreamBatch(msg))
+		return m.handleStreamBatch(msg)
 
 	case tickMsg:
 		if m.live != nil {
+			m.spinner, _ = m.spinner.Update(m.spinner.Tick())
 			m.refresh()
 			return m, tick()
 		}
@@ -127,16 +172,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds = append(cmds, cmd)
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
+	// Typing/pasting changes the input's height; refresh re-sizes the viewport
+	// to the leftover space and keeps it pinned to the bottom when it was.
+	m.refresh()
 	return m, tea.Batch(cmds...)
-}
-
-// refreshAfter runs refresh after a handler that returns a new Model value.
-func (m Model) refreshAfter(mm tea.Model, cmd tea.Cmd) (tea.Model, tea.Cmd) {
-	if nm, ok := mm.(Model); ok {
-		nm.refresh()
-		return nm, cmd
-	}
-	return mm, cmd
 }
 
 func (m Model) quit() (Model, tea.Cmd) {
@@ -150,6 +189,14 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 	if m.live != nil {
 		return m, nil // input is ignored while a turn is in flight
 	}
+	// Shell-style line continuation: "<text>\" + Enter starts a new line
+	// instead of submitting. The backslash is dropped and a newline takes its
+	// place, so multi-line prompts can be typed like in a terminal.
+	if lineContinues(m.input) {
+		m.input.SetValue(continueValue(m.input.Value()))
+		m.refresh()
+		return m, nil
+	}
 	text := strings.TrimSpace(m.input.Value())
 	if text == "" {
 		return m, nil
@@ -160,12 +207,12 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 		return m.quit()
 	case cmdClear:
 		m.conv.Clear()
-		m.transcript.Reset()
+		m.entries = nil
 		m.input.Reset()
 		m.refresh()
 		return m, nil
 	case cmdUnknown:
-		m.transcript.Append(&Notice{Text: hint, Severity: SeverityError})
+		m.entries = append(m.entries, newNoticeEntry(hint, true))
 		m.input.Reset()
 		m.refresh()
 		return m, nil
@@ -175,13 +222,30 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 	return m, c
 }
 
-// startStream opens a new turn and wires the provider stream into the loop.
-// The question lives on the Turn; there is no side-channel copy of it.
-func (m *Model) startStream(text string) tea.Cmd {
-	idx := openTurn(&m.transcript, text)
-	turn, _ := m.transcript.At(idx).(*Turn)
+// lineContinues reports whether an Enter press should start a new line instead
+// of submitting: the input ends with a lone backslash (trailing spaces/tabs
+// allowed) and the cursor sits at the very end of the last line.
+func lineContinues(in textarea.Model) bool {
+	value := in.Value()
+	if !strings.HasSuffix(strings.TrimRight(value, " \t"), `\`) {
+		return false
+	}
+	lines := strings.Split(value, "\n")
+	return in.Line() == len(lines)-1 && in.Column() == len([]rune(lines[len(lines)-1]))
+}
 
-	msgs := append(m.conv.GetMessages(), conversation.Message{Role: conversation.RoleUser, Content: turn.Question})
+// continueValue turns a continuation buffer ("…foo \" or "…foo \  ") into the
+// next line of the prompt: trailing whitespace and the backslash are removed
+// and a newline is inserted in their place.
+func continueValue(value string) string {
+	return strings.TrimSuffix(strings.TrimRight(value, " \t"), `\`) + "\n"
+}
+
+// startStream opens a new turn and wires the provider stream into the loop.
+// The question is appended as a user entry and held on the liveStream for the
+// history commit; there is no side-channel copy of it.
+func (m *Model) startStream(text string) tea.Cmd {
+	msgs := append(m.conv.GetMessages(), conversation.Message{Role: conversation.RoleUser, Content: text})
 	req := llm.Request{
 		System:   prompt.System,
 		Messages: msgs,
@@ -189,50 +253,94 @@ func (m *Model) startStream(text string) tea.Cmd {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	m.live = &liveStream{events: m.opts.Provider.Stream(ctx, req), cancel: cancel}
+	m.entries = append(m.entries, newUserEntry(text))
+	m.live = &liveStream{
+		events:   m.opts.Provider.Stream(ctx, req),
+		cancel:   cancel,
+		question: text,
+		start:    timeNow(),
+	}
 	m.input.Reset()
 	return tea.Batch(waitStream(m.live.events), tick())
 }
 
-// handleStreamBatch folds a coalesced batch of events into the live turn.
-// It returns a Model value so Update's dynamic type stays stable: every arm
-// of Update yields exactly Model, never *Model.
+// handleStreamBatch folds a coalesced batch of events into the live turn and
+// commits the reply whole on a terminal event. It returns a Model value so
+// Update's dynamic type stays stable: every arm of Update yields exactly Model,
+// never *Model.
 func (m *Model) handleStreamBatch(batch streamBatchMsg) (Model, tea.Cmd) {
-	idx := m.transcript.Len() - 1 // the live turn is always the last item
 	for _, ev := range batch {
-		applyEvent(&m.transcript, idx, ev, m.conv)
-	}
-	if turn, ok := m.transcript.At(idx).(*Turn); ok && turn.Status != TurnStreaming {
-		if m.live != nil {
-			m.live.cancel() // terminal event: release the stream context
-			m.live = nil
+		m.foldEvent(ev)
+		if m.live == nil { // a terminal event consumed; drop remaining events
+			break
 		}
-		return *m, nil
 	}
 	if m.live != nil {
 		return *m, waitStream(m.live.events)
 	}
+	m.refresh()
 	return *m, nil
 }
 
-// relayout distributes the terminal height between the fixed regions and the
-// chat viewport, and rebuilds the markdown renderer for the new width.
+// foldEvent folds one stream event. Text deltas accumulate on the live
+// stream; terminal events commit the reply whole. Thinking and tool events
+// are received but stored nowhere this phase — only the assistant text output
+// is surfaced (spec "不做的事").
+func (m *Model) foldEvent(ev llm.StreamEvent) {
+	switch e := ev.(type) {
+	case llm.TextDelta:
+		if m.live != nil {
+			m.live.text.WriteString(e.Text)
+		}
+	case llm.StreamEnd, llm.StreamError:
+		m.closeLive(ev)
+	default:
+		// ThinkingDelta, ThinkingComplete, ToolCallStart/D/Complete: ignored.
+	}
+}
+
+// closeLive settles the in-flight turn: StreamEnd commits question + text to
+// history and appends the assistant entry; StreamError only appends an error
+// notice and leaves history untouched. This is the only place that writes to
+// the conversation history.
+func (m *Model) closeLive(ev llm.StreamEvent) {
+	ls := m.live
+	if ls == nil {
+		return
+	}
+	defer func() {
+		ls.cancel()
+		m.live = nil
+	}()
+	switch ev := ev.(type) {
+	case llm.StreamEnd:
+		text := ls.text.String()
+		m.entries = append(m.entries, newAssistantEntry(text, timeSince(ls.start), timeNow()))
+		m.conv.AddUserMessage(ls.question)
+		m.conv.AddAssistantMessage(text)
+	case llm.StreamError:
+		m.entries = append(m.entries, newNoticeEntry("Error: "+ev.Err.Error(), true))
+	}
+}
+
+// relayout distributes the terminal height between the bottom region and the
+// chat viewport, sizes the multiline input, and rebuilds the markdown renderer
+// for the new width.
 func (m *Model) relayout() {
 	if m.width <= 0 || m.height <= 0 {
 		return
 	}
-	chatH := m.height - bannerHeight(m.opts.Version, m.opts.WorkDir, m.width) - inputBoxHeight - statusBarHeight
-	if chatH < 1 {
-		chatH = 1
-	}
 	m.viewport.SetWidth(m.width)
-	m.viewport.SetHeight(chatH)
-	m.input.SetWidth(max(m.width-6, 10)) // border 2 + padding 2 + prompt slack
+	// SetWidth re-wraps the input; with DynamicHeight that also recomputes how
+	// tall it wants to be. The input's height is never set directly — it grows
+	// and shrinks with the content.
+	m.input.SetWidth(max(m.width-6, 10))
+	m.syncViewportHeight()
 
 	wrap := max(m.width-2, 20)
 	// Start from the dark style but remove the document margin and the
-	// surrounding blank lines so rendered replies sit flush with their
-	// role label and keep turn spacing consistent.
+	// surrounding blank lines so rendered replies sit flush with their role
+	// label and keep turn spacing consistent.
 	sc := styles.DarkStyleConfig
 	var zeroMargin uint
 	sc.Document.Margin = &zeroMargin
@@ -241,16 +349,4 @@ func (m *Model) relayout() {
 	if r, err := glamour.NewTermRenderer(glamour.WithStyles(sc), glamour.WithWordWrap(wrap)); err == nil {
 		m.renderer = r
 	}
-}
-
-// render converts finished markdown to styled terminal text.
-func (m Model) render(md string) string {
-	if m.renderer == nil {
-		return md
-	}
-	out, err := m.renderer.Render(md)
-	if err != nil {
-		return md
-	}
-	return strings.Trim(out, "\n")
 }

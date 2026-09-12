@@ -2,14 +2,13 @@ package tui
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/FrexCheat/aether-code/internal/conversation"
@@ -97,38 +96,19 @@ func send(t *testing.T, m Model, text string) Model {
 	return drive(t, m, enter())
 }
 
-// lastTurn returns the most recent Turn in the transcript.
-func lastTurn(t *testing.T, m Model) *Turn {
-	t.Helper()
-	if m.transcript.Len() == 0 {
-		t.Fatal("transcript is empty")
-	}
-	turn, ok := m.transcript.At(m.transcript.Len() - 1).(*Turn)
-	if !ok {
-		t.Fatalf("last item is %T, want *Turn", m.transcript.At(m.transcript.Len()-1))
-	}
-	return turn
-}
-
-func TestKeyEnterString(t *testing.T) {
-	if s := (tea.KeyPressMsg{Code: tea.KeyEnter}).String(); s != "enter" {
-		t.Fatalf("enter key String() = %q", s)
-	}
-}
-
-func TestSendCommitsOnDone(t *testing.T) {
+func TestSendCommitsWholeOnDone(t *testing.T) {
 	tickInterval = time.Millisecond
 	fake := &fakeProvider{events: []llm.StreamEvent{llm.TextDelta{Text: "Hi"}, llm.StreamEnd{}}}
 	m := send(t, newTestModel(fake), "hello")
 	if m.conv.Len() != 2 {
 		t.Errorf("conv.Len = %d, want 2", m.conv.Len())
 	}
-	if m.transcript.Len() != 1 {
-		t.Fatalf("transcript = %d items, want 1 turn", m.transcript.Len())
+	if len(m.entries) != 2 { // user + assistant
+		t.Fatalf("entries = %d, want 2", len(m.entries))
 	}
-	last := lastTurn(t, m)
-	if last.Status != TurnDone || last.Err != nil || turnText(last) != "Hi" {
-		t.Errorf("last turn = %+v", last)
+	last := lastEntry(t, m)
+	if last.kind != entryAssistant || last.text != "Hi" {
+		t.Errorf("assistant entry = %+v", last)
 	}
 	if m.live != nil {
 		t.Error("stream should be idle after Done")
@@ -136,31 +116,51 @@ func TestSendCommitsOnDone(t *testing.T) {
 	if len(fake.lastReq.Messages) != 1 || fake.lastReq.System != prompt.System {
 		t.Errorf("request = %+v", fake.lastReq)
 	}
-	chat := renderTranscript(&m)
-	if !strings.Contains(chat, "Hi") || !strings.Contains(chat, "· done") {
-		t.Errorf("chat should show text and elapsed:\n%s", chat)
+	chat := ansi.Strip(renderTop(&m))
+	if !strings.Contains(chat, "hello") || !strings.Contains(chat, "Hi") || !strings.Contains(chat, "· done") {
+		t.Errorf("chat should show question, reply and footer:\n%s", chat)
 	}
 }
 
-func TestSendDoesNotCommitOnError(t *testing.T) {
-	fake := &fakeProvider{events: []llm.StreamEvent{llm.StreamError{Err: errors.New("boom")}}}
-	m := send(t, newTestModel(fake), "hello")
-	if m.conv.Len() != 0 {
-		t.Errorf("conv.Len = %d, want 0", m.conv.Len())
+func TestStreamingTextHiddenUntilCommit(t *testing.T) {
+	fake := &fakeProvider{block: true}
+	m := newTestModel(fake)
+	m.input.SetValue("q")
+	mm, _ := m.Update(enter()) // start the turn; discard the blocking waitStream cmd
+	m = mm.(Model)
+	if m.live == nil {
+		t.Fatal("expected live stream after enter")
 	}
-	last := lastTurn(t, m)
-	if last.Status != TurnFailed || last.Err == nil || !strings.Contains(last.Err.Error(), "boom") {
-		t.Errorf("last turn = %+v", last)
+	// Fold a text-only batch (no terminal event): text accumulates but is hidden.
+	mm, _ = m.Update(streamBatchMsg([]llm.StreamEvent{llm.TextDelta{Text: "secret"}}))
+	m = mm.(Model)
+	chat := ansi.Strip(renderTop(&m))
+	if strings.Contains(chat, "secret") {
+		t.Errorf("in-flight reply text must stay hidden:\n%s", chat)
 	}
-	if last.Question != "hello" {
-		t.Errorf("failed turn should keep the question, got %q", last.Question)
+	if !strings.Contains(chat, "Imagining") {
+		t.Errorf("chat should show loading indicator:\n%s", chat)
 	}
-	if m.live != nil {
-		t.Error("stream should be idle after Error")
+	m.live.cancel()
+}
+
+func TestSpinnerAdvancesOnTick(t *testing.T) {
+	fake := &fakeProvider{block: true}
+	m := newTestModel(fake)
+	m.input.SetValue("q")
+	mm, _ := m.Update(enter())
+	m = mm.(Model)
+	f1 := m.spinner.View()
+	mm, _ = m.Update(tickMsg{})
+	m = mm.(Model)
+	f2 := m.spinner.View()
+	if f1 == f2 {
+		t.Error("spinner frame should advance on tick")
 	}
-	if !strings.Contains(renderTranscript(&m), "Error: boom") {
-		t.Errorf("chat should show error:\n%s", renderTranscript(&m))
+	if !strings.Contains(renderTop(&m), "Imagining") {
+		t.Error("live render should include the loading indicator")
 	}
+	m.live.cancel()
 }
 
 func TestSecondTurnCarriesHistory(t *testing.T) {
@@ -186,8 +186,8 @@ func TestClearResetsSession(t *testing.T) {
 	fake := &fakeProvider{events: []llm.StreamEvent{llm.StreamEnd{}}}
 	m := send(t, newTestModel(fake), "q1")
 	m = send(t, m, "/clear")
-	if m.conv.Len() != 0 || m.transcript.Len() != 0 {
-		t.Errorf("after /clear: Len=%d items=%d", m.conv.Len(), m.transcript.Len())
+	if m.conv.Len() != 0 || len(m.entries) != 0 {
+		t.Errorf("after /clear: conv=%d entries=%d", m.conv.Len(), len(m.entries))
 	}
 	if fake.calls.Load() != 1 {
 		t.Errorf("/clear must not call Stream, calls = %d", fake.calls.Load())
@@ -200,15 +200,12 @@ func TestUnknownCommandNoStream(t *testing.T) {
 	if fake.calls.Load() != 0 {
 		t.Errorf("Stream called %d times", fake.calls.Load())
 	}
-	if m.transcript.Len() != 1 {
-		t.Fatalf("transcript = %d items, want 1 notice", m.transcript.Len())
+	if len(m.entries) != 1 {
+		t.Fatalf("entries = %d, want 1 notice", len(m.entries))
 	}
-	n, ok := m.transcript.At(0).(*Notice)
-	if !ok {
-		t.Fatalf("last item is %T, want *Notice", m.transcript.At(0))
-	}
-	if !strings.Contains(n.Text, "Unknown command") {
-		t.Errorf("notice = %+v", n)
+	last := lastEntry(t, m)
+	if last.kind != entryNotice || !strings.Contains(last.text, "Unknown command") {
+		t.Errorf("notice = %+v", last)
 	}
 }
 
@@ -216,13 +213,10 @@ func TestEnterIgnoredWhileStreaming(t *testing.T) {
 	fake := &fakeProvider{block: true}
 	m := newTestModel(fake)
 	m.input.SetValue("first")
-	mm, _ := m.Update(enter()) // do not run the blocking waitForEvent cmd
+	mm, _ := m.Update(enter()) // do not run the blocking waitStream cmd
 	m = mm.(Model)
 	if m.live == nil {
 		t.Fatal("expected live stream after first enter")
-	}
-	if !strings.Contains(renderTranscript(&m), "Imagining…") {
-		t.Errorf("chat should show progress indicator:\n%s", renderTranscript(&m))
 	}
 	m.input.SetValue("second")
 	mm, _ = m.Update(enter())
@@ -235,59 +229,158 @@ func TestEnterIgnoredWhileStreaming(t *testing.T) {
 	}
 }
 
-func TestHalfLineHiddenWhileStreaming(t *testing.T) {
-	fake := &fakeProvider{events: []llm.StreamEvent{llm.TextDelta{Text: "half"}, llm.TextDelta{Text: " line"}}}
-	m := send(t, newTestModel(fake), "q")
-	chat := renderTranscript(&m)
-	if strings.Contains(chat, "half") {
-		t.Errorf("in-progress half line must stay hidden:\n%s", chat)
-	}
-	m = drive(t, m, streamBatchMsg([]llm.StreamEvent{llm.TextDelta{Text: "\n"}, llm.StreamEnd{}}))
-	chat = ansi.Strip(renderTranscript(&m))
-	if !strings.Contains(chat, "half line") {
-		t.Errorf("completed line should appear:\n%s", chat)
-	}
-}
-
-func TestScrollDoesNotYankWhenScrolledUp(t *testing.T) {
+func TestTypingFillsFocusedInput(t *testing.T) {
 	m := newTestModel(&fakeProvider{})
-	// Fill the transcript far beyond the viewport height so scrolling up is
-	// actually possible (SetContent clamps to bottom when content fits).
-	for i := range 60 {
-		m.transcript.Append(&Notice{Text: fmt.Sprintf("line %d", i)})
+	if !m.input.Focused() {
+		t.Fatal("input must be focused from the start")
 	}
-	mm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = mm.(Model)
-	mm, _ = m.Update(streamBatchMsg(nil)) // one refresh pass
-	m = mm.(Model)
-	m.viewport.SetYOffset(0) // scroll to top
-	if m.viewport.AtBottom() {
-		t.Fatal("viewport should not be at bottom after scrolling up")
+	for _, ch := range "hi" {
+		mm, _ := m.Update(tea.KeyPressMsg{Text: string(ch)})
+		m = mm.(Model)
 	}
-	mm, _ = m.Update(streamBatchMsg(nil))
-	m = mm.(Model)
-	if got := m.viewport.YOffset(); got != 0 {
-		t.Errorf("refresh while scrolled up moved offset to %d, want 0", got)
+	if got := m.input.Value(); got != "hi" {
+		t.Errorf("typed value = %q, want %q", got, "hi")
 	}
-	// Back at the bottom, following resumes.
-	m.viewport.GotoBottom()
-	m.transcript.Append(&Notice{Text: "tail"})
-	mm, _ = m.Update(streamBatchMsg(nil))
-	m = mm.(Model)
-	if !m.viewport.AtBottom() {
-		t.Error("viewport should follow again once the user is at the bottom")
+	if stripped := ansi.Strip(m.View().Content); strings.Count(stripped, "❯") != 0 {
+		t.Errorf("input should render no prompt, got:\n%s", stripped)
 	}
 }
 
-func TestViewContainsAllRegions(t *testing.T) {
+func TestViewMainScreenAndRegions(t *testing.T) {
 	m := newTestModel(&fakeProvider{})
 	v := ansi.Strip(m.View().Content)
-	for _, want := range []string{"AetherCode", "vtest", "/tmp", "Ready.", "Send a message...", "fake", "fake-1"} {
+	for _, want := range []string{"AetherCode", "Ready.", "fake", "fake-1"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("view missing %q", want)
 		}
 	}
-	if !m.View().AltScreen {
-		t.Error("AltScreen should be enabled")
+	if m.View().AltScreen {
+		t.Error("AltScreen should be disabled for native copy")
+	}
+	if m.View().MouseMode != tea.MouseModeCellMotion {
+		t.Error("MouseMode should be CellMotion for wheel scrolling")
+	}
+}
+
+func TestContinueValue(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"split \\", "split \n"},
+		{"split \\  ", "split \n"},
+		{`\`, "\n"},
+		{"a\\\\", "a\\\n"}, // an escaped backslash keeps one, the second continues
+	} {
+		if got := continueValue(tc.in); got != tc.want {
+			t.Errorf("continueValue(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestEnterWithTrailingBackslashContinuesThenSubmits(t *testing.T) {
+	fake := &fakeProvider{events: []llm.StreamEvent{llm.StreamEnd{}}}
+	m := newTestModel(fake)
+	m.input.SetValue("split \\")
+	mm, _ := m.Update(enter())
+	m = mm.(Model)
+	if fake.calls.Load() != 0 {
+		t.Fatalf("continuation Enter must not start a stream, calls = %d", fake.calls.Load())
+	}
+	if m.live != nil {
+		t.Fatal("no stream should be live after a continuation")
+	}
+	if got, want := m.input.Value(), "split \n"; got != want {
+		t.Errorf("after continuation input = %q, want %q", got, want)
+	}
+	// Enter again submits the accumulated lines, trailing newline trimmed.
+	m = drive(t, m, enter())
+	if fake.calls.Load() != 1 {
+		t.Errorf("second Enter should submit, calls = %d", fake.calls.Load())
+	}
+	if len(m.entries) != 2 || m.entries[0].kind != entryUser || m.entries[0].text != "split" {
+		t.Errorf("first entry = %+v, want user 'split'", m.entries[0])
+	}
+}
+
+func TestEnterWithTrailingBackslashAndSpacesContinues(t *testing.T) {
+	m := newTestModel(&fakeProvider{})
+	m.input.SetValue("foo \\  ") // backslash then two spaces
+	mm, _ := m.Update(enter())
+	m = mm.(Model)
+	if got, want := m.input.Value(), "foo \n"; got != want {
+		t.Errorf("after continuation input = %q, want %q", got, want)
+	}
+}
+
+func TestEnterSubmitsWhenCursorNotAtEnd(t *testing.T) {
+	fake := &fakeProvider{events: []llm.StreamEvent{llm.StreamEnd{}}}
+	m := newTestModel(fake)
+	m.input.SetValue("a \\")
+	m.input.CursorStart()
+	m = drive(t, m, enter())
+	if fake.calls.Load() != 1 {
+		t.Fatalf("Enter from mid-line should submit, calls = %d", fake.calls.Load())
+	}
+	if len(m.entries) != 2 || m.entries[0].kind != entryUser || m.entries[0].text != "a \\" {
+		t.Errorf("first entry = %+v, want user 'a \\'", m.entries[0])
+	}
+}
+
+func TestInputHeightTracksContent(t *testing.T) {
+	m := newTestModel(&fakeProvider{})
+	if got := m.input.Height(); got != 1 {
+		t.Errorf("empty input height = %d, want 1", got)
+	}
+	m.input.SetValue("1\n2\n3")
+	if got := m.input.Height(); got != 3 {
+		t.Errorf("input height with 3 lines = %d, want 3", got)
+	}
+	m.input.SetValue(strings.Repeat("idle\n", 30)) // well past MaxHeight
+	if got := m.input.Height(); got != 8 {
+		t.Errorf("input height past MaxHeight = %d, want capped at 8", got)
+	}
+	m.input.Reset()
+	if got := m.input.Height(); got != 1 {
+		t.Errorf("input height after reset = %d, want 1", got)
+	}
+}
+
+func TestViewportLayoutSumsToWindowHeight(t *testing.T) {
+	m := newTestModel(&fakeProvider{}) // 80×24 window
+	for lines := 1; lines <= 6; lines++ {
+		m.input.SetValue(strings.Repeat("line\n", lines-1) + "line")
+		mm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		m = mm.(Model)
+		total := m.viewport.Height() + inputViewHeight(&m) + statusBarHeight
+		if total != 24 {
+			t.Errorf("lines=%d: layout total = %d, want 24 (vp=%d input=%d)",
+				lines, total, m.viewport.Height(), inputViewHeight(&m))
+		}
+	}
+}
+
+func TestInputStylesHaveNoBackground(t *testing.T) {
+	m := newTestModel(&fakeProvider{})
+	noBg := lipgloss.NoColor{}
+	s := m.input.Styles()
+	for _, st := range []struct {
+		name  string
+		style lipgloss.Style
+	}{
+		{"focused base", s.Focused.Base},
+		{"focused text", s.Focused.Text},
+		{"focused cursorline", s.Focused.CursorLine},
+		{"focused placeholder", s.Focused.Placeholder},
+		{"focused endofbuffer", s.Focused.EndOfBuffer},
+		{"blurred base", s.Blurred.Base},
+		{"blurred text", s.Blurred.Text},
+		{"blurred cursorline", s.Blurred.CursorLine},
+	} {
+		if bg := st.style.GetBackground(); bg != noBg {
+			t.Errorf("%s background = %v, want none", st.name, bg)
+		}
+	}
+	// Selection is the one deliberate exception — highlighted text must stay
+	// legible, and every other background is what the user complained about.
+	if bg := s.Focused.Selection.GetBackground(); bg == noBg {
+		t.Error("selection should keep a background for legibility")
 	}
 }

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -9,12 +10,16 @@ import (
 	"github.com/FrexCheat/aether-code/internal/llm"
 )
 
-// liveStream is the lifecycle of one in-flight turn: the event channel and
-// its cancel func. Model holds *liveStream; nil means idle — there is no
-// separate streaming flag to keep in sync.
+// liveStream is the lifecycle of one in-flight turn: the event channel, its
+// cancel func, the user's question (for history commit), the accumulated text
+// deltas (committed whole on completion) and the timing start. Model holds it
+// via *liveStream; nil means idle.
 type liveStream struct {
-	events <-chan llm.StreamEvent
-	cancel context.CancelFunc
+	events   <-chan llm.StreamEvent
+	cancel   context.CancelFunc
+	question string
+	text     strings.Builder
+	start    time.Time
 }
 
 // streamBatchMsg carries events drained in one frame. waitStream blocks for
@@ -24,8 +29,8 @@ type streamBatchMsg []llm.StreamEvent
 
 type tickMsg time.Time
 
-// tickInterval is the timer refresh period; tests shorten it.
-var tickInterval = time.Second
+// tickInterval is the timer/spinner refresh period; tests shorten it.
+var tickInterval = 100 * time.Millisecond
 
 // waitStream bridges the provider goroutine into the Elm loop with
 // coalescing: one blocking read, then a non-blocking drain of the backlog.
