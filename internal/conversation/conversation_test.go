@@ -105,25 +105,3 @@ func TestClear(t *testing.T) {
 		t.Errorf("history unusable after Clear: %+v", m.GetMessages())
 	}
 }
-
-func TestTruncateTo(t *testing.T) {
-	m := NewManager()
-	m.AddUserMessage("q1")
-	m.AddAssistantMessage("a1")
-	m.AddUserMessage("q2")
-
-	m.TruncateTo(2)
-	if m.Len() != 2 || m.GetMessages()[1].Role != RoleAssistant {
-		t.Errorf("TruncateTo(2): %+v", m.GetMessages())
-	}
-
-	m.TruncateTo(99) // beyond length: no-op
-	if m.Len() != 2 {
-		t.Errorf("TruncateTo(99) changed history: Len = %d", m.Len())
-	}
-
-	m.TruncateTo(-1)
-	if m.Len() != 0 {
-		t.Errorf("TruncateTo(-1): Len = %d", m.Len())
-	}
-}

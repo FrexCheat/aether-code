@@ -1,9 +1,12 @@
 package conversation
 
 // Anthropic rejects any request where a tool_use has no paired tool_result.
-// Unpaired history comes from real situations: the process died mid tool
-// execution, a session was restored from disk, or the user interrupted. These
-// synthesized results tell the model the tool produced nothing trustworthy.
+// Within one process the agent keeps the history pair-complete itself (every
+// announced call is committed with a result, executed or synthesized), so a
+// clean history needs no repair. Unpaired history still reaches a request
+// boundary once sessions are restored from disk or history is assembled by
+// other means; the synthesized results below tell the model the tool
+// produced nothing trustworthy.
 const (
 	// InterruptedToolResult stands in for tool calls that never got a result.
 	// The tool may not have started, or may have been cut short, so the
@@ -11,16 +14,16 @@ const (
 	InterruptedToolResult = "Tool execution was interrupted. The tool may or may not have completed; verify before relying on its effects."
 )
 
-// EnsureToolPairing returns a copy of messages with the tool_use/tool_result
-// pairing repaired:
+// EnsureToolPairing returns messages with the tool_use/tool_result pairing
+// repaired:
 //   - tool_use blocks with no result get a synthesized error tool_result
 //     inserted immediately after their message
 //   - tool_results with no matching tool_use are dropped; a message left
 //     empty by the drop is dropped entirely
 //
-// Call it at the request boundary so every frontend gets the fix for free;
-// the repair is never written back into the Manager — history records what
-// actually happened, the fix only makes one request legal.
+// A history with no pairing violations is returned unchanged, without
+// copying. The repair is never written back into the Manager — history
+// records what actually happened, the fix only makes one request legal.
 func EnsureToolPairing(messages []Message) []Message {
 	resolved := make(map[string]struct{})
 	issued := make(map[string]struct{})
@@ -33,6 +36,26 @@ func EnsureToolPairing(messages []Message) []Message {
 		}
 	}
 
+	// Fast path: no dangling calls, no orphan results — nothing to repair,
+	// so the input slice is handed through untouched.
+	for _, m := range messages {
+		for _, tr := range m.ToolResults {
+			if _, ok := issued[tr.ToolUseID]; !ok {
+				return repair(messages, issued, resolved)
+			}
+		}
+		for _, tu := range m.ToolUses {
+			if _, ok := resolved[tu.ID]; !ok {
+				return repair(messages, issued, resolved)
+			}
+		}
+	}
+	return messages
+}
+
+// repair rebuilds messages with the dangling-call and orphan-result fixes
+// applied. Precondition: at least one violation exists.
+func repair(messages []Message, issued, resolved map[string]struct{}) []Message {
 	out := make([]Message, 0, len(messages))
 	for _, m := range messages {
 		// Orphan tool results: the matching call is not in the history, and

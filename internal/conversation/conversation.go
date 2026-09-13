@@ -121,15 +121,3 @@ func (m *Manager) Len() int {
 func (m *Manager) Clear() {
 	m.history = nil
 }
-
-// TruncateTo keeps the first index messages. Negative indexes are clamped to
-// zero; indexes beyond the current length are a no-op.
-func (m *Manager) TruncateTo(index int) {
-	if index < 0 {
-		index = 0
-	}
-	if index > len(m.history) {
-		return
-	}
-	m.history = m.history[:index]
-}
