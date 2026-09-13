@@ -43,7 +43,7 @@ func (f *fakeProvider) Stream(ctx context.Context, req llm.Request) <-chan llm.S
 
 func newTestModel(p llm.Client) Model {
 	conv := conversation.NewManager()
-	ag := agent.New(p, tools.NewRegistry(), conv, prompt.System, false, "anthropic")
+	ag := agent.New(p, tools.NewRegistry(), conv, prompt.System, false)
 	m := newModel(Options{
 		Agent: ag, Conv: conv, ProviderName: "fake", ModelName: "fake-1",
 		Version: "test", WorkDir: "/tmp",

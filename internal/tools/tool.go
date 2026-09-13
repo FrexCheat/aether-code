@@ -86,16 +86,15 @@ func (r *Registry) Get(name string) Tool {
 	return r.tools[name]
 }
 
-// GetAllSchemas builds the tool list for one request.
+// GetAllSchemas builds the tool list for one request in the single neutral
+// shape {"name", "description", "input_schema"}; each llm adapter translates
+// it into its own API format.
 //
 // Tools are walked in sorted-name order, not map order. Go map iteration is
 // randomized; unsorted, the same tool set would serialize into a different
 // array every request, and the prompt-cache prefix after the tools block
 // would be invalidated even though nothing changed semantically.
-//
-// protocol "anthropic" passes the neutral shape through; "openai" translates
-// it to {"type":"function","name","description","parameters"}.
-func (r *Registry) GetAllSchemas(protocol string) []map[string]any {
+func (r *Registry) GetAllSchemas() []map[string]any {
 	names := make([]string, 0, len(r.tools))
 	for name := range r.tools {
 		names = append(names, name)
@@ -104,17 +103,7 @@ func (r *Registry) GetAllSchemas(protocol string) []map[string]any {
 
 	schemas := make([]map[string]any, 0, len(names))
 	for _, name := range names {
-		base := r.tools[name].Schema()
-		if protocol != "openai" {
-			schemas = append(schemas, base)
-			continue
-		}
-		schemas = append(schemas, map[string]any{
-			"type":        "function",
-			"name":        base["name"],
-			"description": base["description"],
-			"parameters":  base["input_schema"],
-		})
+		schemas = append(schemas, r.tools[name].Schema())
 	}
 	return schemas
 }

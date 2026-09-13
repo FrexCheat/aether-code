@@ -200,20 +200,10 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 }
 
 func (c *anthropicClient) buildParams(req Request) anthropic.MessageNewParams {
-	merged := mergeConsecutive(req.Messages)
-	msgs := make([]anthropic.MessageParam, 0, len(merged))
-	for _, m := range merged {
-		blocks := translateBlocks(m)
-		if m.Role == conversation.RoleAssistant {
-			msgs = append(msgs, anthropic.NewAssistantMessage(blocks...))
-		} else {
-			msgs = append(msgs, anthropic.NewUserMessage(blocks...))
-		}
-	}
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(c.model),
 		MaxTokens: anthropicMaxTokens,
-		Messages:  msgs,
+		Messages:  buildAnthropicMessages(req.Messages),
 	}
 	if req.System != "" {
 		params.System = []anthropic.TextBlockParam{{Text: req.System}}
@@ -222,36 +212,63 @@ func (c *anthropicClient) buildParams(req Request) anthropic.MessageNewParams {
 		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(anthropicThinkingBudget)
 	}
 	if len(req.Tools) > 0 {
-		params.Tools = translateTools(req.Tools)
+		params.Tools = translateAnthropicTools(req.Tools)
 	}
 	return params
 }
 
-// translateBlocks converts one unified message into Anthropic content blocks.
-// Messages without blocks keep the plain-text path; block messages translate
-// each fragment by type.
-func translateBlocks(m conversation.Message) []anthropic.ContentBlockParamUnion {
-	if len(m.Blocks) == 0 {
-		return []anthropic.ContentBlockParamUnion{anthropic.NewTextBlock(m.Content)}
-	}
-	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(m.Blocks))
-	for _, b := range m.Blocks {
-		switch b := b.(type) {
-		case conversation.TextBlock:
-			blocks = append(blocks, anthropic.NewTextBlock(b.Text))
-		case conversation.ThinkingBlock:
-			blocks = append(blocks, anthropic.NewThinkingBlock(b.Signature, b.Text))
-		case conversation.ToolUseBlock:
-			blocks = append(blocks, anthropic.NewToolUseBlock(b.ID, b.Args, b.Name))
-		case conversation.ToolResultBlock:
-			blocks = append(blocks, anthropic.NewToolResultBlock(b.ToolUseID, b.Content, b.IsError))
+// buildAnthropicMessages converts the unified history into Anthropic wire
+// messages. Anthropic requires alternating roles: consecutive same-role turns
+// are folded into one message by appending content blocks. Tool results ride
+// in user-role messages immediately after the assistant turn that issued the
+// calls; the assistant's thinking blocks are replayed first, signature
+// included, so extended thinking stays valid across tool rounds.
+func buildAnthropicMessages(messages []conversation.Message) []anthropic.MessageParam {
+	var out []anthropic.MessageParam
+	for _, m := range messages {
+		var role anthropic.MessageParamRole
+		var blocks []anthropic.ContentBlockParamUnion
+		if m.Role == conversation.RoleAssistant {
+			role = anthropic.MessageParamRoleAssistant
+			for _, tb := range m.ThinkingBlocks {
+				blocks = append(blocks, anthropic.NewThinkingBlock(tb.Signature, tb.Text))
+			}
+			if m.Content != "" {
+				blocks = append(blocks, anthropic.NewTextBlock(m.Content))
+			}
+			for _, tu := range m.ToolUses {
+				blocks = append(blocks, anthropic.NewToolUseBlock(tu.ID, tu.Args, tu.Name))
+			}
+			if len(blocks) == 0 {
+				blocks = append(blocks, anthropic.NewTextBlock(""))
+			}
+		} else {
+			role = anthropic.MessageParamRoleUser
+			for _, tr := range m.ToolResults {
+				blocks = append(blocks, anthropic.NewToolResultBlock(tr.ToolUseID, tr.Content, tr.IsError))
+			}
+			if m.Content != "" {
+				blocks = append(blocks, anthropic.NewTextBlock(m.Content))
+			}
+			if len(blocks) == 0 {
+				blocks = append(blocks, anthropic.NewTextBlock(""))
+			}
 		}
+
+		// Fold a same-role message into the previous one; for user messages
+		// this covers the common tool-results-then-next-prompt sequence.
+		if n := len(out); n > 0 && out[n-1].Role == role {
+			out[n-1].Content = append(out[n-1].Content, blocks...)
+			continue
+		}
+		out = append(out, anthropic.MessageParam{Role: role, Content: blocks})
 	}
-	return blocks
+	return out
 }
 
-// translateTools converts the neutral schema shape into Anthropic tool params.
-func translateTools(tools []map[string]any) []anthropic.ToolUnionParam {
+// translateAnthropicTools converts the neutral schema shape into Anthropic
+// tool params.
+func translateAnthropicTools(tools []map[string]any) []anthropic.ToolUnionParam {
 	result := make([]anthropic.ToolUnionParam, 0, len(tools))
 	for _, t := range tools {
 		tool := anthropic.ToolParam{Name: t["name"].(string)}
@@ -290,43 +307,6 @@ func translateTools(tools []map[string]any) []anthropic.ToolUnionParam {
 	return result
 }
 
-// mergeConsecutive collapses consecutive messages of the same role, as
-// required by the Anthropic API docs ("Consecutive user or assistant turns
-// will be combined into a single turn"). Text-only messages join Content with
-// "\n\n"; block-carrying messages concatenate their block lists, keeping the
-// tool_use/tool_result pairing intact.
-func mergeConsecutive(in []conversation.Message) []conversation.Message {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]conversation.Message, 0, len(in))
-	cur := in[0]
-	for _, m := range in[1:] {
-		if m.Role != cur.Role {
-			out = append(out, cur)
-			cur = m
-			continue
-		}
-		switch {
-		case len(m.Blocks) == 0:
-			if len(cur.Blocks) == 0 {
-				cur.Content += "\n\n" + m.Content
-			} else {
-				cur.Blocks = append(cur.Blocks, conversation.TextBlock{Text: m.Content})
-			}
-		case len(cur.Blocks) == 0 && cur.Content == "":
-			cur.Blocks = m.Blocks
-		case len(cur.Blocks) == 0:
-			cur.Blocks = append([]conversation.Block{conversation.TextBlock{Text: cur.Content}}, m.Blocks...)
-			cur.Content = ""
-		default:
-			cur.Blocks = append(cur.Blocks, m.Blocks...)
-		}
-	}
-	out = append(out, cur)
-	return out
-}
-
 // parseToolArgs decodes the accumulated tool-use JSON into a map. Malformed
 // (e.g. truncated) input yields an empty map rather than failing the stream.
 func parseToolArgs(raw string) map[string]any {
@@ -351,7 +331,7 @@ func mapAnthropicError(err error) error {
 	if err == nil {
 		return nil
 	}
-	status, apiType, apiCode, msg := extractAnthropicMeta(err)
+	status, apiType, msg := extractAnthropicMeta(err)
 	if status == 0 {
 		s := strings.ToLower(err.Error())
 		switch {
@@ -366,10 +346,10 @@ func mapAnthropicError(err error) error {
 			return &NetworkError{Message: msgOrErr(msg, err), Cause: err}
 		}
 	}
-	return classify(status, apiType, apiCode, msgOrErr(msg, err), err)
+	return classify(status, apiType, "", msgOrErr(msg, err), err)
 }
 
-func extractAnthropicMeta(err error) (status int, apiType, apiCode, msg string) {
+func extractAnthropicMeta(err error) (status int, apiType, msg string) {
 	var ae *anthropic.Error
 	if errors.As(err, &ae) {
 		status = ae.StatusCode
@@ -386,8 +366,7 @@ func extractAnthropicMeta(err error) (status int, apiType, apiCode, msg string) 
 	case strings.Contains(lower, "invalid_request"):
 		apiType = "invalid_request_error"
 	}
-	_ = apiCode
-	return status, apiType, "", msg
+	return status, apiType, msg
 }
 
 func msgOrErr(msg string, err error) string {

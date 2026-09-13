@@ -6,10 +6,11 @@
 //
 // Wire events map onto the unified stream as: output_text.delta → TextDelta
 // with the message item's output_item.done → TextComplete,
-// reasoning_text.delta / reasoning_summary_text.delta → ThinkingDelta,
-// function_call items → ToolCallStart / ToolCallDelta (arguments.delta) /
-// ToolCallComplete (arguments.done), response.completed usage →
-// StreamEnd.Usage.
+// reasoning_text/summary_text delta → ThinkingDelta with the reasoning item's
+// done → ThinkingComplete (signature = reasoning item ID, replayed as a
+// reasoning item on the next request), function_call items → ToolCallStart /
+// ToolCallDelta (arguments.delta) / ToolCallComplete (arguments.done),
+// response.completed usage → StreamEnd.Usage.
 
 package llm
 
@@ -94,6 +95,27 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 		// output_item.done is the unified TextComplete.
 		inText := false
 
+		// Per-item reasoning accumulation: the item's ID (captured at
+		// output_item.added) becomes the ThinkingComplete signature so the
+		// agent can replay it as a reasoning item on the next request.
+		var (
+			inReasoning  bool
+			reasoningID  string
+			reasoningAcc strings.Builder
+		)
+		endThinking := func() bool {
+			if !inReasoning {
+				return true
+			}
+			inReasoning = false
+			if !send(ThinkingComplete{Thinking: reasoningAcc.String(), Signature: reasoningID}) {
+				return false
+			}
+			reasoningID = ""
+			reasoningAcc.Reset()
+			return true
+		}
+
 		for stream.Next() {
 			switch ev := stream.Current().AsAny().(type) {
 			case responses.ResponseOutputItemAddedEvent:
@@ -105,11 +127,24 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 					if !send(ToolCallStart{ToolName: item.Name, ToolID: item.CallID}) {
 						return
 					}
+				case responses.ResponseReasoningItem:
+					inReasoning = true
+					reasoningID = item.ID
+					reasoningAcc.Reset()
 				}
 			case responses.ResponseOutputItemDoneEvent:
-				if _, ok := ev.Item.AsAny().(responses.ResponseOutputMessage); ok && inText {
-					inText = false
-					if !send(TextComplete{}) {
+				switch ev.Item.AsAny().(type) {
+				case responses.ResponseOutputMessage:
+					if inText {
+						inText = false
+						if !send(TextComplete{}) {
+							return
+						}
+					}
+				case responses.ResponseReasoningItem:
+					// Belt-and-braces: normally the *.done text events already
+					// closed the segment; emit whatever accumulated if not.
+					if !endThinking() {
 						return
 					}
 				}
@@ -143,7 +178,15 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 				case responses.ResponseReasoningSummaryTextDeltaEvent:
 					text = d.Delta
 				}
+				inReasoning = true
+				reasoningAcc.WriteString(text)
 				if !send(ThinkingDelta{Text: text}) {
+					return
+				}
+			// Whichever done event arrives first closes the segment; the
+			// inReasoning guard keeps the second one from double-emitting.
+			case responses.ResponseReasoningTextDoneEvent, responses.ResponseReasoningSummaryTextDoneEvent:
+				if !endThinking() {
 					return
 				}
 			case responses.ResponseCompletedEvent:
@@ -198,42 +241,9 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 }
 
 func (c *openAIClient) buildParams(req Request) responses.ResponseNewParams {
-	items := make(responses.ResponseInputParam, 0, len(req.Messages))
-	for _, m := range req.Messages {
-		role := responses.EasyInputMessageRoleUser
-		if m.Role == conversation.RoleAssistant {
-			role = responses.EasyInputMessageRoleAssistant
-		}
-		if len(m.Blocks) == 0 {
-			items = append(items, responses.ResponseInputItemParamOfMessage(m.Content, role))
-			continue
-		}
-		for _, b := range m.Blocks {
-			switch b := b.(type) {
-			case conversation.TextBlock:
-				items = append(items, responses.ResponseInputItemParamOfMessage(b.Text, role))
-			case conversation.ToolUseBlock:
-				// Args go back as a JSON string; encoding/json sorts map keys,
-				// so replays are byte-stable.
-				argsJSON, err := json.Marshal(b.Args)
-				if err != nil {
-					argsJSON = []byte("{}")
-				}
-				items = append(items,
-					responses.ResponseInputItemParamOfFunctionCall(string(argsJSON), b.ID, b.Name))
-			case conversation.ToolResultBlock:
-				item := responses.ResponseInputItemParamOfFunctionCallOutput(b.Content)
-				item.OfFunctionCallOutput.CallID = openai.String(b.ToolUseID)
-				items = append(items, item)
-			case conversation.ThinkingBlock:
-				// The Responses API has no replayable reasoning-item shape that
-				// matches the unified model; reasoning is skipped on replay.
-			}
-		}
-	}
 	params := responses.ResponseNewParams{
 		Model: shared.ResponsesModel(c.model),
-		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: items},
+		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: buildOpenAIMessages(req.Messages)},
 	}
 	if req.System != "" {
 		params.Instructions = openai.String(req.System)
@@ -247,18 +257,58 @@ func (c *openAIClient) buildParams(req Request) responses.ResponseNewParams {
 	return params
 }
 
+// buildOpenAIMessages converts the unified history into Responses API input
+// items. Assistant thinking is replayed as reasoning items referenced by the
+// item ID captured at stream time (the API resolves it server-side), followed
+// by the visible message and one function_call item per tool call; tool
+// results become function_call_output items. The API accepts arbitrary item
+// order, so no role merging is needed.
+func buildOpenAIMessages(messages []conversation.Message) responses.ResponseInputParam {
+	items := make(responses.ResponseInputParam, 0, len(messages))
+	for _, m := range messages {
+		if m.Role == conversation.RoleAssistant {
+			for _, tb := range m.ThinkingBlocks {
+				items = append(items, responses.ResponseInputItemParamOfReasoning(
+					tb.Signature,
+					[]responses.ResponseReasoningItemSummaryParam{{Text: tb.Text}},
+				))
+			}
+			if m.Content != "" {
+				items = append(items, responses.ResponseInputItemParamOfMessage(
+					m.Content, responses.EasyInputMessageRoleAssistant))
+			}
+			for _, tu := range m.ToolUses {
+				// Args go back as a JSON string; encoding/json sorts map keys,
+				// so replays are byte-stable.
+				argsJSON, err := json.Marshal(tu.Args)
+				if err != nil {
+					argsJSON = []byte("{}")
+				}
+				items = append(items,
+					responses.ResponseInputItemParamOfFunctionCall(string(argsJSON), tu.ID, tu.Name))
+			}
+			continue
+		}
+		for _, tr := range m.ToolResults {
+			item := responses.ResponseInputItemParamOfFunctionCallOutput(tr.Content)
+			item.OfFunctionCallOutput.CallID = openai.String(tr.ToolUseID)
+			items = append(items, item)
+		}
+		if m.Content != "" {
+			items = append(items, responses.ResponseInputItemParamOfMessage(
+				m.Content, responses.EasyInputMessageRoleUser))
+		}
+	}
+	return items
+}
+
 // translateOpenAITools converts the neutral schema shape into Responses API
 // function tools. Strict validation is off: our schemas come from hand-written
 // tool definitions and partial-JSON arguments must not be rejected server-side.
 func translateOpenAITools(tools []map[string]any) []responses.ToolUnionParam {
 	result := make([]responses.ToolUnionParam, 0, len(tools))
 	for _, t := range tools {
-		// GetAllSchemas("openai") delivers the JSON Schema under "parameters";
-		// hand-built requests may still use the neutral "input_schema" key.
-		schema, _ := t["parameters"].(map[string]any)
-		if schema == nil {
-			schema, _ = t["input_schema"].(map[string]any)
-		}
+		schema, _ := t["input_schema"].(map[string]any)
 		if schema == nil {
 			schema = map[string]any{}
 		}

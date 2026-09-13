@@ -118,7 +118,7 @@ func TestToolEntryLifecycleAndDiff(t *testing.T) {
 		llm.ToolCallComplete{ToolID: "tu_1", ToolName: "edit_file",
 			Arguments: map[string]any{"file_path": "main.go"}},
 		llm.StreamEnd{StopReason: "tool_use"},
-	}}, reg, conv, "sys", false, "anthropic")
+	}}, reg, conv, "sys", false)
 	m := newModel(Options{Agent: ag, Conv: conv, Version: "test", WorkDir: "/tmp"})
 	m = send(t, m, "edit it")
 
@@ -148,12 +148,12 @@ func TestToolEntryLifecycleAndDiff(t *testing.T) {
 	if !strings.Contains(raw, styleDiffAdd.Render("+      2  BETA")) {
 		t.Errorf("diff add line not colored:\n%s", raw)
 	}
-	// History: user → assistant(blocks: tool_use) → user(tool_result).
+	// History: user → assistant(tool_use) → user(tool_result).
 	if conv.Len() != 3 {
 		t.Fatalf("conv.Len = %d, want 3", conv.Len())
 	}
-	if _, ok := conv.GetMessages()[1].Blocks[0].(conversation.ToolUseBlock); !ok {
-		t.Errorf("assistant block = %#v", conv.GetMessages()[1].Blocks[0])
+	if len(conv.GetMessages()[1].ToolUses) != 1 {
+		t.Errorf("assistant tool uses = %+v", conv.GetMessages()[1].ToolUses)
 	}
 }
 
@@ -162,7 +162,7 @@ func TestUnknownToolRendersFailed(t *testing.T) {
 	ag := agent.New(&fakeProvider{events: []llm.StreamEvent{
 		llm.ToolCallComplete{ToolID: "tu_x", ToolName: "no_such_tool", Arguments: map[string]any{}},
 		llm.StreamEnd{StopReason: "tool_use"},
-	}}, tools.NewRegistry(), conv, "sys", false, "anthropic")
+	}}, tools.NewRegistry(), conv, "sys", false)
 	m := newModel(Options{Agent: ag, Conv: conv, Version: "test", WorkDir: "/tmp"})
 	m = send(t, m, "do it")
 

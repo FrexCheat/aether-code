@@ -52,14 +52,14 @@ func TestRegistryDuplicatePanics(t *testing.T) {
 	r.Register(fakeTool{name: "x"})
 }
 
-func TestRegistrySchemasAnthropic(t *testing.T) {
+func TestRegistrySchemasNeutral(t *testing.T) {
 	r := NewRegistry()
 	r.Register(fakeTool{name: "write_file"})
 	r.Register(fakeTool{name: "bash"})
 
 	// Byte stability across calls: same set, same order, both times.
-	first := r.GetAllSchemas("anthropic")
-	second := r.GetAllSchemas("anthropic")
+	first := r.GetAllSchemas()
+	second := r.GetAllSchemas()
 	if len(first) != 2 {
 		t.Fatalf("len = %d, want 2", len(first))
 	}
@@ -75,29 +75,12 @@ func TestRegistrySchemasAnthropic(t *testing.T) {
 	if s["description"] != "desc of bash" {
 		t.Errorf("description = %v", s["description"])
 	}
+	if _, ok := s["parameters"]; ok {
+		t.Errorf("neutral schema must not carry the openai parameters key: %v", s)
+	}
 	schema, ok := s["input_schema"].(map[string]any)
 	if !ok || schema["type"] != "object" {
 		t.Errorf("input_schema = %v", s["input_schema"])
-	}
-}
-
-func TestRegistrySchemasOpenAI(t *testing.T) {
-	r := NewRegistry()
-	r.Register(fakeTool{name: "read_file"})
-	got := r.GetAllSchemas("openai")
-	if len(got) != 1 {
-		t.Fatalf("len = %d, want 1", len(got))
-	}
-	s := got[0]
-	if s["type"] != "function" || s["name"] != "read_file" {
-		t.Errorf("openai schema = %v", s)
-	}
-	if _, ok := s["input_schema"]; ok {
-		t.Errorf("openai schema leaked input_schema key: %v", s)
-	}
-	params, ok := s["parameters"].(map[string]any)
-	if !ok || params["type"] != "object" {
-		t.Errorf("parameters = %v", s["parameters"])
 	}
 }
 

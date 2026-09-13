@@ -78,18 +78,16 @@ type Orchestrator struct {
 	conv     *conversation.Manager
 	system   string
 	thinking bool
-	protocol string // schema flavor passed to the registry, e.g. "anthropic"/"openai"
 }
 
 func New(client llm.Client, registry *tools.Registry, conv *conversation.Manager,
-	system string, thinking bool, protocol string) *Orchestrator {
+	system string, thinking bool) *Orchestrator {
 	return &Orchestrator{
 		client:   client,
 		registry: registry,
 		conv:     conv,
 		system:   system,
 		thinking: thinking,
-		protocol: protocol,
 	}
 }
 
@@ -112,14 +110,19 @@ func (o *Orchestrator) RunTurn(ctx context.Context, userText string) <-chan Agen
 		}
 
 		o.conv.AddUserMessage(userText)
+		// Repair the tool_use/tool_result pairing at the request boundary so
+		// history left dangling by an interrupted run still yields a legal
+		// request; the repair is never written back into the history.
+		msgs := conversation.EnsureToolPairing(o.conv.GetMessages())
 		events := o.client.Stream(ctx, llm.Request{
 			System:   o.system,
-			Messages: o.conv.GetMessages(),
-			Tools:    o.registry.GetAllSchemas(o.protocol),
+			Messages: msgs,
+			Tools:    o.registry.GetAllSchemas(),
 			Thinking: o.thinking,
 		})
 
 		var text strings.Builder
+		var thinking []conversation.ThinkingBlock
 		var toolUses []conversation.ToolUseBlock
 		var streamEnd llm.StreamEnd
 		var streamErr error
@@ -141,6 +144,10 @@ func (o *Orchestrator) RunTurn(ctx context.Context, userText string) <-chan Agen
 					return
 				}
 			case llm.ThinkingComplete:
+				thinking = append(thinking, conversation.ThinkingBlock{
+					Text:      e.Thinking,
+					Signature: e.Signature,
+				})
 				if !send(ThinkingComplete{Text: e.Thinking, Signature: e.Signature}) {
 					return
 				}
@@ -171,19 +178,13 @@ func (o *Orchestrator) RunTurn(ctx context.Context, userText string) <-chan Agen
 		}
 
 		// Commit the assistant message before executing tools so the history
-		// is coherent even if an execution panics the process later. Plain
-		// replies take the text path; tool turns carry blocks.
+		// is coherent even if an execution panics the process later. Tool
+		// turns carry the thinking segments too: replaying them (with the
+		// provider's signature) is required to continue a thinking chain.
 		if len(toolUses) == 0 {
 			o.conv.AddAssistantMessage(text.String())
 		} else {
-			var blocks []conversation.Block
-			if text.Len() > 0 {
-				blocks = append(blocks, conversation.TextBlock{Text: text.String()})
-			}
-			for _, tu := range toolUses {
-				blocks = append(blocks, tu)
-			}
-			o.conv.AddAssistantBlocks(blocks...)
+			o.conv.AddAssistantFull(text.String(), thinking, toolUses)
 		}
 
 		if len(toolUses) == 0 {

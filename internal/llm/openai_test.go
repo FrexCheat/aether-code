@@ -55,13 +55,21 @@ func TestOpenAIStreamReasoningForwarded(t *testing.T) {
 	evs := collect(t, newOpenAITestClient(srv).Stream(context.Background(), simpleReq(true)))
 
 	var td []ThinkingDelta
+	var tc []ThinkingComplete
 	for _, e := range evs {
-		if v, ok := e.(ThinkingDelta); ok {
+		switch v := e.(type) {
+		case ThinkingDelta:
 			td = append(td, v)
+		case ThinkingComplete:
+			tc = append(tc, v)
 		}
 	}
 	if len(td) != 1 || td[0].Text != "Thinking about it" {
 		t.Errorf("thinking deltas = %+v", td)
+	}
+	// The reasoning item's ID closes the segment so the agent can replay it.
+	if len(tc) != 1 || tc[0].Thinking != "Thinking about it" || tc[0].Signature != "rs_1" {
+		t.Errorf("thinking complete = %+v, want one with signature rs_1", tc)
 	}
 	assertTextThenDone(t, evs)
 
@@ -234,13 +242,14 @@ func TestOpenAIRequestBodyWithTools(t *testing.T) {
 		},
 		Messages: []conversation.Message{
 			{Role: conversation.RoleUser, Content: "q"},
-			{Role: conversation.RoleAssistant, Blocks: []conversation.Block{
-				conversation.TextBlock{Text: "checking"},
-				conversation.ToolUseBlock{ID: "fc_1", Name: "read_file", Args: map[string]any{"file_path": "a.go"}},
-			}},
-			{Role: conversation.RoleUser, Blocks: []conversation.Block{
-				conversation.ToolResultBlock{ToolUseID: "fc_1", Content: "file body"},
-			}},
+			{Role: conversation.RoleAssistant, Content: "checking",
+				ToolUses: []conversation.ToolUseBlock{
+					{ID: "fc_1", Name: "read_file", Args: map[string]any{"file_path": "a.go"}},
+				}},
+			{Role: conversation.RoleUser,
+				ToolResults: []conversation.ToolResultBlock{
+					{ToolUseID: "fc_1", Content: "file body"},
+				}},
 		},
 	}
 	collect(t, newOpenAITestClient(srv).Stream(context.Background(), req))
@@ -304,6 +313,52 @@ func TestOpenAIRequestBodyWithTools(t *testing.T) {
 	}
 }
 
+func TestOpenAIReplaysThinkingAsReasoningItem(t *testing.T) {
+	cap := &capture{}
+	srv := newServer(t, "openai", "text_only.sse", cap)
+	defer srv.Close()
+	req := Request{
+		System: "sys",
+		Messages: []conversation.Message{
+			{Role: conversation.RoleUser, Content: "q"},
+			{Role: conversation.RoleAssistant, Content: "ans",
+				ThinkingBlocks: []conversation.ThinkingBlock{{Text: "hmm", Signature: "rs_9"}}},
+		},
+	}
+	collect(t, newOpenAITestClient(srv).Stream(context.Background(), req))
+	var body struct {
+		Input []struct {
+			Type    string `json:"type"`
+			ID      string `json:"id"`
+			Role    string `json:"role"`
+			Content string `json:"content"`
+			Summary []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"summary"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(cap.get(), &body); err != nil {
+		t.Fatalf("%v\n%s", err, cap.get())
+	}
+	if len(body.Input) != 3 {
+		t.Fatalf("input = %+v, want user message + reasoning item + assistant message", body.Input)
+	}
+	if body.Input[0].Role != "user" || body.Input[0].Content != "q" {
+		t.Errorf("user message = %+v", body.Input[0])
+	}
+	ri := body.Input[1]
+	if ri.Type != "reasoning" || ri.ID != "rs_9" {
+		t.Errorf("reasoning item = %+v", ri)
+	}
+	if len(ri.Summary) != 1 || ri.Summary[0].Text != "hmm" {
+		t.Errorf("reasoning summary = %+v", ri.Summary)
+	}
+	if body.Input[2].Role != "assistant" || body.Input[2].Content != "ans" {
+		t.Errorf("assistant message = %+v", body.Input[2])
+	}
+}
+
 func TestOpenAIStreamCancel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -334,10 +389,10 @@ func TestOpenAIStreamCancel(t *testing.T) {
 }
 
 // TestOpenAIRegistrySchemasSurviveTranslation runs the real pipeline —
-// tools.Registry.GetAllSchemas("openai") feeding buildParams — to prove the
-// registry's "parameters" key is consumed. A key-name mismatch here used to
-// send parameters:{} on the wire and got every request rejected with 400
-// "Invalid schema for function ...".
+// tools.Registry.GetAllSchemas() feeding buildParams — to prove the neutral
+// "input_schema" key is translated into the Responses API's "parameters". A
+// key-name mismatch here used to send parameters:{} on the wire and got every
+// request rejected with 400 "Invalid schema for function ...".
 func TestOpenAIRegistrySchemasSurviveTranslation(t *testing.T) {
 	reg := tools.NewRegistry()
 	reg.Register(&tools.ReadFileTool{WorkDir: t.TempDir()})
@@ -346,7 +401,7 @@ func TestOpenAIRegistrySchemasSurviveTranslation(t *testing.T) {
 	defer srv.Close()
 	c := newOpenAITestClient(srv).(*openAIClient)
 	req := simpleReq(false)
-	req.Tools = reg.GetAllSchemas("openai")
+	req.Tools = reg.GetAllSchemas()
 	collect(t, c.Stream(context.Background(), req))
 
 	var body struct {

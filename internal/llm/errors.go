@@ -142,24 +142,3 @@ func isNetworkHint(err error) bool {
 	}
 	return false
 }
-
-var _ = isNetworkHint // keep helper reachable for adapters; drop the underscore once used
-
-// NewAuthenticationError, NewInvalidRequestError, NewRateLimitError,
-// NewServerError, NewNetworkError are thin constructors for single-line
-// construction in factories and tests.
-func NewAuthenticationError(status int, message string, cause error) error {
-	return &AuthenticationError{StatusCode: status, Message: message, Cause: cause}
-}
-func NewInvalidRequestError(status int, message string, cause error) error {
-	return &InvalidRequestError{StatusCode: status, Message: message, Cause: cause}
-}
-func NewRateLimitError(status int, message string, cause error) error {
-	return &RateLimitError{StatusCode: status, Message: message, Cause: cause}
-}
-func NewServerError(status int, message string, cause error) error {
-	return &ServerError{StatusCode: status, Message: message, Cause: cause}
-}
-func NewNetworkError(message string, cause error) error {
-	return &NetworkError{Message: message, Cause: cause}
-}

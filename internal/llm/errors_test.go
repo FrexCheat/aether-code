@@ -83,7 +83,7 @@ func TestErrorsDoNotLeakKey(t *testing.T) {
 
 func TestErrorUnwrap(t *testing.T) {
 	cause := errors.New("cause")
-	err := NewServerError(500, "boom", cause)
+	err := &ServerError{StatusCode: 500, Message: "boom", Cause: cause}
 	if !errors.Is(err, cause) {
 		t.Error("Unwrap failed")
 	}

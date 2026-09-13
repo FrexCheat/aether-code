@@ -217,11 +217,13 @@ func TestAnthropicMergesConsecutiveSameRole(t *testing.T) {
 	if len(body.Messages) != 2 {
 		t.Fatalf("messages len = %d, want 2 (merged): %+v", len(body.Messages), body.Messages)
 	}
-	if body.Messages[0].Role != "user" || len(body.Messages[0].Content) != 1 || body.Messages[0].Content[0].Text != "a\n\nb" {
-		t.Errorf("messages[0] = %+v", body.Messages[0])
+	if body.Messages[0].Role != "user" || len(body.Messages[0].Content) != 2 ||
+		body.Messages[0].Content[0].Text != "a" || body.Messages[0].Content[1].Text != "b" {
+		t.Errorf("messages[0] = %+v, want two text blocks a/b", body.Messages[0])
 	}
-	if body.Messages[1].Role != "assistant" || body.Messages[1].Content[0].Text != "c\n\nd" {
-		t.Errorf("messages[1] = %+v", body.Messages[1])
+	if body.Messages[1].Role != "assistant" || len(body.Messages[1].Content) != 2 ||
+		body.Messages[1].Content[0].Text != "c" || body.Messages[1].Content[1].Text != "d" {
+		t.Errorf("messages[1] = %+v, want two text blocks c/d", body.Messages[1])
 	}
 }
 
@@ -294,13 +296,14 @@ func TestAnthropicRequestBodyWithTools(t *testing.T) {
 		},
 		Messages: []conversation.Message{
 			{Role: conversation.RoleUser, Content: "q"},
-			{Role: conversation.RoleAssistant, Blocks: []conversation.Block{
-				conversation.TextBlock{Text: "checking"},
-				conversation.ToolUseBlock{ID: "tu_1", Name: "read_file", Args: map[string]any{"file_path": "a.go"}},
-			}},
-			{Role: conversation.RoleUser, Blocks: []conversation.Block{
-				conversation.ToolResultBlock{ToolUseID: "tu_1", Content: "file body"},
-			}},
+			{Role: conversation.RoleAssistant, Content: "checking",
+				ToolUses: []conversation.ToolUseBlock{
+					{ID: "tu_1", Name: "read_file", Args: map[string]any{"file_path": "a.go"}},
+				}},
+			{Role: conversation.RoleUser,
+				ToolResults: []conversation.ToolResultBlock{
+					{ToolUseID: "tu_1", Content: "file body"},
+				}},
 		},
 	}
 	collect(t, newAnthropicTestClient(srv).Stream(context.Background(), req))
@@ -365,6 +368,89 @@ func TestAnthropicRequestBodyWithTools(t *testing.T) {
 	tr := result.Content[0]
 	if tr.Type != "tool_result" || tr.ToolUseID != "tu_1" || tr.IsError {
 		t.Errorf("tool_result block = %+v", tr)
+	}
+}
+
+func TestAnthropicReplaysThinkingInAssistantMessage(t *testing.T) {
+	cap := &capture{}
+	srv := newServer(t, "anthropic", "text_only.sse", cap)
+	defer srv.Close()
+	req := Request{
+		System: "sys",
+		Messages: []conversation.Message{
+			{Role: conversation.RoleUser, Content: "q"},
+			{Role: conversation.RoleAssistant, Content: "ans",
+				ThinkingBlocks: []conversation.ThinkingBlock{{Text: "hmm", Signature: "sig1"}}},
+		},
+	}
+	collect(t, newAnthropicTestClient(srv).Stream(context.Background(), req))
+	var body struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type      string `json:"type"`
+				Text      string `json:"text"`
+				Thinking  string `json:"thinking"`
+				Signature string `json:"signature"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(cap.get(), &body); err != nil {
+		t.Fatalf("%v\n%s", err, cap.get())
+	}
+	if len(body.Messages) != 2 {
+		t.Fatalf("messages = %+v", body.Messages)
+	}
+	content := body.Messages[1].Content
+	if len(content) != 2 {
+		t.Fatalf("assistant content = %+v, want thinking block then text", content)
+	}
+	if content[0].Type != "thinking" || content[0].Thinking != "hmm" || content[0].Signature != "sig1" {
+		t.Errorf("thinking block = %+v", content[0])
+	}
+	if content[1].Type != "text" || content[1].Text != "ans" {
+		t.Errorf("text block = %+v", content[1])
+	}
+}
+
+// TestAnthropicBuildsRequestAfterPairingRepair covers the AC2 composition: a
+// history left with a dangling tool_use (process died mid execution) is
+// repaired by conversation.EnsureToolPairing at the request boundary, and the
+// repaired sequence produces a legal Anthropic request body.
+func TestAnthropicBuildsRequestAfterPairingRepair(t *testing.T) {
+	cap := &capture{}
+	srv := newServer(t, "anthropic", "text_only.sse", cap)
+	defer srv.Close()
+	dangling := []conversation.Message{
+		{Role: conversation.RoleUser, Content: "q"},
+		{Role: conversation.RoleAssistant,
+			ToolUses: []conversation.ToolUseBlock{{ID: "tu_x", Name: "bash", Args: map[string]any{}}}},
+	}
+	req := Request{System: "sys", Messages: conversation.EnsureToolPairing(dangling)}
+	collect(t, newAnthropicTestClient(srv).Stream(context.Background(), req))
+	var body struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type      string `json:"type"`
+				ToolUseID string `json:"tool_use_id"`
+				IsError   bool   `json:"is_error"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(cap.get(), &body); err != nil {
+		t.Fatalf("%v\n%s", err, cap.get())
+	}
+	if len(body.Messages) != 3 {
+		t.Fatalf("messages = %+v, want assistant + synthesized result message", body.Messages)
+	}
+	inserted := body.Messages[2]
+	if inserted.Role != "user" || len(inserted.Content) != 1 {
+		t.Fatalf("inserted = %+v", inserted)
+	}
+	tr := inserted.Content[0]
+	if tr.Type != "tool_result" || tr.ToolUseID != "tu_x" || !tr.IsError {
+		t.Errorf("synthesized tool_result = %+v", tr)
 	}
 }
 

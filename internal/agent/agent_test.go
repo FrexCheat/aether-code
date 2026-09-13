@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/FrexCheat/aether-code/internal/conversation"
@@ -57,7 +56,7 @@ func collectTurn(t *testing.T, o *Orchestrator, text string) []AgentEvent {
 func newTestOrchestrator(t *testing.T, client llm.Client) (*Orchestrator, *conversation.Manager) {
 	t.Helper()
 	conv := conversation.NewManager()
-	return New(client, tools.NewRegistry(), conv, "sys", false, "anthropic"), conv
+	return New(client, tools.NewRegistry(), conv, "sys", false), conv
 }
 
 func TestTurnEndToEndWithToolCall(t *testing.T) {
@@ -74,7 +73,7 @@ func TestTurnEndToEndWithToolCall(t *testing.T) {
 			Arguments: map[string]any{"path": "a.go"}},
 		llm.StreamEnd{StopReason: "tool_use", Usage: llm.UsageInfo{InputTokens: 10, OutputTokens: 5}},
 	}}
-	o := New(fc, reg, conv, "sys", false, "anthropic")
+	o := New(fc, reg, conv, "sys", false)
 
 	evs := collectTurn(t, o, "please look")
 
@@ -114,22 +113,22 @@ func TestTurnEndToEndWithToolCall(t *testing.T) {
 	if msgs[0].Role != conversation.RoleUser || msgs[0].Content != "please look" {
 		t.Errorf("msgs[0] = %+v", msgs[0])
 	}
-	if msgs[1].Role != conversation.RoleAssistant || len(msgs[1].Blocks) != 2 {
+	if msgs[1].Role != conversation.RoleAssistant || msgs[1].Content != "checking the file" {
 		t.Fatalf("msgs[1] = %+v", msgs[1])
 	}
-	if tb, ok := msgs[1].Blocks[0].(conversation.TextBlock); !ok || tb.Text != "checking the file" {
-		t.Errorf("assistant text block = %#v", msgs[1].Blocks[0])
+	if len(msgs[1].ToolUses) != 1 {
+		t.Fatalf("assistant tool uses = %+v", msgs[1].ToolUses)
 	}
-	tu, ok := msgs[1].Blocks[1].(conversation.ToolUseBlock)
-	if !ok || tu.ID != "tu_1" || tu.Name != "echo_tool" || tu.Args["path"] != "a.go" {
-		t.Errorf("assistant tool_use block = %#v", msgs[1].Blocks[1])
+	tu := msgs[1].ToolUses[0]
+	if tu.ID != "tu_1" || tu.Name != "echo_tool" || tu.Args["path"] != "a.go" {
+		t.Errorf("assistant tool_use = %#v", tu)
 	}
-	if msgs[2].Role != conversation.RoleUser || len(msgs[2].Blocks) != 1 {
+	if msgs[2].Role != conversation.RoleUser || len(msgs[2].ToolResults) != 1 {
 		t.Fatalf("msgs[2] = %+v", msgs[2])
 	}
-	tr, ok := msgs[2].Blocks[0].(conversation.ToolResultBlock)
-	if !ok || tr.ToolUseID != "tu_1" || tr.Content != "echo ok" || tr.IsError {
-		t.Errorf("tool_result block = %#v", msgs[2].Blocks[0])
+	tr := msgs[2].ToolResults[0]
+	if tr.ToolUseID != "tu_1" || tr.Content != "echo ok" || tr.IsError {
+		t.Errorf("tool_result = %#v", tr)
 	}
 
 	// The next request carries history + tools.
@@ -165,8 +164,35 @@ func TestTurnPlainReply(t *testing.T) {
 	if len(msgs) != 2 || msgs[1].Role != conversation.RoleAssistant || msgs[1].Content != "just text" {
 		t.Fatalf("history = %+v", msgs)
 	}
-	if msgs[1].Blocks != nil {
-		t.Errorf("plain reply should not carry blocks: %+v", msgs[1].Blocks)
+	if msgs[1].ThinkingBlocks != nil || msgs[1].ToolUses != nil {
+		t.Errorf("plain reply should carry no thinking/tool uses: %+v", msgs[1])
+	}
+}
+
+func TestTurnRecordsThinkingInHistory(t *testing.T) {
+	// Thinking blocks are committed on tool turns, where replaying them (with
+	// the provider's signature) is required to continue the thinking chain.
+	fc := &fakeClient{events: []llm.StreamEvent{
+		llm.ThinkingDelta{Text: "hmm"},
+		llm.ThinkingComplete{Thinking: "hmm", Signature: "sig_1"},
+		llm.TextDelta{Text: "calling"},
+		llm.ToolCallComplete{ToolID: "tu_1", ToolName: "echo_tool", Arguments: map[string]any{}},
+		llm.StreamEnd{StopReason: "tool_use"},
+	}}
+	tool := newRecordingTool()
+	reg := tools.NewRegistry()
+	reg.Register(tool)
+	conv := conversation.NewManager()
+	o := New(fc, reg, conv, "sys", false)
+	collectTurn(t, o, "hi")
+
+	msgs := conv.GetMessages()
+	if len(msgs) != 3 {
+		t.Fatalf("history = %+v", msgs)
+	}
+	th := msgs[1].ThinkingBlocks
+	if len(th) != 1 || th[0].Text != "hmm" || th[0].Signature != "sig_1" {
+		t.Errorf("thinking blocks = %+v, want one with signature sig_1", th)
 	}
 }
 
@@ -192,9 +218,12 @@ func TestTurnUnknownToolGetsErrorResult(t *testing.T) {
 	if len(msgs) != 3 {
 		t.Fatalf("history len = %d, want 3 (pairing preserved)", len(msgs))
 	}
-	tr, ok := msgs[2].Blocks[0].(conversation.ToolResultBlock)
-	if !ok || tr.ToolUseID != "tu_x" || !tr.IsError {
-		t.Errorf("tool_result = %#v", msgs[2].Blocks[0])
+	if len(msgs[2].ToolResults) != 1 {
+		t.Fatalf("results message = %+v", msgs[2])
+	}
+	tr := msgs[2].ToolResults[0]
+	if tr.ToolUseID != "tu_x" || !tr.IsError {
+		t.Errorf("tool_result = %#v", tr)
 	}
 }
 
@@ -228,7 +257,7 @@ func TestTurnMultipleToolCallsInOrder(t *testing.T) {
 		llm.ToolCallComplete{ToolID: "tu_2", ToolName: "echo_tool", Arguments: map[string]any{"n": 2.0}},
 		llm.StreamEnd{StopReason: "tool_use"},
 	}}
-	o := New(fc, reg, conv, "sys", false, "anthropic")
+	o := New(fc, reg, conv, "sys", false)
 	evs := collectTurn(t, o, "two calls")
 
 	// Both begin events precede both end events (stream phase), then ends
@@ -246,11 +275,10 @@ func TestTurnMultipleToolCallsInOrder(t *testing.T) {
 		t.Errorf("tool call order = %+v", tool.seen)
 	}
 	msgs := conv.GetMessages()
-	if len(msgs[2].Blocks) != 2 {
-		t.Fatalf("results message blocks = %d, want 2 (one message)", len(msgs[2].Blocks))
+	if len(msgs[2].ToolResults) != 2 {
+		t.Fatalf("results message = %+v, want 2 results in one message", msgs[2])
 	}
-	if !strings.Contains(msgs[2].Blocks[0].(conversation.ToolResultBlock).ToolUseID, "tu_1") &&
-		msgs[2].Blocks[0].(conversation.ToolResultBlock).ToolUseID != "tu_1" {
-		t.Errorf("results[0] = %+v", msgs[2].Blocks[0])
+	if msgs[2].ToolResults[0].ToolUseID != "tu_1" {
+		t.Errorf("results[0] = %+v", msgs[2].ToolResults[0])
 	}
 }

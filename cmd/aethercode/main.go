@@ -44,7 +44,7 @@ func main() {
 	registry.Register(&tools.GrepTool{WorkDir: cwd})
 
 	conv := conversation.NewManager()
-	orchestrator := agent.New(client, registry, conv, prompt.System, active.Thinking, string(active.Protocol))
+	orchestrator := agent.New(client, registry, conv, prompt.System, active.Thinking)
 
 	if err := tui.Run(tui.Options{
 		Agent:        orchestrator,

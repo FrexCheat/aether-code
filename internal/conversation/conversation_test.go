@@ -37,12 +37,12 @@ func TestGetMessagesCopy(t *testing.T) {
 	}
 }
 
-func TestBlocksAppendAndCopy(t *testing.T) {
+func TestAddAssistantFullAndToolResults(t *testing.T) {
 	m := NewManager()
 	m.AddUserMessage("q")
-	m.AddAssistantBlocks(
-		TextBlock{Text: "let me check"},
-		ToolUseBlock{ID: "t1", Name: "read_file", Args: map[string]any{"path": "a.go"}},
+	m.AddAssistantFull("let me check",
+		[]ThinkingBlock{{Text: "thinking", Signature: "sig1"}},
+		[]ToolUseBlock{{ID: "t1", Name: "read_file", Args: map[string]any{"path": "a.go"}}},
 	)
 	m.AddToolResults(
 		ToolResultBlock{ToolUseID: "t1", Content: "contents"},
@@ -53,29 +53,42 @@ func TestBlocksAppendAndCopy(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("len = %d, want 3", len(got))
 	}
-	if len(got[1].Blocks) != 2 {
-		t.Fatalf("assistant blocks = %d, want 2", len(got[1].Blocks))
+	a := got[1]
+	if a.Role != RoleAssistant || a.Content != "let me check" {
+		t.Errorf("assistant = %+v", a)
 	}
-	tu, ok := got[1].Blocks[1].(ToolUseBlock)
-	if !ok || tu.ID != "t1" || tu.Name != "read_file" {
-		t.Errorf("blocks[1] = %#v, want ToolUseBlock t1", got[1].Blocks[1])
+	if len(a.ThinkingBlocks) != 1 || a.ThinkingBlocks[0].Signature != "sig1" {
+		t.Errorf("thinking = %+v", a.ThinkingBlocks)
 	}
-	res, ok := got[2].Blocks[0].(ToolResultBlock)
-	if !ok || res.ToolUseID != "t1" || res.IsError {
-		t.Errorf("results[0] = %#v, want ToolResultBlock t1 ok", got[2].Blocks[0])
+	if len(a.ToolUses) != 1 || a.ToolUses[0].ID != "t1" || a.ToolUses[0].Name != "read_file" {
+		t.Errorf("tool uses = %+v", a.ToolUses)
 	}
-	if res2, ok := got[2].Blocks[1].(ToolResultBlock); !ok || !res2.IsError {
-		t.Errorf("results[1] = %#v, want error ToolResultBlock", got[2].Blocks[1])
+	r := got[2]
+	if r.Role != RoleUser || r.Content != "" || len(r.ToolUses) != 0 {
+		t.Errorf("results message = %+v", r)
+	}
+	if len(r.ToolResults) != 2 || r.ToolResults[0].ToolUseID != "t1" || r.ToolResults[1].IsError != true {
+		t.Errorf("tool results = %+v", r.ToolResults)
 	}
 }
 
-func TestBlocksGetMessagesCopy(t *testing.T) {
+func TestAddAssistantFullNilSlices(t *testing.T) {
 	m := NewManager()
-	m.AddAssistantBlocks(ToolUseBlock{ID: "t1", Name: "bash"})
+	m.AddAssistantFull("reply", nil, nil)
 	got := m.GetMessages()
-	got[0].Blocks[0] = ToolUseBlock{ID: "tampered"}
-	if m.GetMessages()[0].Blocks[0].(ToolUseBlock).ID != "t1" {
-		t.Errorf("blocks aliased: %#v", m.GetMessages()[0].Blocks)
+	if got[0].ThinkingBlocks != nil || got[0].ToolUses != nil {
+		t.Errorf("nil slices should stay nil: %+v", got[0])
+	}
+}
+
+func TestBlockSlicesGetMessagesCopy(t *testing.T) {
+	m := NewManager()
+	m.AddAssistantFull("", nil, []ToolUseBlock{{ID: "t1", Name: "bash"}})
+	got := m.GetMessages()
+	got[0].ToolUses[0] = ToolUseBlock{ID: "tampered"}
+	got[0].ToolUses = append(got[0].ToolUses, ToolUseBlock{ID: "extra"})
+	if m.GetMessages()[0].ToolUses[0].ID != "t1" || len(m.GetMessages()[0].ToolUses) != 1 {
+		t.Errorf("tool uses aliased: %#v", m.GetMessages()[0].ToolUses)
 	}
 }
 
