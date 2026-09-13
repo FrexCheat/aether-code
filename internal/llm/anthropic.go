@@ -1,16 +1,5 @@
-// anthropic.go — Anthropic Messages API adapter (llm.Client).
-//
-// Streaming, message translation (including consecutive same-role merging per
-// the API docs), and error classification; delivery and arg-parsing helpers
-// are shared in stream.go. API key is never embedded in returned error
-// strings.
-//
-// Wire events map onto the unified stream as: text_delta → TextDelta with the
-// text block's content_block_stop → TextComplete, thinking_delta →
-// ThinkingDelta, signature_delta accumulates into ThinkingComplete at
-// content_block_stop, tool_use blocks accumulate input_json_delta into one
-// ToolCallComplete, message_delta usage → StreamEnd.Usage.
-
+// anthropic.go — Anthropic Messages API adapter. Delivery and arg-parsing
+// helpers are shared in stream.go; the API key never appears in error strings.
 package llm
 
 import (
@@ -66,22 +55,18 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 		defer stream.Close()
 
 		sawStop := false
-		var usage anthropicUsage
+		var usage UsageInfo
 
 		// Per-block accumulation. Anthropic streams blocks sequentially:
 		// start → deltas → stop before the next block starts.
 		var (
-			curThinking strings.Builder
-			curSig      string
-			curToolID   string
-			curToolName string
-			curText     bool // inside a text block; TextComplete fires at its stop
-			// curToolSeed holds the input delivered at content_block_start;
-			// on the streaming wire it is only the "{}" placeholder, so the
-			// real arguments always come from curToolArgs below. The seed is
-			// a fallback for blocks whose input arrives complete at start.
-			curToolSeed json.RawMessage
-			curToolArgs strings.Builder
+			thinkingAccum     strings.Builder
+			thinkingSignature string
+			toolCallID        string
+			toolCallName      string
+			inText            bool // inside a text block; TextComplete fires at its stop
+			toolArgsSeed      json.RawMessage
+			toolArgsJSON      strings.Builder
 		)
 
 		for stream.Next() {
@@ -89,14 +74,14 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 			case anthropic.ContentBlockStartEvent:
 				switch block := ev.ContentBlock.AsAny().(type) {
 				case anthropic.TextBlock:
-					curText = true
+					inText = true
 				case anthropic.ThinkingBlock:
-					curThinking.Reset()
-					curSig = block.Signature
+					thinkingAccum.Reset()
+					thinkingSignature = block.Signature
 				case anthropic.ToolUseBlock:
-					curToolID, curToolName = block.ID, block.Name
-					curToolSeed = block.Input
-					curToolArgs.Reset()
+					toolCallID, toolCallName = block.ID, block.Name
+					toolArgsSeed = block.Input
+					toolArgsJSON.Reset()
 				}
 			case anthropic.ContentBlockDeltaEvent:
 				switch d := ev.Delta.AsAny().(type) {
@@ -105,51 +90,52 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 						return
 					}
 				case anthropic.ThinkingDelta:
-					curThinking.WriteString(d.Thinking)
+					thinkingAccum.WriteString(d.Thinking)
 					if !send(ThinkingDelta{Text: d.Thinking}) {
 						return
 					}
 				case anthropic.SignatureDelta:
-					curSig = d.Signature
+					thinkingSignature = d.Signature
 				case anthropic.InputJSONDelta:
-					curToolArgs.WriteString(d.PartialJSON)
+					toolArgsJSON.WriteString(d.PartialJSON)
 				}
 			case anthropic.ContentBlockStopEvent:
 				switch {
-				case curText:
-					curText = false
+				case inText:
+					inText = false
 					if !send(TextComplete{}) {
 						return
 					}
-				case curThinking.Len() > 0:
-					if !send(ThinkingComplete{Thinking: curThinking.String(), Signature: curSig}) {
+				case thinkingAccum.Len() > 0:
+					if !send(ThinkingComplete{Thinking: thinkingAccum.String(), Signature: thinkingSignature}) {
 						return
 					}
-					curThinking.Reset()
-					curSig = ""
-				case curToolID != "":
-					// Assemble the fragmented input_json_delta slices; fall
-					// back to the block-start seed when no deltas arrived.
-					raw := curToolArgs.String()
+					thinkingAccum.Reset()
+					thinkingSignature = ""
+				case toolCallID != "":
+					// Assemble the fragmented input_json_delta slices; the
+					// block-start input is only a "{}" placeholder on the
+					// streaming wire, so it is a fallback when no deltas arrived.
+					raw := toolArgsJSON.String()
 					if strings.TrimSpace(raw) == "" {
-						raw = string(curToolSeed)
+						raw = string(toolArgsSeed)
 					}
 					if !send(ToolCallComplete{
-						ToolID:    curToolID,
-						ToolName:  curToolName,
+						ToolID:    toolCallID,
+						ToolName:  toolCallName,
 						Arguments: parseToolArgs(raw),
 					}) {
 						return
 					}
-					curToolID = ""
-					curToolSeed = nil
+					toolCallID = ""
+					toolArgsSeed = nil
 				}
 			case anthropic.MessageDeltaEvent:
-				usage = anthropicUsage{
-					input:  int(ev.Usage.InputTokens),
-					output: int(ev.Usage.OutputTokens),
-					cacheR: int(ev.Usage.CacheReadInputTokens),
-					cacheW: int(ev.Usage.CacheCreationInputTokens),
+				usage = UsageInfo{
+					InputTokens:         int(ev.Usage.InputTokens),
+					OutputTokens:        int(ev.Usage.OutputTokens),
+					CacheReadTokens:     int(ev.Usage.CacheReadInputTokens),
+					CacheCreationTokens: int(ev.Usage.CacheCreationInputTokens),
 				}
 			case anthropic.MessageStopEvent:
 				sawStop = true
@@ -162,12 +148,7 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 		case stream.Err() != nil:
 			finish(StreamError{Err: mapAnthropicError(stream.Err())})
 		case sawStop:
-			finish(StreamEnd{Usage: UsageInfo{
-				InputTokens:         usage.input,
-				OutputTokens:        usage.output,
-				CacheReadTokens:     usage.cacheR,
-				CacheCreationTokens: usage.cacheW,
-			}})
+			finish(StreamEnd{Usage: usage})
 		default:
 			finish(StreamError{Err: errors.New("stream ended unexpectedly")})
 		}
@@ -193,12 +174,6 @@ func (c *anthropicClient) buildParams(req Request) anthropic.MessageNewParams {
 	return params
 }
 
-// buildAnthropicMessages converts the unified history into Anthropic wire
-// messages. Anthropic requires alternating roles: consecutive same-role turns
-// are folded into one message by appending content blocks. Tool results ride
-// in user-role messages immediately after the assistant turn that issued the
-// calls; the assistant's thinking blocks are replayed first, signature
-// included, so extended thinking stays valid across tool rounds.
 func buildAnthropicMessages(messages []conversation.Message) []anthropic.MessageParam {
 	var out []anthropic.MessageParam
 	for _, m := range messages {
@@ -231,19 +206,11 @@ func buildAnthropicMessages(messages []conversation.Message) []anthropic.Message
 			}
 		}
 
-		// Fold a same-role message into the previous one; for user messages
-		// this covers the common tool-results-then-next-prompt sequence.
-		if n := len(out); n > 0 && out[n-1].Role == role {
-			out[n-1].Content = append(out[n-1].Content, blocks...)
-			continue
-		}
 		out = append(out, anthropic.MessageParam{Role: role, Content: blocks})
 	}
 	return out
 }
 
-// translateAnthropicTools converts the neutral tool schemas into Anthropic
-// tool params.
 func translateAnthropicTools(schemas []tools.ToolSchema) []anthropic.ToolUnionParam {
 	result := make([]anthropic.ToolUnionParam, 0, len(schemas))
 	for _, s := range schemas {
@@ -283,18 +250,14 @@ func translateAnthropicTools(schemas []tools.ToolSchema) []anthropic.ToolUnionPa
 	return result
 }
 
-// anthropicUsage collects the cumulative usage reported by message_delta.
-type anthropicUsage struct {
-	input, output, cacheR, cacheW int
-}
-
-// mapAnthropicError classifies a transport/API error returned by the SDK's
-// stream.Err() (typically an apierror with HTTP status) onto the five kinds.
 func mapAnthropicError(err error) error {
 	if err == nil {
 		return nil
 	}
-	status, apiType, msg := extractAnthropicMeta(err)
+	status, apiType, message := extractAnthropicMeta(err)
+	if message == "" {
+		message = err.Error()
+	}
 	if status == 0 {
 		s := strings.ToLower(err.Error())
 		switch {
@@ -303,22 +266,22 @@ func mapAnthropicError(err error) error {
 		case strings.Contains(s, "429") || strings.Contains(s, "rate limit"):
 			status = 429
 		case strings.Contains(s, "overloaded") || strings.Contains(s, "529"):
-			return &ServerError{Message: msgOrErr(msg, err), Cause: err}
+			return &ServerError{Message: message, Cause: err}
 		}
 		if status == 0 && isNetworkHint(err) {
-			return &NetworkError{Message: msgOrErr(msg, err), Cause: err}
+			return &NetworkError{Message: message, Cause: err}
 		}
 	}
-	return classify(status, apiType, "", msgOrErr(msg, err), err)
+	return classify(status, apiType, "", message, err)
 }
 
-func extractAnthropicMeta(err error) (status int, apiType, msg string) {
+func extractAnthropicMeta(err error) (status int, apiType, message string) {
 	var ae *anthropic.Error
 	if errors.As(err, &ae) {
 		status = ae.StatusCode
 	}
-	msg = err.Error()
-	lower := strings.ToLower(msg)
+	message = err.Error()
+	lower := strings.ToLower(message)
 	switch {
 	case strings.Contains(lower, "overloaded_error"):
 		apiType = "overloaded_error"
@@ -329,12 +292,5 @@ func extractAnthropicMeta(err error) (status int, apiType, msg string) {
 	case strings.Contains(lower, "invalid_request"):
 		apiType = "invalid_request_error"
 	}
-	return status, apiType, msg
-}
-
-func msgOrErr(msg string, err error) string {
-	if msg != "" {
-		return msg
-	}
-	return err.Error()
+	return status, apiType, message
 }

@@ -187,44 +187,6 @@ func TestAnthropicStreamRequestBody(t *testing.T) {
 	}
 }
 
-func TestAnthropicMergesConsecutiveSameRole(t *testing.T) {
-	cap := &capture{}
-	srv := newServer(t, "anthropic", "text_only.sse", cap)
-	defer srv.Close()
-	req := Request{
-		System: "sys",
-		Messages: []conversation.Message{
-			{Role: conversation.RoleUser, Content: "a"},
-			{Role: conversation.RoleUser, Content: "b"},
-			{Role: conversation.RoleAssistant, Content: "c"},
-			{Role: conversation.RoleAssistant, Content: "d"},
-		},
-	}
-	collect(t, newAnthropicTestClient(srv).Stream(context.Background(), req))
-	var body struct {
-		Messages []struct {
-			Role    string `json:"role"`
-			Content []struct {
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(cap.get(), &body); err != nil {
-		t.Fatalf("%v\n%s", err, cap.get())
-	}
-	if len(body.Messages) != 2 {
-		t.Fatalf("messages len = %d, want 2 (merged): %+v", len(body.Messages), body.Messages)
-	}
-	if body.Messages[0].Role != "user" || len(body.Messages[0].Content) != 2 ||
-		body.Messages[0].Content[0].Text != "a" || body.Messages[0].Content[1].Text != "b" {
-		t.Errorf("messages[0] = %+v, want two text blocks a/b", body.Messages[0])
-	}
-	if body.Messages[1].Role != "assistant" || len(body.Messages[1].Content) != 2 ||
-		body.Messages[1].Content[0].Text != "c" || body.Messages[1].Content[1].Text != "d" {
-		t.Errorf("messages[1] = %+v, want two text blocks c/d", body.Messages[1])
-	}
-}
-
 // TestAnthropicStreamToolCallAssemblesFragmentedJSON proves the adapter
 // stitches the input_json_delta fragments of one tool_use block into the
 // complete Arguments map — the wire never delivers the JSON whole.

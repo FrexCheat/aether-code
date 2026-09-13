@@ -611,9 +611,9 @@ func foldTerminal(t *testing.T, term agent.AgentEvent) (Model, *printRecorder) {
 	return mm.(Model), rec
 }
 
-func TestLoopCompleteOutcomeTiers(t *testing.T) {
+func TestLoopCompleteStopReasons(t *testing.T) {
 	// ModelStop: the plain done footer.
-	m, rec := foldTerminal(t, agent.LoopComplete{Outcome: agent.OutcomeModelStop, TotalTurns: 2})
+	m, rec := foldTerminal(t, agent.LoopComplete{Reason: agent.StoppedByModel, TotalTurns: 2})
 	if m.live != nil {
 		t.Fatal("terminal event must close the live turn")
 	}
@@ -622,21 +622,14 @@ func TestLoopCompleteOutcomeTiers(t *testing.T) {
 	}
 
 	// MaxIterations: yellow guard-rail notice, then the footer.
-	_, rec = foldTerminal(t, agent.LoopComplete{Outcome: agent.OutcomeMaxIterations, TotalTurns: 50})
+	_, rec = foldTerminal(t, agent.LoopComplete{Reason: agent.StoppedByLimit, TotalTurns: 50})
 	last := ansi.Strip(rec.lastChunk())
 	if !strings.Contains(last, "Turn limit reached") || !strings.Contains(last, "· done") {
 		t.Errorf("MaxIterations chunk = %q, want warn notice + footer", last)
 	}
 
-	// UnknownTool: yellow notice, then the footer.
-	_, rec = foldTerminal(t, agent.LoopComplete{Outcome: agent.OutcomeUnknownTool, TotalTurns: 3})
-	last = ansi.Strip(rec.lastChunk())
-	if !strings.Contains(last, "unknown tools") || !strings.Contains(last, "· done") {
-		t.Errorf("UnknownTool chunk = %q, want warn notice + footer", last)
-	}
-
 	// Cancelled: a neutral notice and no footer.
-	_, rec = foldTerminal(t, agent.LoopComplete{Outcome: agent.OutcomeCancelled})
+	_, rec = foldTerminal(t, agent.LoopComplete{Reason: agent.StoppedByUser})
 	last = ansi.Strip(rec.lastChunk())
 	if !strings.Contains(last, "Cancelled.") || strings.Contains(last, "· done") {
 		t.Errorf("Cancelled chunk = %q, want neutral notice only", last)

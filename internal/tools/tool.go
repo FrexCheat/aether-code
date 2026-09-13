@@ -28,12 +28,8 @@ import (
 	"strings"
 )
 
-// MaxOutputChars is the truncation threshold for one tool result before it
-// enters the conversation history. Oversized results are cut with a marker
-// rather than spilled to disk.
 const MaxOutputChars = 50000
 
-// Category classifies a tool by its side-effect level.
 type Category string
 
 const (
@@ -42,19 +38,12 @@ const (
 	CategoryCommand Category = "command"
 )
 
-// ToolResult is what a tool execution returns to the model. Failures are
-// values, not panics: IsError marks them so the model can adjust and retry.
 type ToolResult struct {
 	Output  string
 	IsError bool
-	// Diff marks Output as a VCS-style diff (edit_file). The TUI renders such
-	// results line by line with +/- coloring instead of discarding them.
-	Diff bool
+	Diff    bool
 }
 
-// Tool is the contract every tool implements. Schema returns the
-// provider-neutral description of the tool; each llm adapter translates it
-// into its own API format.
 type Tool interface {
 	Name() string
 	Description() string
@@ -63,35 +52,24 @@ type Tool interface {
 	Execute(ctx context.Context, args map[string]any) ToolResult
 }
 
-// ToolSchema is the provider-neutral tool description sent with every
-// request. InputSchema is a JSON-Schema object describing the Execute
-// arguments.
 type ToolSchema struct {
 	Name        string
 	Description string
 	InputSchema map[string]any
 }
 
-// TitledTool is optionally implemented by tools that summarize their
-// arguments into a short UI title ("Read main.go"). The TUI falls back to
-// the tool's name for tools that don't.
 type TitledTool interface {
 	Title(args map[string]any) string
 }
 
-// Registry is the central tool directory. Registration happens once at
-// startup; lookup and schema generation are read-only afterwards.
 type Registry struct {
 	tools map[string]Tool
 }
 
-// NewRegistry returns an empty registry.
 func NewRegistry() *Registry {
 	return &Registry{tools: map[string]Tool{}}
 }
 
-// Register adds a tool. Duplicate names are a programming error at startup
-// and panic rather than silently shadowing.
 func (r *Registry) Register(t Tool) {
 	name := t.Name()
 	if _, dup := r.tools[name]; dup {
@@ -100,24 +78,14 @@ func (r *Registry) Register(t Tool) {
 	r.tools[name] = t
 }
 
-// Get returns the tool registered under name, or nil.
 func (r *Registry) Get(name string) Tool {
 	return r.tools[name]
 }
 
-// GetAllSchemas builds the tool list for one request from every registered
-// tool; it is FilteredSchemas with no filter.
-func (r *Registry) GetAllSchemas() []ToolSchema {
-	return r.FilteredSchemas(func(Category) bool { return true })
-}
-
-// FilteredSchemas builds the tool list for one request from the tools whose
-// category passes include. Tools are walked in sorted-name order, not map
-// order. Go map iteration is randomized; unsorted, the same tool set would
-// serialize into a different array every request, and the prompt-cache prefix
-// after the tools block would be invalidated even though nothing changed
-// semantically.
-func (r *Registry) FilteredSchemas(include func(Category) bool) []ToolSchema {
+func (r *Registry) Schemas(include func(Category) bool) []ToolSchema {
+	if include == nil {
+		include = func(Category) bool { return true }
+	}
 	names := make([]string, 0, len(r.tools))
 	for name := range r.tools {
 		names = append(names, name)
@@ -133,9 +101,6 @@ func (r *Registry) FilteredSchemas(include func(Category) bool) []ToolSchema {
 	return schemas
 }
 
-// truncateTitle cuts s to max runes for one-line display, appending an
-// ellipsis when cut. Rune-safe: byte slicing would split multi-byte
-// characters mid-sequence.
 func truncateTitle(s string, max int) string {
 	runes := []rune(s)
 	if len(runes) <= max {
@@ -144,8 +109,6 @@ func truncateTitle(s string, max int) string {
 	return string(runes[:max]) + "…"
 }
 
-// TruncateOutput caps a tool result at max characters. The marker tells the
-// model the output was cut, so it knows the result is partial.
 func TruncateOutput(s string, max int) string {
 	if max <= 0 || len(s) <= max {
 		return s
@@ -153,9 +116,6 @@ func TruncateOutput(s string, max int) string {
 	return s[:max] + fmt.Sprintf("\n\n[output truncated: showing first %d of %d characters]", max, len(s))
 }
 
-// ResolveWorkPath resolves a tool path argument against the working directory.
-// Relative paths are always interpreted relative to workDir (N3); absolute
-// paths pass through unchanged.
 func ResolveWorkPath(workDir, path string) string {
 	if filepath.IsAbs(path) {
 		return filepath.Clean(path)
@@ -163,8 +123,6 @@ func ResolveWorkPath(workDir, path string) string {
 	return filepath.Clean(filepath.Join(workDir, path))
 }
 
-// SkipDirs are directory names never descended into by glob/grep. They hold
-// dependency caches and VCS data whose contents are noise for code search.
 var SkipDirs = map[string]bool{
 	".git": true, ".hg": true, ".svn": true,
 	"node_modules": true, ".venv": true, "venv": true,
@@ -172,8 +130,6 @@ var SkipDirs = map[string]bool{
 	"dist": true, "build": true, "target": true,
 }
 
-// looksBinary reports whether a chunk of file content is likely binary
-// (contains a NUL byte in the first 8 KiB), used by grep to skip non-text.
 func looksBinary(chunk []byte) bool {
 	if len(chunk) > 8192 {
 		chunk = chunk[:8192]
@@ -181,7 +137,6 @@ func looksBinary(chunk []byte) bool {
 	return strings.IndexByte(string(chunk), 0) >= 0
 }
 
-// isTextFile opens path and reports whether the leading chunk looks like text.
 func isTextFile(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {

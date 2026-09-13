@@ -1,29 +1,13 @@
+// Anthropic rejects any request where a tool_use has no paired tool_result.
+// Within one process the agent keeps the history pair-complete itself; this
+// repair is the fallback for history assembled any other way (e.g. restored
+// sessions).
 package conversation
 
-// Anthropic rejects any request where a tool_use has no paired tool_result.
-// Within one process the agent keeps the history pair-complete itself (every
-// announced call is committed with a result, executed or synthesized), so a
-// clean history needs no repair. Unpaired history still reaches a request
-// boundary once sessions are restored from disk or history is assembled by
-// other means; the synthesized results below tell the model the tool
-// produced nothing trustworthy.
 const (
-	// InterruptedToolResult stands in for tool calls that never got a result.
-	// The tool may not have started, or may have been cut short, so the
-	// wording must not claim it had no effects.
 	InterruptedToolResult = "Tool execution was interrupted. The tool may or may not have completed; verify before relying on its effects."
 )
 
-// EnsureToolPairing returns messages with the tool_use/tool_result pairing
-// repaired:
-//   - tool_use blocks with no result get a synthesized error tool_result
-//     inserted immediately after their message
-//   - tool_results with no matching tool_use are dropped; a message left
-//     empty by the drop is dropped entirely
-//
-// A history with no pairing violations is returned unchanged, without
-// copying. The repair is never written back into the Manager — history
-// records what actually happened, the fix only makes one request legal.
 func EnsureToolPairing(messages []Message) []Message {
 	resolved := make(map[string]struct{})
 	issued := make(map[string]struct{})

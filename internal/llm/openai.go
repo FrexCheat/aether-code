@@ -1,18 +1,6 @@
-// openai.go — OpenAI Responses API adapter (llm.Client).
-//
-// Streaming, message translation (straight-through; the Responses API accepts
-// arbitrary role sequences), and error classification; delivery and
-// arg-parsing helpers are shared in stream.go. API key is never embedded in
-// returned error strings.
-//
-// Wire events map onto the unified stream as: output_text.delta → TextDelta
-// with the message item's output_item.done → TextComplete,
-// reasoning_text/summary_text delta → ThinkingDelta with the reasoning item's
-// done → ThinkingComplete (signature = reasoning item ID, replayed as a
-// reasoning item on the next request), function_call items accumulate
-// arguments.delta into one ToolCallComplete at arguments.done,
-// response.completed usage → StreamEnd.Usage.
-
+// openai.go — OpenAI Responses API adapter. Message translation is
+// straight-through (the Responses API accepts arbitrary role sequences);
+// delivery and arg-parsing helpers are shared in stream.go.
 package llm
 
 import (
@@ -68,13 +56,10 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 		var failErr error
 		var usage UsageInfo
 
-		// Per-item tool-call accumulation. Function calls stream their name
-		// (output_item.added), then arguments (arguments.delta), then finish
-		// (arguments.done). Tracked by output_index to tolerate interleaving.
-		type pendingTool struct {
-			name string
-		}
-		tools := map[int64]*pendingTool{}
+		// Function calls stream their name (output_item.added) then their
+		// arguments (arguments.delta → done), tracked by output_index to
+		// tolerate interleaving.
+		pendingCalls := map[int64]string{}
 
 		// inText tracks the message item carrying the visible reply; its
 		// output_item.done is the unified TextComplete.
@@ -84,20 +69,20 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 		// output_item.added) becomes the ThinkingComplete signature so the
 		// agent can replay it as a reasoning item on the next request.
 		var (
-			inReasoning  bool
-			reasoningID  string
-			reasoningAcc strings.Builder
+			inReasoning   bool
+			reasoningID   string
+			reasoningText strings.Builder
 		)
-		endThinking := func() bool {
+		flushThinking := func() bool {
 			if !inReasoning {
 				return true
 			}
 			inReasoning = false
-			if !send(ThinkingComplete{Thinking: reasoningAcc.String(), Signature: reasoningID}) {
+			if !send(ThinkingComplete{Thinking: reasoningText.String(), Signature: reasoningID}) {
 				return false
 			}
 			reasoningID = ""
-			reasoningAcc.Reset()
+			reasoningText.Reset()
 			return true
 		}
 
@@ -108,11 +93,11 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 				case responses.ResponseOutputMessage:
 					inText = true
 				case responses.ResponseFunctionToolCall:
-					tools[ev.OutputIndex] = &pendingTool{name: item.Name}
+					pendingCalls[ev.OutputIndex] = item.Name
 				case responses.ResponseReasoningItem:
 					inReasoning = true
 					reasoningID = item.ID
-					reasoningAcc.Reset()
+					reasoningText.Reset()
 				}
 			case responses.ResponseOutputItemDoneEvent:
 				switch ev.Item.AsAny().(type) {
@@ -126,27 +111,22 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 				case responses.ResponseReasoningItem:
 					// Belt-and-braces: normally the *.done text events already
 					// closed the segment; emit whatever accumulated if not.
-					if !endThinking() {
+					if !flushThinking() {
 						return
 					}
 				}
 			case responses.ResponseFunctionCallArgumentsDeltaEvent:
-				// Arguments stream via deltas and arrive complete at the done
-				// event, which is the only one consumers see.
+				// Argument fragments are ignored; the done event carries the
+				// complete arguments.
 			case responses.ResponseFunctionCallArgumentsDoneEvent:
-				toolID := ev.ItemID
-				name := ""
-				if t, ok := tools[ev.OutputIndex]; ok {
-					name = t.name
-				}
 				if !send(ToolCallComplete{
-					ToolID:    toolID,
-					ToolName:  name,
+					ToolID:    ev.ItemID,
+					ToolName:  pendingCalls[ev.OutputIndex],
 					Arguments: parseToolArgs(ev.Arguments),
 				}) {
 					return
 				}
-				delete(tools, ev.OutputIndex)
+				delete(pendingCalls, ev.OutputIndex)
 			case responses.ResponseTextDeltaEvent:
 				if !send(TextDelta{Text: ev.Delta}) {
 					return
@@ -160,14 +140,14 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 					text = d.Delta
 				}
 				inReasoning = true
-				reasoningAcc.WriteString(text)
+				reasoningText.WriteString(text)
 				if !send(ThinkingDelta{Text: text}) {
 					return
 				}
 			// Whichever done event arrives first closes the segment; the
 			// inReasoning guard keeps the second one from double-emitting.
 			case responses.ResponseReasoningTextDoneEvent, responses.ResponseReasoningSummaryTextDoneEvent:
-				if !endThinking() {
+				if !flushThinking() {
 					return
 				}
 			case responses.ResponseCompletedEvent:
@@ -306,12 +286,12 @@ func translateOpenAITools(schemas []tools.ToolSchema) []responses.ToolUnionParam
 }
 
 // mapOpenAIError classifies a transport/API error returned by the SDK's
-// stream.Err() (typically an apierror with HTTP status) onto the five kinds.
+// stream.Err() onto the five kinds.
 func mapOpenAIError(err error) error {
 	if err == nil {
 		return nil
 	}
-	status, code, msg := extractOpenAIMeta(err)
+	status, code, message := extractOpenAIMeta(err)
 	if status == 0 {
 		s := strings.ToLower(err.Error())
 		switch {
@@ -321,18 +301,20 @@ func mapOpenAIError(err error) error {
 			status = 429
 		}
 		if status == 0 && isNetworkHint(err) {
-			return &NetworkError{Message: msgOrErr(msg, err), Cause: err}
+			return &NetworkError{Message: message, Cause: err}
 		}
 	}
-	return classify(status, "", code, msgOrErr(msg, err), err)
+	return classify(status, "", code, message, err)
 }
 
-func extractOpenAIMeta(err error) (status int, code, msg string) {
+// extractOpenAIMeta pulls the HTTP status and API error code out of an SDK
+// error, falling back to the raw message.
+func extractOpenAIMeta(err error) (status int, code, message string) {
 	var ae *openai.Error
 	if errors.As(err, &ae) {
 		status = ae.StatusCode
 		code = ae.Code
 	}
-	msg = err.Error()
-	return status, code, msg
+	message = err.Error()
+	return status, code, message
 }

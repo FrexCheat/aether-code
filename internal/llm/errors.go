@@ -1,9 +1,6 @@
-// Package llm — errors: unified classification over all provider backends.
-//
-// Each provider adapter maps HTTP and API error shapes onto five kinds so
-// callers have a single errors.As path. Error() intentionally never embeds the
-// provider API key. ClassifyNetwork covers transport failures that carry no
-// status code.
+// Package llm — errors: every adapter maps its HTTP/API error shapes onto
+// these five kinds so callers have a single errors.As path. Error() never
+// embeds the provider API key.
 package llm
 
 import (
@@ -104,7 +101,7 @@ func (e *NetworkError) Error() string {
 func (e *NetworkError) Unwrap() error { return e.Cause }
 
 // classify maps a status and API-reported type/code/message onto one of the
-// five kinds. Callers should have already stripped any API key from message.
+// five kinds; specific matches are tried before the status-range fallbacks.
 func classify(status int, apiType, apiCode, message string, cause error) error {
 	if status == 401 || status == 403 || apiType == "authentication_error" || apiCode == "invalid_api_key" {
 		return &AuthenticationError{StatusCode: status, Message: message, Cause: cause}
@@ -131,7 +128,7 @@ func classify(status int, apiType, apiCode, message string, cause error) error {
 }
 
 // isNetworkHint reports whether err is plausibly a transport-level failure
-// (so callers can map stray connection errors to NetworkError without a status).
+// that carries no HTTP status.
 func isNetworkHint(err error) bool {
 	if err == nil {
 		return false

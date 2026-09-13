@@ -373,7 +373,7 @@ func TestOpenAIStreamCancel(t *testing.T) {
 }
 
 // TestOpenAIRegistrySchemasSurviveTranslation runs the real pipeline —
-// tools.Registry.GetAllSchemas() feeding buildParams — to prove the neutral
+// tools.Registry.Schemas(nil) feeding buildParams — to prove the neutral
 // "input_schema" key is translated into the Responses API's "parameters". A
 // key-name mismatch here used to send parameters:{} on the wire and got every
 // request rejected with 400 "Invalid schema for function ...".
@@ -385,7 +385,7 @@ func TestOpenAIRegistrySchemasSurviveTranslation(t *testing.T) {
 	defer srv.Close()
 	c := newOpenAITestClient(srv).(*openAIClient)
 	req := simpleReq(false)
-	req.Tools = reg.GetAllSchemas()
+	req.Tools = reg.Schemas(nil)
 	collect(t, c.Stream(context.Background(), req))
 
 	var body struct {

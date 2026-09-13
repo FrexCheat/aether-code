@@ -444,7 +444,7 @@ func TestGrep(t *testing.T) {
 
 // --- registry filtering ---
 
-func TestFilteredSchemas(t *testing.T) {
+func TestSchemas(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(&ReadFileTool{})
 	reg.Register(&WriteFileTool{})
@@ -454,7 +454,7 @@ func TestFilteredSchemas(t *testing.T) {
 	reg.Register(&GrepTool{})
 
 	// Read-only filter yields exactly the three read tools, name-sorted.
-	read := reg.FilteredSchemas(func(c Category) bool { return c == CategoryRead })
+	read := reg.Schemas(func(c Category) bool { return c == CategoryRead })
 	if len(read) != 3 {
 		t.Fatalf("read schemas = %d entries, want 3", len(read))
 	}
@@ -465,23 +465,23 @@ func TestFilteredSchemas(t *testing.T) {
 		}
 	}
 
-	// Include-all filter is equivalent to GetAllSchemas.
-	all := reg.FilteredSchemas(func(Category) bool { return true })
+	// An include-all filter and nil are equivalent.
+	all := reg.Schemas(func(Category) bool { return true })
 	if len(all) != 6 {
 		t.Fatalf("all schemas = %d entries, want 6", len(all))
 	}
-	full := reg.GetAllSchemas()
+	full := reg.Schemas(nil)
 	if len(full) != len(all) {
-		t.Fatalf("GetAllSchemas = %d entries, want %d", len(full), len(all))
+		t.Fatalf("Schemas(nil) = %d entries, want %d", len(full), len(all))
 	}
 	for i := range full {
 		if full[i].Name != all[i].Name {
-			t.Errorf("entry %d: GetAllSchemas=%v FilteredSchemas=%v", i, full[i].Name, all[i].Name)
+			t.Errorf("entry %d: Schemas(nil)=%v Schemas(all)=%v", i, full[i].Name, all[i].Name)
 		}
 	}
 
 	// Empty filter yields an empty (non-nil) list.
-	none := reg.FilteredSchemas(func(Category) bool { return false })
+	none := reg.Schemas(func(Category) bool { return false })
 	if len(none) != 0 {
 		t.Fatalf("empty filter = %d entries, want 0", len(none))
 	}

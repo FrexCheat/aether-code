@@ -1,13 +1,3 @@
-// 分批执行器：把一个 Turn 内的全部工具调用按安全类别调度执行，对上层
-// （RunLoop）隐藏并发细节。
-//
-// 批次规则（对齐 docs/specs/agent-loop/plan.md）：
-//   - 连续的已知读类调用合为一批并发执行（WaitGroup join 作屏障）；
-//   - 写类 / 命令类调用各自单独串行执行，并天然构成批次屏障；
-//   - 未知工具即时产出结构化失败结果，串行、不并发。
-//
-// 顺序不变量：结果槽位与 onEnd 回调都按模型给出的调用原序排列——事件流与
-// 历史同序，顺序字节稳定是协议配对与缓存前缀稳定的前提。
 package agent
 
 import (
@@ -20,26 +10,16 @@ import (
 	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
-// execOutcome is the product of one call's execution, index-aligned with the
-// input calls.
-type execOutcome struct {
+type callResult struct {
 	Result  tools.ToolResult
 	Elapsed time.Duration
-	Unknown bool // the call named an unregistered tool; nothing really executed
 }
 
-// executeToolCalls executes calls in safety batches while preserving call
-// order. onEnd is invoked in original call order: immediately for serial
-// calls, and after a read batch joins, in ascending index order. The
-// returned slice is len(calls) long, ordered by call position regardless of
-// completion timing.
-func executeToolCalls(ctx context.Context, calls []conversation.ToolUseBlock,
-	reg *tools.Registry, onEnd func(index int, o execOutcome)) []execOutcome {
-
-	outcomes := make([]execOutcome, len(calls))
+func executeToolCalls(ctx context.Context, calls []conversation.ToolUseBlock, reg *tools.Registry, onDone func(index int, res callResult)) []callResult {
+	results := make([]callResult, len(calls))
 	notify := func(i int) {
-		if onEnd != nil {
-			onEnd(i, outcomes[i])
+		if onDone != nil {
+			onDone(i, results[i])
 		}
 	}
 
@@ -48,18 +28,17 @@ func executeToolCalls(ctx context.Context, calls []conversation.ToolUseBlock,
 		switch {
 		case tool == nil:
 			// Unknown tool: instant structured failure, never concurrent.
-			outcomes[i] = execOutcome{
+			results[i] = callResult{
 				Result: tools.ToolResult{
 					Output:  "unknown tool " + calls[i].Name + "; pick one of the tools offered",
 					IsError: true,
 				},
-				Unknown: true,
 			}
 			notify(i)
 			i++
 		case tool.Category() != tools.CategoryRead:
 			// Write / command: run alone as a barrier between read batches.
-			outcomes[i] = runOne(ctx, tool, calls[i])
+			results[i] = runTool(ctx, tool, calls[i])
 			notify(i)
 			i++
 		default:
@@ -77,28 +56,22 @@ func executeToolCalls(ctx context.Context, calls []conversation.ToolUseBlock,
 				wg.Add(1)
 				go func(k int) {
 					defer wg.Done()
-					outcomes[k] = runOne(ctx, reg.Get(calls[k].Name), calls[k])
+					results[k] = runTool(ctx, reg.Get(calls[k].Name), calls[k])
+					notify(k)
 				}(k)
 			}
 			wg.Wait()
-			for k := i; k < j; k++ {
-				notify(k)
-			}
 			i = j
 		}
 	}
-	return outcomes
+	return results
 }
 
-// runOne executes one registered tool call and times it. A panicking tool is
-// folded into an error result — failures are values, not panics, per the Tool
-// contract — so one broken tool can neither kill the process nor leave its
-// batch-mates' outcomes unwritten.
-func runOne(ctx context.Context, tool tools.Tool, call conversation.ToolUseBlock) (oc execOutcome) {
+func runTool(ctx context.Context, tool tools.Tool, call conversation.ToolUseBlock) (res callResult) {
 	start := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
-			oc = execOutcome{
+			res = callResult{
 				Result: tools.ToolResult{
 					Output:  fmt.Sprintf("tool %s panicked: %v", call.Name, r),
 					IsError: true,
@@ -107,5 +80,5 @@ func runOne(ctx context.Context, tool tools.Tool, call conversation.ToolUseBlock
 			}
 		}
 	}()
-	return execOutcome{Result: tool.Execute(ctx, call.Args), Elapsed: time.Since(start)}
+	return callResult{Result: tool.Execute(ctx, call.Args), Elapsed: time.Since(start)}
 }

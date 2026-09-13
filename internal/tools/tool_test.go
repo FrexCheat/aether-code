@@ -60,8 +60,8 @@ func TestRegistrySchemasNeutral(t *testing.T) {
 	r.Register(fakeTool{name: "bash"})
 
 	// Byte stability across calls: same set, same order, both times.
-	first := r.GetAllSchemas()
-	second := r.GetAllSchemas()
+	first := r.Schemas(nil)
+	second := r.Schemas(nil)
 	if len(first) != 2 {
 		t.Fatalf("len = %d, want 2", len(first))
 	}

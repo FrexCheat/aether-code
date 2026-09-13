@@ -183,7 +183,7 @@ func TestRunLoopEndToEndWithToolCall(t *testing.T) {
 		t.Errorf("evs[4] = %+v, want TurnComplete{1}", evs[4])
 	}
 	final, ok := lastEvent(evs).(LoopComplete)
-	if !ok || final.Outcome != OutcomeModelStop || final.TotalTurns != 1 {
+	if !ok || final.Reason != StoppedByModel || final.TotalTurns != 1 {
 		t.Fatalf("terminal = %+v", lastEvent(evs))
 	}
 	if final.Usage != (llm.UsageInfo{InputTokens: 30, OutputTokens: 8}) {
@@ -284,7 +284,7 @@ func TestRunLoopPlainReply(t *testing.T) {
 	}
 	// A pure reply is not a turn: no TurnComplete, and TotalTurns is 0.
 	lc, ok := evs[1].(LoopComplete)
-	if !ok || lc.Outcome != OutcomeModelStop || lc.TotalTurns != 0 {
+	if !ok || lc.Reason != StoppedByModel || lc.TotalTurns != 0 {
 		t.Errorf("evs[1] = %+v", evs[1])
 	}
 	msgs := conv.GetMessages()
@@ -322,7 +322,7 @@ func TestRunLoopMultiRoundTurnCounting(t *testing.T) {
 		t.Errorf("history lost the user message: %+v", fc.reqs[2].Messages[0])
 	}
 	final := lastEvent(evs).(LoopComplete)
-	if final.Outcome != OutcomeModelStop || final.TotalTurns != 2 {
+	if final.Reason != StoppedByModel || final.TotalTurns != 2 {
 		t.Errorf("terminal = %+v, want ModelStop with 2 turns", final)
 	}
 }
@@ -388,10 +388,10 @@ func TestRunLoopUnknownToolGetsErrorResult(t *testing.T) {
 	if tr.ToolUseID != "tu_x" || !tr.IsError {
 		t.Errorf("tool_result = %#v", tr)
 	}
-	// One unknown call is below the limit: the loop continued and stopped
-	// normally on the model's own reply.
+	// The error result lets the model recover: the loop continues to its reply
+	// in the next round instead of stopping.
 	final := lastEvent(evs).(LoopComplete)
-	if final.Outcome != OutcomeModelStop || final.TotalTurns != 1 {
+	if final.Reason != StoppedByModel || final.TotalTurns != 1 {
 		t.Errorf("terminal = %+v, want ModelStop after recovery", final)
 	}
 }
@@ -434,20 +434,21 @@ func TestRunLoopMultipleToolCallsInOrder(t *testing.T) {
 	o := New(fc, reg, conv, "sys", false, 50)
 	evs := collectLoop(t, o, "two calls")
 
-	// Ends fire in the model's original call order regardless of execution
-	// timing; both are read-category so they share one concurrent batch.
+	// Both calls are read-category, so they share one concurrent batch and
+	// their End events race; only the history order is fixed.
 	var ends []ToolCallEnd
 	for _, ev := range evs {
 		if e, ok := ev.(ToolCallEnd); ok {
 			ends = append(ends, e)
 		}
 	}
-	if len(ends) != 2 || ends[0].ToolID != "tu_1" || ends[1].ToolID != "tu_2" {
-		t.Fatalf("ends = %+v", ends)
+	if len(ends) != 2 {
+		t.Fatalf("ends = %+v, want one per call", ends)
 	}
-	// Execution order within a concurrent batch is nondeterministic; the
-	// ordering invariant covers results — asserted via ends above and the
-	// history below.
+	seen := map[string]bool{ends[0].ToolID: true, ends[1].ToolID: true}
+	if !seen["tu_1"] || !seen["tu_2"] {
+		t.Fatalf("ends = %+v, want both tu_1 and tu_2", ends)
+	}
 	if len(tool.seen) != 2 {
 		t.Fatalf("tool executions = %d, want 2", len(tool.seen))
 	}
@@ -485,7 +486,7 @@ func TestRunLoopMaxIterationsSynthesizesResults(t *testing.T) {
 		t.Fatalf("requests = %d, want 2 (round 2 answered, then the cap fired)", len(fc.reqs))
 	}
 	final := lastEvent(evs).(LoopComplete)
-	if final.Outcome != OutcomeMaxIterations || final.TotalTurns != 1 {
+	if final.Reason != StoppedByLimit || final.TotalTurns != 1 {
 		t.Fatalf("terminal = %+v, want MaxIterations with 1 turn", final)
 	}
 
@@ -523,7 +524,7 @@ func TestRunLoopCancelKeepsPartialHistoryLegal(t *testing.T) {
 	evs := collectLoopCtx(t, o, ctx, "go")
 
 	final := lastEvent(evs).(LoopComplete)
-	if final.Outcome != OutcomeCancelled {
+	if final.Reason != StoppedByUser {
 		t.Fatalf("terminal = %+v, want Cancelled", final)
 	}
 	for _, ev := range evs {
@@ -544,69 +545,6 @@ func TestRunLoopCancelKeepsPartialHistoryLegal(t *testing.T) {
 	if len(synth) != 1 || synth[0].ToolUseID != "tu_1" || !synth[0].IsError ||
 		!strings.Contains(synth[0].Content, "cancelled") {
 		t.Errorf("synthetic result = %+v", synth)
-	}
-}
-
-func TestRunLoopUnknownStreakStopsLoop(t *testing.T) {
-	// Three consecutive unknown calls in one round: the loop stops after the
-	// results are committed, before the next request.
-	fc := &fakeClient{scripts: [][]llm.StreamEvent{
-		{
-			toolCall("tu_1", "nope", nil),
-			toolCall("tu_2", "nah", nil),
-			toolCall("tu_3", "nada", nil),
-			llm.StreamEnd{},
-		},
-	}}
-	o, conv := newTestOrchestrator(t, fc, 50)
-	evs := collectLoop(t, o, "call things")
-
-	final := lastEvent(evs).(LoopComplete)
-	if final.Outcome != OutcomeUnknownTool || final.TotalTurns != 1 {
-		t.Fatalf("terminal = %+v, want UnknownTool with 1 turn", final)
-	}
-	if len(fc.reqs) != 1 {
-		t.Errorf("requests = %d, want 1 (stop before the next request)", len(fc.reqs))
-	}
-	// All three got error results so history stays pair-complete.
-	msgs := conv.GetMessages()
-	if len(msgs) != 3 || len(msgs[2].ToolResults) != 3 {
-		t.Fatalf("history = %+v", msgs)
-	}
-	for i, tr := range msgs[2].ToolResults {
-		if !tr.IsError {
-			t.Errorf("results[%d] = %+v, want error", i, tr)
-		}
-	}
-}
-
-func TestRunLoopKnownToolResetsStreak(t *testing.T) {
-	// unknown → known → unknown → unknown: the known call resets the streak
-	// mid-round, so it climbs back to only 2 — below the limit. The loop must
-	// NOT stop; it continues to the model's reply in round 2.
-	tool := newRecordingTool("echo_tool", tools.CategoryRead)
-	reg := tools.NewRegistry()
-	reg.Register(tool)
-	fc := &fakeClient{scripts: [][]llm.StreamEvent{
-		{
-			toolCall("tu_1", "nope", nil),
-			toolCall("tu_2", "echo_tool", nil),
-			toolCall("tu_3", "nope", nil),
-			toolCall("tu_4", "nope", nil),
-			llm.StreamEnd{},
-		},
-		{llm.StreamEnd{}},
-	}}
-	o, _ := newTestOrchestrator(t, fc, 50)
-	o.registry.Register(tool)
-	evs := collectLoop(t, o, "try things")
-
-	final := lastEvent(evs).(LoopComplete)
-	if final.Outcome != OutcomeModelStop || final.TotalTurns != 1 {
-		t.Fatalf("terminal = %+v, want ModelStop (streak was reset)", final)
-	}
-	if len(fc.reqs) != 2 {
-		t.Errorf("requests = %d, want 2", len(fc.reqs))
 	}
 }
 
@@ -633,9 +571,9 @@ func pairingComplete(msgs []conversation.Message) error {
 	return nil
 }
 
-func TestRunLoopOutOfOrderCompletionKeepsOriginalOrderTrio(t *testing.T) {
-	// The slow first call finishes last, yet ToolCallEnd events, the history
-	// results, and the model's call order must all agree, index by index.
+func TestRunLoopOutOfOrderCompletionKeepsHistoryOrder(t *testing.T) {
+	// The slow first call finishes last: its End event arrives after the fast
+	// one's, while the history results stay in the model's call order.
 	slow := newRecordingTool("slow_tool", tools.CategoryRead)
 	slow.delay = 80 * time.Millisecond
 	fast := newRecordingTool("fast_tool", tools.CategoryRead)
@@ -661,8 +599,8 @@ func TestRunLoopOutOfOrderCompletionKeepsOriginalOrderTrio(t *testing.T) {
 			ends = append(ends, e)
 		}
 	}
-	if len(ends) != 2 || ends[0].ToolID != "tu_1" || ends[1].ToolID != "tu_2" {
-		t.Fatalf("ToolCallEnd order = %+v, want original call order [tu_1 tu_2]", ends)
+	if len(ends) != 2 || ends[0].ToolID != "tu_2" || ends[1].ToolID != "tu_1" {
+		t.Fatalf("ToolCallEnd order = %+v, want completion order [tu_2 tu_1]", ends)
 	}
 	results := conv.GetMessages()[2].ToolResults
 	if len(results) != 2 || results[0].ToolUseID != "tu_1" || results[1].ToolUseID != "tu_2" {
@@ -685,11 +623,11 @@ func TestRunLoopPostAbortHistoryStaysPairComplete(t *testing.T) {
 	o.registry.Register(tool)
 
 	evs := collectLoop(t, o, "first")
-	if last := lastEvent(evs); last.(LoopComplete).Outcome != OutcomeMaxIterations {
+	if last := lastEvent(evs); last.(LoopComplete).Reason != StoppedByLimit {
 		t.Fatalf("first loop terminal = %+v, want MaxIterations", last)
 	}
 	evs = collectLoop(t, o, "second")
-	if last := lastEvent(evs); last.(LoopComplete).Outcome != OutcomeModelStop {
+	if last := lastEvent(evs); last.(LoopComplete).Reason != StoppedByModel {
 		t.Fatalf("second loop terminal = %+v, want ModelStop", last)
 	}
 	// reqs[2] is the follow-up request made after the aborted loop.
@@ -731,7 +669,7 @@ func TestRunLoopRealToolsReadEditLoop(t *testing.T) {
 	evs := collectLoop(t, o, "read then edit")
 
 	final := lastEvent(evs).(LoopComplete)
-	if final.Outcome != OutcomeModelStop || final.TotalTurns != 2 {
+	if final.Reason != StoppedByModel || final.TotalTurns != 2 {
 		t.Fatalf("terminal = %+v, want ModelStop after 2 turns", final)
 	}
 	data, err := os.ReadFile(file)

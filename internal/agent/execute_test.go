@@ -42,10 +42,10 @@ func call(name string, id string) conversation.ToolUseBlock {
 	return conversation.ToolUseBlock{ID: id, Name: name, Args: map[string]any{}}
 }
 
-// collectOrder wraps onEnd into an index recorder.
-func collectOrder(order *[]int) func(int, execOutcome) {
+// collectOrder wraps onDone into an index recorder.
+func collectOrder(order *[]int) func(int, callResult) {
 	var mu sync.Mutex
-	return func(i int, _ execOutcome) {
+	return func(i int, _ callResult) {
 		mu.Lock()
 		defer mu.Unlock()
 		*order = append(*order, i)
@@ -89,7 +89,7 @@ func TestExecuteReadBatchRunsConcurrently(t *testing.T) {
 	out := executeToolCalls(context.Background(), []conversation.ToolUseBlock{call("peek_a", "1"), call("peek_b", "2")}, reg, nil)
 	for i, o := range out {
 		if o.Result.IsError {
-			t.Fatalf("outcomes[%d] errored (%s): batch was not concurrent", i, o.Result.Output)
+			t.Fatalf("results[%d] errored (%s): batch was not concurrent", i, o.Result.Output)
 		}
 	}
 }
@@ -123,10 +123,10 @@ func TestExecuteWriteIsBarrierBetweenReads(t *testing.T) {
 	}
 }
 
-// TestExecuteOriginalOrderDespiteOutOfOrderCompletion proves results and
-// onEnd callbacks keep the model's call order even when completion order
-// differs (the first call is slower but must settle first).
-func TestExecuteOriginalOrderDespiteOutOfOrderCompletion(t *testing.T) {
+// TestExecuteCompletionOrderCallbacksIndexAlignedResults proves onDone fires
+// as each call completes (the fast one first) while the returned slice stays
+// index-aligned with the input.
+func TestExecuteCompletionOrderCallbacksIndexAlignedResults(t *testing.T) {
 	reg := tools.NewRegistry()
 	reg.Register(&stubTool{name: "slow", cat: tools.CategoryRead, output: "slow-out", delay: 80 * time.Millisecond})
 	reg.Register(&stubTool{name: "fast", cat: tools.CategoryRead, output: "fast-out"})
@@ -138,14 +138,14 @@ func TestExecuteOriginalOrderDespiteOutOfOrderCompletion(t *testing.T) {
 	if out[0].Result.Output != "slow-out" || out[1].Result.Output != "fast-out" {
 		t.Fatalf("results misaligned: %q, %q", out[0].Result.Output, out[1].Result.Output)
 	}
-	if len(order) != 2 || order[0] != 0 || order[1] != 1 {
-		t.Fatalf("onEnd order = %v, want [0 1]", order)
+	if len(order) != 2 || order[0] != 1 || order[1] != 0 {
+		t.Fatalf("onDone order = %v, want completion order [1 0]", order)
 	}
 }
 
 // TestExecuteUnknownToolFailsInstantlyAndSerially proves an unknown tool gets
-// an immediate error outcome (marked Unknown), is never run concurrently, and
-// splits surrounding read batches.
+// an immediate error res, is never run concurrently, and splits
+// surrounding read batches.
 func TestExecuteUnknownToolFailsInstantlyAndSerially(t *testing.T) {
 	reg := tools.NewRegistry()
 	reg.Register(&stubTool{name: "read_a", cat: tools.CategoryRead, output: "a"})
@@ -154,17 +154,17 @@ func TestExecuteUnknownToolFailsInstantlyAndSerially(t *testing.T) {
 	out := executeToolCalls(context.Background(),
 		[]conversation.ToolUseBlock{call("nope", "1"), call("read_a", "2")}, reg, collectOrder(&order))
 
-	if !out[0].Unknown || !out[0].Result.IsError {
-		t.Fatalf("outcomes[0] = %+v, want Unknown error", out[0])
+	if !out[0].Result.IsError {
+		t.Fatalf("results[0] = %+v, want error", out[0])
 	}
 	if !strings.Contains(out[0].Result.Output, "unknown tool nope") {
 		t.Fatalf("output = %q, want unknown-tool message", out[0].Result.Output)
 	}
-	if out[1].Unknown || out[1].Result.Output != "a" {
-		t.Fatalf("outcomes[1] = %+v, want normal read result", out[1])
+	if out[1].Result.Output != "a" {
+		t.Fatalf("results[1] = %+v, want normal read result", out[1])
 	}
 	if len(order) != 2 || order[0] != 0 || order[1] != 1 {
-		t.Fatalf("onEnd order = %v, want [0 1]", order)
+		t.Fatalf("onDone order = %v, want [0 1]", order)
 	}
 }
 
@@ -179,9 +179,9 @@ func TestExecuteFailureDoesNotPoisonBatch(t *testing.T) {
 		[]conversation.ToolUseBlock{call("bad", "1"), call("good", "2")}, reg, nil)
 
 	if !out[0].Result.IsError || out[0].Result.Output != "boom" {
-		t.Fatalf("outcomes[0] = %+v, want error boom", out[0])
+		t.Fatalf("results[0] = %+v, want error boom", out[0])
 	}
 	if out[1].Result.IsError || out[1].Result.Output != "fine" {
-		t.Fatalf("outcomes[1] = %+v, want clean success", out[1])
+		t.Fatalf("results[1] = %+v, want clean success", out[1])
 	}
 }

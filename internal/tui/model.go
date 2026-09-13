@@ -52,38 +52,23 @@ type Options struct {
 }
 
 type Model struct {
-	opts     Options
-	conv     *conversation.Manager
-	live     *liveStream // nil when idle
-	running  []toolCall  // tool calls in flight, shown in the live frame
-	input    textarea.Model
-	spinner  spinner.Model
-	width    int
-	renderer *glamour.TermRenderer
-
-	// print emits committed content above the live frame. Production wires
-	// tea.Println; tests capture into a recorder instead. It must only be
-	// called from Update paths: printing stays ordered against the event
-	// stream via tea.Sequence (see startStream and handleStreamBatch).
-	print func(string) tea.Cmd
-	// bannerDone marks the opening block printed on the first window size.
+	opts       Options
+	conv       *conversation.Manager
+	live       *liveStream // nil when idle
+	running    []toolCall  // tool calls in flight, shown in the live frame
+	input      textarea.Model
+	spinner    spinner.Model
+	width      int
+	renderer   *glamour.TermRenderer
+	print      func(string) tea.Cmd
 	bannerDone bool
 }
 
-// toolCall is one in-flight tool call shown in the live frame between
-// ToolCallBegin and ToolCallEnd. id is the model-issued call id: two calls
-// to the same tool may be in flight at once, so name alone cannot pair
-// Begin with End.
 type toolCall struct {
 	id    string
 	title string
 }
 
-// toolTitle summarizes one tool call's arguments into a human title by
-// asking the tool itself (TitledTool), mewcode style: Read a.go / Write a.go
-// (12 lines) / Edit a.go / Bash: <command> / Glob: pattern. Tools that don't
-// implement the interface — and unregistered names — fall back to the plain
-// tool name.
 func toolTitle(reg *tools.Registry, name string, args map[string]any) string {
 	if reg != nil {
 		if t := reg.Get(name); t != nil {
@@ -132,11 +117,6 @@ func (m Model) Init() tea.Cmd {
 	return m.input.Focus()
 }
 
-// println emits committed content above the live frame through the wired
-// print function (tea.Println in production). The trailing newline appended
-// here is the one-blank-line separator every block keeps between itself and
-// whatever prints next (or the live frame below). The nil guard keeps
-// zero-value models from panicking.
 func (m *Model) println(block string) tea.Cmd {
 	if m.print == nil || block == "" {
 		return nil
@@ -144,16 +124,11 @@ func (m *Model) println(block string) tea.Cmd {
 	return m.print(block + "\n")
 }
 
-// Update implements tea.Model. It is the single entry point for every visible
-// state change: size, keys, stream batches and ticks are all dispatched here.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
-		m.relayout()
-		// The opening block prints once, on the first size report: only
-		// then is the real width known, so narrow terminals get the
-		// text-only banner variant.
+		m.reLayout()
 		if !m.bannerDone {
 			m.bannerDone = true
 			return m, m.println(renderStartup(m.opts.Version, m.opts.WorkDir, m.width))
@@ -165,8 +140,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m.quit()
 		case "esc":
-			// Esc cancels the in-flight loop (LoopComplete{OutcomeCancelled}
-			// then closes it); when idle it does nothing. ctrl+c still quits.
 			if m.live != nil {
 				m.live.cancel()
 			}
@@ -179,9 +152,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleStreamBatch(msg)
 
 	case spinner.TickMsg:
-		// The spinner's own tick chain drives the live frames. While idle the
-		// chain is allowed to die (no animation to run); each turn restarts it
-		// with m.spinner.Tick in startStream.
 		if m.live == nil {
 			return m, nil
 		}
@@ -244,9 +214,6 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 	return m, m.startStream(text)
 }
 
-// lineContinues reports whether an Enter press should start a new line instead
-// of submitting: the input ends with a lone backslash (trailing spaces/tabs
-// allowed) and the cursor sits at the very end of the last line.
 func lineContinues(in textarea.Model) bool {
 	value := in.Value()
 	if !strings.HasSuffix(strings.TrimRight(value, " \t"), `\`) {
@@ -256,18 +223,10 @@ func lineContinues(in textarea.Model) bool {
 	return in.Line() == len(lines)-1 && in.Column() == len([]rune(lines[len(lines)-1]))
 }
 
-// continueValue turns a continuation buffer ("…foo \" or "…foo \  ") into the
-// next line of the prompt: trailing whitespace and the backslash are removed
-// and a newline is inserted in their place.
 func continueValue(value string) string {
 	return strings.TrimSuffix(strings.TrimRight(value, " \t"), `\`) + "\n"
 }
 
-// startStream opens a new turn and wires the agent's event stream into the
-// loop. The question is printed to the history first; the agent owns the
-// history commit for the whole turn. The user block is sequenced before
-// waitStream so it can never lose a race against the first batch's blocks:
-// Sequence enqueues the print message before the stream wait even starts.
 func (m *Model) startStream(text string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	block := renderUserBlock(m, text)
@@ -278,8 +237,7 @@ func (m *Model) startStream(text string) tea.Cmd {
 		start:  timeNow(),
 	}
 	m.input.Reset()
-	return tea.Sequence(m.println(block),
-		tea.Batch(waitStream(m.live.events), m.spinner.Tick))
+	return tea.Sequence(m.println(block), tea.Batch(waitStream(m.live.events), m.spinner.Tick))
 }
 
 // handleStreamBatch folds a coalesced batch of events, printing the blocks it
@@ -334,7 +292,6 @@ func (m *Model) foldEvent(ev agent.AgentEvent) []string {
 			m.running = slices.Delete(m.running, i, i+1)
 			return []string{renderToolDoneBlock(tc.title, e.Result.IsError, e.Elapsed, diffText(e.Result))}
 		}
-		// No matching Begin: a stray End after cancel; nothing to settle.
 	case agent.TurnComplete:
 		if m.live != nil {
 			m.live.turn = e.Turn
@@ -347,9 +304,6 @@ func (m *Model) foldEvent(ev agent.AgentEvent) []string {
 	return nil
 }
 
-// diffText returns the result's diff rendering when the tool marked its
-// output as one (edit_file on success), empty otherwise. Errors are plain
-// notices: a failed tool carries no diff.
 func diffText(r tools.ToolResult) string {
 	if r.Diff {
 		return r.Output
@@ -357,7 +311,6 @@ func diffText(r tools.ToolResult) string {
 	return ""
 }
 
-// flushText commits the accumulated reply text as a printed assistant block.
 func (m *Model) flushText() []string {
 	if m.live == nil {
 		return nil
@@ -369,9 +322,6 @@ func (m *Model) flushText() []string {
 	return nil
 }
 
-// closeLive closes the turn on a terminal event, flushing pending text first
-// and printing the outcome notice and footer. Any tool calls still marked
-// running die with the loop (their End events would only arrive as strays).
 func (m *Model) closeLive(ev agent.AgentEvent) []string {
 	ls := m.live
 	if ls == nil {
@@ -385,18 +335,14 @@ func (m *Model) closeLive(ev agent.AgentEvent) []string {
 	out := m.flushText()
 	switch ev := ev.(type) {
 	case agent.LoopComplete:
-		switch ev.Outcome {
-		case agent.OutcomeModelStop:
+		switch ev.Reason {
+		case agent.StoppedByModel:
 			out = append(out, renderTurnBlock(timeSince(ls.start), timeNow()))
-		case agent.OutcomeMaxIterations:
+		case agent.StoppedByLimit:
 			out = append(out, renderNoticeBlock(
 				fmt.Sprintf("Turn limit reached after %d turn(s) — the loop stopped before running out of control.", ev.TotalTurns), noticeWarn))
 			out = append(out, renderTurnBlock(timeSince(ls.start), timeNow()))
-		case agent.OutcomeUnknownTool:
-			out = append(out, renderNoticeBlock(
-				"Stopped: the model called unknown tools repeatedly.", noticeWarn))
-			out = append(out, renderTurnBlock(timeSince(ls.start), timeNow()))
-		case agent.OutcomeCancelled:
+		case agent.StoppedByUser:
 			out = append(out, renderNoticeBlock("Cancelled.", noticeInfo))
 		}
 	case agent.LoopError:
@@ -405,10 +351,7 @@ func (m *Model) closeLive(ev agent.AgentEvent) []string {
 	return out
 }
 
-// relayout rebuilds width-dependent state: the input's width and the markdown
-// renderer's wrap width. Already-printed history keeps its original wrapping —
-// it lives in the terminal's buffer and cannot be re-flowed.
-func (m *Model) relayout() {
+func (m *Model) reLayout() {
 	if m.width <= 0 {
 		return
 	}

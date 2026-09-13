@@ -5,7 +5,7 @@ import "testing"
 func TestAddOrder(t *testing.T) {
 	m := NewManager()
 	m.AddUserMessage("q1")
-	m.AddAssistantMessage("a1")
+	m.AddAssistantFull("a1", nil, nil)
 	m.AddUserMessage("q2")
 	want := []Message{
 		{Role: RoleUser, Content: "q1"},
@@ -95,7 +95,7 @@ func TestBlockSlicesGetMessagesCopy(t *testing.T) {
 func TestClear(t *testing.T) {
 	m := NewManager()
 	m.AddUserMessage("q")
-	m.AddAssistantMessage("a")
+	m.AddAssistantFull("a", nil, nil)
 	m.Clear()
 	if m.Len() != 0 || len(m.GetMessages()) != 0 {
 		t.Errorf("after Clear: Len = %d", m.Len())
