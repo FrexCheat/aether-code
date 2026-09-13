@@ -12,11 +12,9 @@ import (
 
 const (
 	statusBarHeight = 1
+	toolIndent      = "  "
 )
 
-// renderTop derives the viewport content for the whole upper region: banner,
-// ready hint, every committed entry, and the live spinner line while a turn is
-// in flight. It is a pure function: it reads entries and writes nothing.
 func renderTop(m *Model) string {
 	var b strings.Builder
 	b.WriteString(renderBanner(m.opts.Version, m.opts.WorkDir, m.width))
@@ -25,6 +23,7 @@ func renderTop(m *Model) string {
 	b.WriteString("\n\n")
 	for i := range m.entries {
 		renderEntry(&b, m, &m.entries[i])
+		b.WriteString("\n")
 	}
 	if m.live != nil {
 		renderLive(&b, m)
@@ -35,13 +34,9 @@ func renderTop(m *Model) string {
 func renderEntry(b *strings.Builder, m *Model, e *entry) {
 	switch e.kind {
 	case entryUser:
-		b.WriteString(styleUserPrefix.Render("❯ You"))
+		b.WriteString(styleUserBubble.Width(m.width).Render(e.text))
 		b.WriteString("\n")
-		b.WriteString(e.text)
-		b.WriteString("\n\n")
 	case entryAssistant:
-		b.WriteString(styleAssistantPrefix.Render("● AetherCode"))
-		b.WriteString("\n")
 		out := e.cachedRender(m.width, func(md string) string {
 			if m.renderer == nil {
 				return md
@@ -52,8 +47,8 @@ func renderEntry(b *strings.Builder, m *Model, e *entry) {
 			}
 			return strings.Trim(r, "\n")
 		})
-		b.WriteString(out)
-		b.WriteString("\n\n")
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, styleAssistantDot.Render("●")+" ", out))
+		b.WriteString("\n")
 	case entryNotice:
 		b.WriteString(styleNoticePrefix.Render("! AetherCode"))
 		b.WriteString("\n")
@@ -65,40 +60,36 @@ func renderEntry(b *strings.Builder, m *Model, e *entry) {
 		default:
 			b.WriteString(e.text)
 		}
-		b.WriteString("\n\n")
+		b.WriteString("\n")
 	case entryTool:
 		renderToolEntry(b, m, e)
 	case entryTurn:
-		// The completion form of the live spinner timer: one footer per agent
-		// loop, not per message.
-		b.WriteString(styleDim.Render(fmt.Sprintf("%ds · done %s",
-			int(e.elapsed.Seconds()), e.doneAt.Format("3:04 PM"))))
-		b.WriteString("\n\n")
+		b.WriteString(styleDim.Render(fmt.Sprintf("%ds · done %s", int(e.elapsed.Seconds()), e.doneAt.Format("3:04 PM"))))
+		b.WriteString("\n")
 	}
 }
 
-// renderToolEntry draws one tool call: the "● title" header with an inline
-// spinner while running, then "⎿ ✓/✗ title (elapsed)" with the edit diff
-// colored line by line once settled — mewcode's presentation.
 func renderToolEntry(b *strings.Builder, m *Model, e *entry) {
 	switch e.state {
 	case toolRunning:
-		b.WriteString(styleAssistantPrefix.Render("● "))
+		b.WriteString(toolIndent)
+		b.WriteString(styleSpinner.Render(m.spinner.View()))
+		b.WriteString(" ")
 		b.WriteString(e.text)
-		b.WriteString(" " + m.spinner.View())
-	case toolDone, toolFailed:
-		b.WriteString(styleDim.Render("  ⎿ "))
-		if e.state == toolDone {
-			b.WriteString(styleToolDone.Render("✓ " + e.text))
-		} else {
-			b.WriteString(styleToolFailed.Render("✗ " + e.text))
-		}
-		b.WriteString(styleDim.Render(fmt.Sprintf(" (%.1fs)", e.elapsed.Seconds())))
 		b.WriteString("\n")
-		if e.diff != "" {
-			b.WriteString(renderDiffLines(e.diff))
-			b.WriteString("\n")
+	case toolDone, toolFailed:
+		dot := styleToolDone.Render("●")
+		if e.state == toolFailed {
+			dot = styleToolFailed.Render("●")
 		}
+		var body strings.Builder
+		body.WriteString(e.text)
+		body.WriteString(styleDim.Render(fmt.Sprintf(" (%.1fs)", e.elapsed.Seconds())))
+		if e.diff != "" {
+			body.WriteString("\n")
+			body.WriteString(renderDiffLines(e.diff))
+		}
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, toolIndent+dot+" ", body.String()))
 		b.WriteString("\n")
 	}
 }
@@ -120,20 +111,14 @@ func renderDiffLines(diff string) string {
 	return strings.Join(lines, "\n")
 }
 
-// renderLive shows the assistant marker plus the bubbles spinner, the current
-// turn number once the loop has executed tool rounds, and the whole-loop
-// elapsed seconds at the bottom of the in-flight turn — the loop is the only
-// unit the timer measures (tool entries carry their own).
 func renderLive(b *strings.Builder, m *Model) {
-	b.WriteString(styleAssistantPrefix.Render("● AetherCode"))
-	b.WriteString("\n")
 	secs := int(timeSince(m.live.start).Seconds())
 	progress := fmt.Sprintf("Imagining… (%ds)", secs)
 	if m.live.turn > 0 {
 		progress = fmt.Sprintf("Imagining… (Turn %d · %ds)", m.live.turn, secs)
 	}
 	b.WriteString(styleSpinner.Render(m.spinner.View() + " " + progress))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
 }
 
 func (m Model) renderInput() string {
@@ -153,10 +138,6 @@ func (m Model) renderStatus() string {
 	return styleStatusBar.Width(m.width).Render(left + strings.Repeat(" ", pad) + right)
 }
 
-// View implements tea.Model. It is a pure read of the current Model: all
-// content was pushed to the viewport by refresh during Update. The screen runs
-// on the main buffer (no alt-screen) so Shift-drag selects/copies terminal
-// text natively; mouse events are captured (CellMotion) for wheel scrolling.
 func (m Model) View() tea.View {
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		m.viewport.View(),

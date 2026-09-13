@@ -6,12 +6,16 @@ import (
 )
 
 var (
-	styleUserPrefix      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	styleAssistantPrefix = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5"))
-	styleDim             = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	styleError           = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
-	styleWarn            = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // guard-rail notices (turn limit, unknown tool)
-	styleInputBox        = lipgloss.NewStyle().
+	// User messages render as a full-width gray bar (Width set per render)
+	// with no role header; assistant messages lead with a plain white dot.
+	styleUserBubble = lipgloss.NewStyle().
+			Background(lipgloss.Color("8")).
+			Padding(0, 1)
+	styleAssistantDot = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
+	styleDim          = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	styleError        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
+	styleWarn         = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // guard-rail notices (turn limit, unknown tool)
+	styleInputBox     = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("8")).
 				Padding(0, 1)

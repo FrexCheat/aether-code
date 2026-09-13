@@ -6,7 +6,6 @@ import (
 	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
-// timeNow and timeSince are indirected so tests can freeze the clock.
 var (
 	timeNow   = time.Now
 	timeSince = time.Since

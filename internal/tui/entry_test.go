@@ -148,11 +148,15 @@ func TestToolEntryLifecycleAndDiff(t *testing.T) {
 	}
 
 	chat := ansi.Strip(renderTop(&m))
-	if !strings.Contains(chat, "⎿ ✓ Edit main.go") || !strings.Contains(chat, "(0.0s)") {
+	if !strings.Contains(chat, "● Edit main.go") || !strings.Contains(chat, "(0.0s)") {
 		t.Errorf("tool status line missing:\n%s", chat)
 	}
 	if !strings.Contains(chat, "beta") || !strings.Contains(chat, "BETA") {
 		t.Errorf("diff content missing:\n%s", chat)
+	}
+	// Diff lines indent under the title text, after the dot.
+	if !strings.Contains(chat, "    +      2  BETA") {
+		t.Errorf("diff line not indented under the tool title:\n%s", chat)
 	}
 	// Colored: the raw render must carry the green/red styles.
 	raw := renderTop(&m)
@@ -184,10 +188,30 @@ func TestUnknownToolRendersFailed(t *testing.T) {
 	if tool.kind != entryTool || tool.state != toolFailed {
 		t.Fatalf("tool entry = %+v, want failed tool entry", tool)
 	}
-	chat := ansi.Strip(renderTop(&m))
-	if !strings.Contains(chat, "⎿ ✗") {
-		t.Errorf("failed tool marker missing:\n%s", chat)
+	raw := renderTop(&m)
+	if !strings.Contains(raw, styleToolFailed.Render("●")) {
+		t.Errorf("failed tool should render a red dot:\n%s", raw)
 	}
+	if !strings.Contains(ansi.Strip(raw), "no_such_tool") {
+		t.Errorf("failed tool title missing:\n%s", raw)
+	}
+}
+
+// TestRunningToolRendersSpinner checks the in-flight tool line: the spinner
+// frame leads the title, indented one step right of user/assistant messages.
+func TestRunningToolRendersSpinner(t *testing.T) {
+	m := startBlockedLive(t)
+	mm, _ := m.Update(streamBatchMsg{
+		agent.ToolCallBegin{ToolID: "tu_1", ToolName: "read_file", Args: map[string]any{"file_path": "a.go"}},
+	})
+	m = mm.(Model)
+	chat := ansi.Strip(renderTop(&m))
+	// The spinner has not ticked, so the model's current frame is deterministic.
+	want := toolIndent + m.spinner.View() + " Read a.go"
+	if !strings.Contains(chat, want) {
+		t.Errorf("running tool line = want %q, got:\n%s", want, chat)
+	}
+	m.live.cancel()
 }
 
 // lastEntry returns the most recent committed entry.

@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
@@ -26,7 +25,6 @@ import (
 	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
-// Options configures the TUI.
 type Options struct {
 	Agent        *agent.Orchestrator
 	Conv         *conversation.Manager // shared with the agent: both sides see one history
@@ -37,16 +35,11 @@ type Options struct {
 	WorkDir      string
 }
 
-// Model is the Bubble Tea model for the chat UI. It is a thin controller: the
-// committed history lives in entry.go, stream plumbing in streaming.go, and
-// rendering in render.go — every visible state change enters through Update.
 type Model struct {
-	opts Options
-	conv *conversation.Manager
-
-	entries []entry
-	live    *liveStream // nil when idle
-
+	opts     Options
+	conv     *conversation.Manager
+	entries  []entry
+	live     *liveStream // nil when idle
 	viewport viewport.Model
 	input    textarea.Model
 	spinner  spinner.Model
@@ -67,23 +60,16 @@ func newModel(opts Options) Model {
 	in.Placeholder = "Send a message..."
 	in.ShowLineNumbers = false
 	in.CharLimit = 0
-	// The input grows with its content up to MaxHeight lines and settles back
-	// to a single line when cleared, instead of a fixed-size box. Width is
-	// set on each relayout; MaxWidth stays 0 so a wide terminal never clips
-	// the box at the component's default 500 columns.
+
 	in.MinHeight = 1
 	in.MaxHeight = 8
 	in.MaxWidth = 0
 	in.DynamicHeight = true
-	// The default dark styles paint the focused line black; see inputStyles.
+
 	in.SetStyles(inputStyles())
-	in.Focus() // set focus on the instance that is stored in Model (Init would only touch a copy)
+	in.Focus()
 
 	vp := viewport.New()
-	vp.KeyMap = viewport.KeyMap{
-		PageDown: key.NewBinding(key.WithKeys("pgdown")),
-		PageUp:   key.NewBinding(key.WithKeys("pgup")),
-	}
 	vp.MouseWheelEnabled = true
 
 	return Model{
@@ -313,15 +299,10 @@ func (m *Model) foldEvent(ev agent.AgentEvent) {
 			m.live.text.WriteString(e.Text)
 		}
 	case agent.TextComplete:
-		// One text content block finished: commit it as its own assistant
-		// entry so a segment spoken before a tool call stays above that call.
 		m.flushText()
 	case agent.ToolCallBegin:
 		m.entries = append(m.entries, newToolEntry(e.ToolID, e.ToolName, toolTitle(m.opts.Registry, e.ToolName, e.Args)))
 	case agent.ToolCallEnd:
-		// Settle the running entry with this call's id. Ids are unique per
-		// call, so same-name concurrent calls still pair correctly; results
-		// arrive in the model's original call order.
 		for i := len(m.entries) - 1; i >= 0; i-- {
 			en := &m.entries[i]
 			if en.kind == entryTool && en.toolID == e.ToolID && en.state == toolRunning {
@@ -330,8 +311,6 @@ func (m *Model) foldEvent(ev agent.AgentEvent) {
 			}
 		}
 	case agent.TurnComplete:
-		// One tool round finished and the next request is going out; the
-		// spinner line shows which turn is running.
 		if m.live != nil {
 			m.live.turn = e.Turn
 		}
@@ -352,13 +331,6 @@ func diffText(r tools.ToolResult) string {
 	return ""
 }
 
-// flushText commits the live stream's accumulated reply text as one assistant
-// entry and clears the buffer. It fires when a text content block ends
-// (TextComplete) and at turn end for whatever is left. Both streaming
-// providers emit TextComplete before their tool calls, so no ToolCallBegin
-// fallback exists: without one, a missing TextComplete defers the text to
-// turn end rather than pinning it above the tool entry mid-round. Empty
-// buffers produce no entry.
 func (m *Model) flushText() {
 	if m.live == nil {
 		return
@@ -369,12 +341,6 @@ func (m *Model) flushText() {
 	}
 }
 
-// closeLive settles the in-flight loop: remaining text flushes, then the
-// terminal event grades the closing entries. LoopComplete tiers by outcome —
-// ModelStop gets the done footer, MaxIterations/UnknownTool get a yellow
-// guard-rail notice plus the footer, Cancelled a neutral notice. LoopError
-// appends an error notice. History commits already happened inside the agent
-// — this only touches the display entries.
 func (m *Model) closeLive(ev agent.AgentEvent) {
 	ls := m.live
 	if ls == nil {
@@ -406,24 +372,17 @@ func (m *Model) closeLive(ev agent.AgentEvent) {
 	}
 }
 
-// relayout distributes the terminal height between the bottom region and the
-// chat viewport, sizes the multiline input, and rebuilds the markdown renderer
-// for the new width.
 func (m *Model) relayout() {
 	if m.width <= 0 || m.height <= 0 {
 		return
 	}
+
 	m.viewport.SetWidth(m.width)
-	// SetWidth re-wraps the input; with DynamicHeight that also recomputes how
-	// tall it wants to be. The input's height is never set directly — it grows
-	// and shrinks with the content.
 	m.input.SetWidth(max(m.width-6, 10))
 	m.syncViewportHeight()
 
 	wrap := max(m.width-2, 20)
-	// Start from the dark style but remove the document margin and the
-	// surrounding blank lines so rendered replies sit flush with their role
-	// label and keep turn spacing consistent.
+
 	sc := styles.DarkStyleConfig
 	var zeroMargin uint
 	sc.Document.Margin = &zeroMargin

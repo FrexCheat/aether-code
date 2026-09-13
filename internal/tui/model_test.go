@@ -145,6 +145,30 @@ func TestSendCommitsWholeOnDone(t *testing.T) {
 	}
 }
 
+// TestMessageRenderStyles locks the headerless message presentation: user
+// text on a full-width gray bar, assistant text behind a plain white dot with
+// every content line flush under the first, and one blank line between
+// messages.
+func TestMessageRenderStyles(t *testing.T) {
+	fake := &fakeProvider{events: []llm.StreamEvent{llm.TextDelta{Text: "Hi"}, llm.StreamEnd{}}}
+	m := send(t, newTestModel(fake), "hello")
+	raw := renderTop(&m)
+	chat := ansi.Strip(raw)
+
+	if !strings.Contains(raw, styleUserBubble.Width(m.width).Render("hello")) {
+		t.Errorf("user message should render as the full-width gray bar:\n%s", raw)
+	}
+	if !strings.Contains(chat, "● Hi") {
+		t.Errorf("assistant reply should lead with a plain dot:\n%s", chat)
+	}
+	if strings.Contains(chat, "❯") || strings.Contains(chat, "● AetherCode") {
+		t.Errorf("role headers should be gone:\n%s", chat)
+	}
+	if !strings.Contains(chat, "\n\n● Hi") {
+		t.Errorf("messages should be separated by one blank line:\n%s", chat)
+	}
+}
+
 func TestStreamingTextHiddenUntilCommit(t *testing.T) {
 	fake := &fakeProvider{block: true}
 	m := newTestModel(fake)
