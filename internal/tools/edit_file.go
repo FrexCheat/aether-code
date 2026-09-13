@@ -24,25 +24,37 @@ func (t *EditFileTool) Description() string {
 }
 func (t *EditFileTool) Category() Category { return CategoryWrite }
 
-func (t *EditFileTool) Schema() map[string]any {
-	return toolSchema(t.Name(), t.Description(), map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"file_path": map[string]any{
-				"type":        "string",
-				"description": "Path to the file, relative to the working directory or absolute",
+func (t *EditFileTool) Schema() ToolSchema {
+	return ToolSchema{
+		Name:        t.Name(),
+		Description: t.Description(),
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"file_path": map[string]any{
+					"type":        "string",
+					"description": "Path to the file, relative to the working directory or absolute",
+				},
+				"old_string": map[string]any{
+					"type":        "string",
+					"description": "Exact text to replace; must appear exactly once in the file",
+				},
+				"new_string": map[string]any{
+					"type":        "string",
+					"description": "Replacement text",
+				},
 			},
-			"old_string": map[string]any{
-				"type":        "string",
-				"description": "Exact text to replace; must appear exactly once in the file",
-			},
-			"new_string": map[string]any{
-				"type":        "string",
-				"description": "Replacement text",
-			},
+			"required": []string{"file_path", "old_string", "new_string"},
 		},
-		"required": []string{"file_path", "old_string", "new_string"},
-	})
+	}
+}
+
+// Title summarizes the call for the UI: "Edit note.txt".
+func (t *EditFileTool) Title(args map[string]any) string {
+	if p, _ := args["file_path"].(string); p != "" {
+		return "Edit " + filepath.Base(p)
+	}
+	return ""
 }
 
 func (t *EditFileTool) Execute(_ context.Context, args map[string]any) ToolResult {
@@ -110,7 +122,10 @@ func (t *EditFileTool) Execute(_ context.Context, args map[string]any) ToolResul
 	summary := fmt.Sprintf(
 		"Updated %s with %d addition%s and %d removal%s",
 		path, diff.Additions, plural(diff.Additions), diff.Removals, plural(diff.Removals))
-	return ToolResult{Output: TruncateOutput(summary+"\n"+diff.Text, MaxOutputChars)}
+	return ToolResult{
+		Output: TruncateOutput(summary+"\n"+diff.Text, MaxOutputChars),
+		Diff:   true,
+	}
 }
 
 // DiffResult is BuildDiff's return: the rendered diff text plus the number

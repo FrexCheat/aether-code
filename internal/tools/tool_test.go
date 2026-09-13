@@ -10,10 +10,12 @@ type fakeTool struct {
 	name string
 }
 
-func (f fakeTool) Name() string                                       { return f.name }
-func (f fakeTool) Description() string                                { return "desc of " + f.name }
-func (f fakeTool) Category() Category                                 { return CategoryRead }
-func (f fakeTool) Schema() map[string]any                             { return toolSchema(f.name, f.Description(), fakeSchema()) }
+func (f fakeTool) Name() string        { return f.name }
+func (f fakeTool) Description() string { return "desc of " + f.name }
+func (f fakeTool) Category() Category  { return CategoryRead }
+func (f fakeTool) Schema() ToolSchema {
+	return ToolSchema{Name: f.name, Description: f.Description(), InputSchema: fakeSchema()}
+}
 func (f fakeTool) Execute(context.Context, map[string]any) ToolResult { return ToolResult{} }
 
 func fakeSchema() map[string]any {
@@ -64,23 +66,34 @@ func TestRegistrySchemasNeutral(t *testing.T) {
 		t.Fatalf("len = %d, want 2", len(first))
 	}
 	for i := range first {
-		if first[i]["name"] != second[i]["name"] {
-			t.Fatalf("order differs between calls: %v vs %v", first[i]["name"], second[i]["name"])
+		if first[i].Name != second[i].Name {
+			t.Fatalf("order differs between calls: %v vs %v", first[i].Name, second[i].Name)
 		}
 	}
-	if first[0]["name"] != "bash" || first[1]["name"] != "write_file" {
-		t.Errorf("schemas not sorted by name: %v, %v", first[0]["name"], first[1]["name"])
+	if first[0].Name != "bash" || first[1].Name != "write_file" {
+		t.Errorf("schemas not sorted by name: %v, %v", first[0].Name, first[1].Name)
 	}
 	s := first[0]
-	if s["description"] != "desc of bash" {
-		t.Errorf("description = %v", s["description"])
+	if s.Description != "desc of bash" {
+		t.Errorf("description = %v", s.Description)
 	}
-	if _, ok := s["parameters"]; ok {
-		t.Errorf("neutral schema must not carry the openai parameters key: %v", s)
+	schema := s.InputSchema
+	if schema["type"] != "object" {
+		t.Errorf("input_schema = %v", s.InputSchema)
 	}
-	schema, ok := s["input_schema"].(map[string]any)
-	if !ok || schema["type"] != "object" {
-		t.Errorf("input_schema = %v", s["input_schema"])
+}
+
+func TestTruncateTitle(t *testing.T) {
+	short := "go test ./..."
+	if truncateTitle(short, 50) != short {
+		t.Fatal("short title modified")
+	}
+	// Multi-byte runes are cut whole, never mid-sequence.
+	long := strings.Repeat("中", 60)
+	got := truncateTitle(long, 50)
+	runes := []rune(strings.TrimSuffix(got, "…"))
+	if len(runes) != 50 || !strings.HasSuffix(got, "…") {
+		t.Errorf("truncateTitle = %d runes, want 50 + ellipsis", len(runes))
 	}
 }
 

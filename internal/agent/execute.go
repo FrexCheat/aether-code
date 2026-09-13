@@ -12,6 +12,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -89,8 +90,22 @@ func executeToolCalls(ctx context.Context, calls []conversation.ToolUseBlock,
 	return outcomes
 }
 
-// runOne executes one registered tool call and times it.
-func runOne(ctx context.Context, tool tools.Tool, call conversation.ToolUseBlock) execOutcome {
+// runOne executes one registered tool call and times it. A panicking tool is
+// folded into an error result — failures are values, not panics, per the Tool
+// contract — so one broken tool can neither kill the process nor leave its
+// batch-mates' outcomes unwritten.
+func runOne(ctx context.Context, tool tools.Tool, call conversation.ToolUseBlock) (oc execOutcome) {
 	start := time.Now()
+	defer func() {
+		if r := recover(); r != nil {
+			oc = execOutcome{
+				Result: tools.ToolResult{
+					Output:  fmt.Sprintf("tool %s panicked: %v", call.Name, r),
+					IsError: true,
+				},
+				Elapsed: time.Since(start),
+			}
+		}
+	}()
 	return execOutcome{Result: tool.Execute(ctx, call.Args), Elapsed: time.Since(start)}
 }

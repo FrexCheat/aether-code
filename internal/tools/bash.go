@@ -95,21 +95,38 @@ func (t *BashTool) Description() string {
 }
 func (t *BashTool) Category() Category { return CategoryCommand }
 
-func (t *BashTool) Schema() map[string]any {
-	return toolSchema(t.Name(), t.Description(), map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"command": map[string]any{
-				"type":        "string",
-				"description": "The shell command to execute",
+func (t *BashTool) Schema() ToolSchema {
+	return ToolSchema{
+		Name:        t.Name(),
+		Description: t.Description(),
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"command": map[string]any{
+					"type":        "string",
+					"description": "The shell command to execute",
+				},
+				"timeout": map[string]any{
+					"type":        "integer",
+					"description": "Timeout in seconds (default 120, max 600)",
+				},
 			},
-			"timeout": map[string]any{
-				"type":        "integer",
-				"description": "Timeout in seconds (default 120, max 600)",
-			},
+			"required": []string{"command"},
 		},
-		"required": []string{"command"},
-	})
+	}
+}
+
+// titleCmdLimit caps the command shown in a tool entry's one-line title.
+const titleCmdLimit = 50
+
+// Title summarizes the call for the UI: "Bash: go test ./...". Long commands
+// are cut at titleCmdLimit runes.
+func (t *BashTool) Title(args map[string]any) string {
+	cmd, _ := args["command"].(string)
+	if cmd == "" {
+		return ""
+	}
+	return "Bash: " + truncateTitle(cmd, titleCmdLimit)
 }
 
 func (t *BashTool) Execute(ctx context.Context, args map[string]any) ToolResult {

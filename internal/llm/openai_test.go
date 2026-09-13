@@ -37,9 +37,6 @@ func TestOpenAIStreamEndUsage(t *testing.T) {
 	if !ok {
 		t.Fatalf("last = %T, want StreamEnd", last)
 	}
-	if end.StopReason != "completed" {
-		t.Errorf("StopReason = %q, want completed", end.StopReason)
-	}
 	if end.Usage.InputTokens != 12 || end.Usage.OutputTokens != 7 {
 		t.Errorf("usage = %+v", end.Usage)
 	}
@@ -102,24 +99,11 @@ func TestOpenAIStreamToolCall(t *testing.T) {
 	defer srv.Close()
 	evs := collect(t, newOpenAITestClient(srv).Stream(context.Background(), simpleReq(false)))
 
-	var start ToolCallStart
-	var deltas []ToolCallDelta
 	var complete ToolCallComplete
 	for _, e := range evs {
-		switch v := e.(type) {
-		case ToolCallStart:
-			start = v
-		case ToolCallDelta:
-			deltas = append(deltas, v)
-		case ToolCallComplete:
+		if v, ok := e.(ToolCallComplete); ok {
 			complete = v
 		}
-	}
-	if start.ToolName != "get_weather" || start.ToolID != "call_1" {
-		t.Errorf("start = %+v", start)
-	}
-	if len(deltas) != 1 || deltas[0].Text != `{"city":"Paris"}` {
-		t.Errorf("deltas = %+v", deltas)
 	}
 	if complete.ToolID != "call_1" || complete.ToolName != "get_weather" || complete.Arguments["city"] != "Paris" {
 		t.Errorf("complete = %+v", complete)
@@ -227,11 +211,11 @@ func TestOpenAIRequestBodyWithTools(t *testing.T) {
 	defer srv.Close()
 	req := Request{
 		System: "sys",
-		Tools: []map[string]any{
+		Tools: []tools.ToolSchema{
 			{
-				"name":        "read_file",
-				"description": "Read a file from disk",
-				"input_schema": map[string]any{
+				Name:        "read_file",
+				Description: "Read a file from disk",
+				InputSchema: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
 						"file_path": map[string]any{"type": "string"},

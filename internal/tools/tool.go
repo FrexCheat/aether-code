@@ -47,17 +47,36 @@ const (
 type ToolResult struct {
 	Output  string
 	IsError bool
+	// Diff marks Output as a VCS-style diff (edit_file). The TUI renders such
+	// results line by line with +/- coloring instead of discarding them.
+	Diff bool
 }
 
 // Tool is the contract every tool implements. Schema returns the
-// provider-neutral description {"name", "description", "input_schema"};
-// adapters translate it per protocol.
+// provider-neutral description of the tool; each llm adapter translates it
+// into its own API format.
 type Tool interface {
 	Name() string
 	Description() string
 	Category() Category
-	Schema() map[string]any
+	Schema() ToolSchema
 	Execute(ctx context.Context, args map[string]any) ToolResult
+}
+
+// ToolSchema is the provider-neutral tool description sent with every
+// request. InputSchema is a JSON-Schema object describing the Execute
+// arguments.
+type ToolSchema struct {
+	Name        string
+	Description string
+	InputSchema map[string]any
+}
+
+// TitledTool is optionally implemented by tools that summarize their
+// arguments into a short UI title ("Read main.go"). The TUI falls back to
+// the tool's name for tools that don't.
+type TitledTool interface {
+	Title(args map[string]any) string
 }
 
 // Registry is the central tool directory. Registration happens once at
@@ -88,27 +107,24 @@ func (r *Registry) Get(name string) Tool {
 
 // GetAllSchemas builds the tool list for one request from every registered
 // tool; it is FilteredSchemas with no filter.
-func (r *Registry) GetAllSchemas() []map[string]any {
+func (r *Registry) GetAllSchemas() []ToolSchema {
 	return r.FilteredSchemas(func(Category) bool { return true })
 }
 
 // FilteredSchemas builds the tool list for one request from the tools whose
-// category passes include, in the single neutral shape
-// {"name", "description", "input_schema"}; each llm adapter translates it
-// into its own API format.
-//
-// Tools are walked in sorted-name order, not map order. Go map iteration is
-// randomized; unsorted, the same tool set would serialize into a different
-// array every request, and the prompt-cache prefix after the tools block
-// would be invalidated even though nothing changed semantically.
-func (r *Registry) FilteredSchemas(include func(Category) bool) []map[string]any {
+// category passes include. Tools are walked in sorted-name order, not map
+// order. Go map iteration is randomized; unsorted, the same tool set would
+// serialize into a different array every request, and the prompt-cache prefix
+// after the tools block would be invalidated even though nothing changed
+// semantically.
+func (r *Registry) FilteredSchemas(include func(Category) bool) []ToolSchema {
 	names := make([]string, 0, len(r.tools))
 	for name := range r.tools {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
-	schemas := make([]map[string]any, 0, len(names))
+	schemas := make([]ToolSchema, 0, len(names))
 	for _, name := range names {
 		if include(r.tools[name].Category()) {
 			schemas = append(schemas, r.tools[name].Schema())
@@ -117,14 +133,15 @@ func (r *Registry) FilteredSchemas(include func(Category) bool) []map[string]any
 	return schemas
 }
 
-// toolSchema assembles the neutral schema shape shared by every tool's
-// Schema() implementation.
-func toolSchema(name, description string, inputSchema map[string]any) map[string]any {
-	return map[string]any{
-		"name":         name,
-		"description":  description,
-		"input_schema": inputSchema,
+// truncateTitle cuts s to max runes for one-line display, appending an
+// ellipsis when cut. Rune-safe: byte slicing would split multi-byte
+// characters mid-sequence.
+func truncateTitle(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
 	}
+	return string(runes[:max]) + "…"
 }
 
 // TruncateOutput caps a tool result at max characters. The marker tells the

@@ -23,21 +23,33 @@ func (t *GlobTool) Description() string {
 }
 func (t *GlobTool) Category() Category { return CategoryRead }
 
-func (t *GlobTool) Schema() map[string]any {
-	return toolSchema(t.Name(), t.Description(), map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"pattern": map[string]any{
-				"type":        "string",
-				"description": "Glob pattern relative to the search root; ** matches any number of directories",
+func (t *GlobTool) Schema() ToolSchema {
+	return ToolSchema{
+		Name:        t.Name(),
+		Description: t.Description(),
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"pattern": map[string]any{
+					"type":        "string",
+					"description": "Glob pattern relative to the search root; ** matches any number of directories",
+				},
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Directory to search in (default: working directory)",
+				},
 			},
-			"path": map[string]any{
-				"type":        "string",
-				"description": "Directory to search in (default: working directory)",
-			},
+			"required": []string{"pattern"},
 		},
-		"required": []string{"pattern"},
-	})
+	}
+}
+
+// Title summarizes the call for the UI: "Glob: **/*.go".
+func (t *GlobTool) Title(args map[string]any) string {
+	if pattern, _ := args["pattern"].(string); pattern != "" {
+		return "Glob: " + pattern
+	}
+	return ""
 }
 
 func (t *GlobTool) Execute(_ context.Context, args map[string]any) ToolResult {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // WriteFileTool writes content to a file, creating parent directories as
@@ -24,21 +25,36 @@ func (t *WriteFileTool) Description() string {
 }
 func (t *WriteFileTool) Category() Category { return CategoryWrite }
 
-func (t *WriteFileTool) Schema() map[string]any {
-	return toolSchema(t.Name(), t.Description(), map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"file_path": map[string]any{
-				"type":        "string",
-				"description": "Path to the file, relative to the working directory or absolute",
+func (t *WriteFileTool) Schema() ToolSchema {
+	return ToolSchema{
+		Name:        t.Name(),
+		Description: t.Description(),
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"file_path": map[string]any{
+					"type":        "string",
+					"description": "Path to the file, relative to the working directory or absolute",
+				},
+				"content": map[string]any{
+					"type":        "string",
+					"description": "Full content to write",
+				},
 			},
-			"content": map[string]any{
-				"type":        "string",
-				"description": "Full content to write",
-			},
+			"required": []string{"file_path", "content"},
 		},
-		"required": []string{"file_path", "content"},
-	})
+	}
+}
+
+// Title summarizes the call for the UI: "Write note.txt (12 lines)".
+func (t *WriteFileTool) Title(args map[string]any) string {
+	p, _ := args["file_path"].(string)
+	if p == "" {
+		return ""
+	}
+	content, _ := args["content"].(string)
+	lines := strings.Count(content, "\n") + 1
+	return fmt.Sprintf("Write %s (%d lines)", filepath.Base(p), lines)
 }
 
 func (t *WriteFileTool) Execute(_ context.Context, args map[string]any) ToolResult {

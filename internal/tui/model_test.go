@@ -54,9 +54,13 @@ func (f *fakeProvider) Stream(ctx context.Context, req llm.Request) <-chan llm.S
 
 func newTestModel(p llm.Client) Model {
 	conv := conversation.NewManager()
-	ag := agent.New(p, tools.NewRegistry(), conv, prompt.System, false, config.DefaultMaxIterations)
+	reg := tools.NewRegistry()
+	// The real read_file stands in for titled tools: its Title derives from
+	// the call args alone, no filesystem access.
+	reg.Register(&tools.ReadFileTool{})
+	ag := agent.New(p, reg, conv, prompt.System, false, config.DefaultMaxIterations)
 	m := newModel(Options{
-		Agent: ag, Conv: conv, ProviderName: "fake", ModelName: "fake-1",
+		Agent: ag, Conv: conv, Registry: reg, ProviderName: "fake", ModelName: "fake-1",
 		Version: "test", WorkDir: "/tmp",
 	})
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -419,7 +423,7 @@ type fakeTool struct {
 func (t fakeTool) Name() string             { return t.name }
 func (t fakeTool) Description() string      { return "fake" }
 func (t fakeTool) Category() tools.Category { return t.cat }
-func (t fakeTool) Schema() map[string]any   { return map[string]any{"name": t.name} }
+func (t fakeTool) Schema() tools.ToolSchema { return tools.ToolSchema{Name: t.name} }
 func (t fakeTool) Execute(context.Context, map[string]any) tools.ToolResult {
 	return tools.ToolResult{Output: "ok"}
 }
@@ -448,7 +452,7 @@ func TestPlanDoSwitchModes(t *testing.T) {
 		{llm.TextDelta{Text: "plan"}, llm.StreamEnd{}},
 	}}
 	ag := agent.New(fake, reg, conv, prompt.System, false, config.DefaultMaxIterations)
-	m := newModel(Options{Agent: ag, Conv: conv, ProviderName: "fake", ModelName: "m", Version: "test", WorkDir: "/tmp"})
+	m := newModel(Options{Agent: ag, Conv: conv, Registry: reg, ProviderName: "fake", ModelName: "m", Version: "test", WorkDir: "/tmp"})
 
 	m = send(t, m, "/plan")
 	if ag.Mode() != agent.ModePlan {
@@ -468,7 +472,7 @@ func TestPlanDoSwitchModes(t *testing.T) {
 	if !strings.Contains(req.System, "PLAN MODE") || !strings.HasPrefix(req.System, prompt.System) {
 		t.Errorf("plan-mode system prompt = %q", req.System)
 	}
-	if len(req.Tools) != 1 || req.Tools[0]["name"] != "read_tool" {
+	if len(req.Tools) != 1 || req.Tools[0].Name != "read_tool" {
 		t.Errorf("plan-mode tools = %+v, want only the read tool", req.Tools)
 	}
 

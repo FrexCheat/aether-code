@@ -1,10 +1,9 @@
 package tui
 
 import (
-	"fmt"
-	"path/filepath"
-	"strings"
 	"time"
+
+	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
 // timeNow and timeSince are indirected so tests can freeze the clock.
@@ -45,7 +44,7 @@ const (
 
 // entry is one committed, displayable line of history. User, assistant and
 // notice entries carry only text; tool entries carry the call's title, state,
-// duration and edit diff; the turn entry closes one agent loop with its whole
+// duration and diff; the turn entry closes one agent loop with its whole
 // duration (the completion form of the live spinner timer).
 type entry struct {
 	kind     entryKind
@@ -60,7 +59,7 @@ type entry struct {
 	toolID   string // model-issued call id; pairs Begin with End
 	toolName string
 	state    toolState
-	diff     string // edit_file result: line-numbered diff text
+	diff     string // diff result the tool marked as one, line-numbered
 }
 
 func newUserEntry(text string) entry {
@@ -98,42 +97,19 @@ func (p *entry) settleTool(failed bool, elapsed time.Duration, diff string) {
 	}
 }
 
-// toolTitle summarizes one tool call's arguments into a human title, mewcode
-// style: Read a.go / Write a.go (12 lines) / Edit a.go / Bash: <50 chars> /
-// Glob: pattern / Grep: pattern.
-func toolTitle(name string, args map[string]any) string {
-	str := func(key string) string { s, _ := args[key].(string); return s }
-	switch name {
-	case "read_file":
-		if p := str("file_path"); p != "" {
-			return "Read " + filepath.Base(p)
-		}
-	case "write_file":
-		p := str("file_path")
-		content, _ := args["content"].(string)
-		lines := strings.Count(content, "\n") + 1
-		if p != "" {
-			return fmt.Sprintf("Write %s (%d lines)", filepath.Base(p), lines)
-		}
-	case "edit_file":
-		if p := str("file_path"); p != "" {
-			return "Edit " + filepath.Base(p)
-		}
-	case "bash":
-		cmd := str("command")
-		if len(cmd) > 50 {
-			cmd = cmd[:50] + "…"
-		}
-		if cmd != "" {
-			return "Bash: " + cmd
-		}
-	case "glob":
-		if pattern := str("pattern"); pattern != "" {
-			return "Glob: " + pattern
-		}
-	case "grep":
-		if pattern := str("pattern"); pattern != "" {
-			return "Grep: " + pattern
+// toolTitle summarizes one tool call's arguments into a human title by
+// asking the tool itself (TitledTool), mewcode style: Read a.go / Write a.go
+// (12 lines) / Edit a.go / Bash: <command> / Glob: pattern. Tools that don't
+// implement the interface — and unregistered names — fall back to the plain
+// tool name.
+func toolTitle(reg *tools.Registry, name string, args map[string]any) string {
+	if reg != nil {
+		if t := reg.Get(name); t != nil {
+			if tt, ok := t.(tools.TitledTool); ok {
+				if title := tt.Title(args); title != "" {
+					return title
+				}
+			}
 		}
 	}
 	return name

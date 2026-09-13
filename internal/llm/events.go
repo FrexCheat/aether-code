@@ -8,8 +8,8 @@ package llm
 // StreamEvent is the sealed sum of all events emitted by Client.Stream.
 //
 // Implementations include TextDelta, TextComplete, ThinkingDelta,
-// ThinkingComplete, ToolCallStart, ToolCallDelta, ToolCallComplete, StreamEnd
-// and StreamError. Consumers should use a type switch.
+// ThinkingComplete, ToolCallComplete, StreamEnd and StreamError. Consumers
+// should use a type switch.
 type StreamEvent interface{ streamEvent() }
 
 type TextDelta struct{ Text string }
@@ -25,8 +25,9 @@ type ThinkingComplete struct {
 	Thinking  string
 	Signature string
 }
-type ToolCallStart struct{ ToolName, ToolID string }
-type ToolCallDelta struct{ Text string }
+
+// ToolCallComplete carries one fully-assembled tool call: the arguments are
+// complete when it fires, so consumers never see argument fragments.
 type ToolCallComplete struct {
 	ToolID    string
 	ToolName  string
@@ -48,8 +49,7 @@ type UsageInfo struct {
 }
 
 type StreamEnd struct {
-	StopReason string
-	Usage      UsageInfo
+	Usage UsageInfo
 }
 
 // StreamError is the terminal error event. It is mutually exclusive with
@@ -60,8 +60,6 @@ func (TextDelta) streamEvent()        {}
 func (TextComplete) streamEvent()     {}
 func (ThinkingDelta) streamEvent()    {}
 func (ThinkingComplete) streamEvent() {}
-func (ToolCallStart) streamEvent()    {}
-func (ToolCallDelta) streamEvent()    {}
 func (ToolCallComplete) streamEvent() {}
 func (StreamEnd) streamEvent()        {}
 func (StreamError) streamEvent()      {}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -25,25 +26,37 @@ func (t *ReadFileTool) Description() string {
 }
 func (t *ReadFileTool) Category() Category { return CategoryRead }
 
-func (t *ReadFileTool) Schema() map[string]any {
-	return toolSchema(t.Name(), t.Description(), map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"file_path": map[string]any{
-				"type":        "string",
-				"description": "Path to the file, relative to the working directory or absolute",
+func (t *ReadFileTool) Schema() ToolSchema {
+	return ToolSchema{
+		Name:        t.Name(),
+		Description: t.Description(),
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"file_path": map[string]any{
+					"type":        "string",
+					"description": "Path to the file, relative to the working directory or absolute",
+				},
+				"offset": map[string]any{
+					"type":        "integer",
+					"description": "1-based line number to start reading from",
+				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Maximum number of lines to read (default 2000)",
+				},
 			},
-			"offset": map[string]any{
-				"type":        "integer",
-				"description": "1-based line number to start reading from",
-			},
-			"limit": map[string]any{
-				"type":        "integer",
-				"description": "Maximum number of lines to read (default 2000)",
-			},
+			"required": []string{"file_path"},
 		},
-		"required": []string{"file_path"},
-	})
+	}
+}
+
+// Title summarizes the call for the UI: "Read note.txt".
+func (t *ReadFileTool) Title(args map[string]any) string {
+	if p, _ := args["file_path"].(string); p != "" {
+		return "Read " + filepath.Base(p)
+	}
+	return ""
 }
 
 func (t *ReadFileTool) Execute(_ context.Context, args map[string]any) ToolResult {

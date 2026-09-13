@@ -1,15 +1,16 @@
 // openai.go — OpenAI Responses API adapter (llm.Client).
 //
-// Single-file ownership: streaming, message translation (straight-through; the
-// Responses API accepts arbitrary role sequences), and error classification.
-// API key is never embedded in returned error strings.
+// Streaming, message translation (straight-through; the Responses API accepts
+// arbitrary role sequences), and error classification; delivery and
+// arg-parsing helpers are shared in stream.go. API key is never embedded in
+// returned error strings.
 //
 // Wire events map onto the unified stream as: output_text.delta → TextDelta
 // with the message item's output_item.done → TextComplete,
 // reasoning_text/summary_text delta → ThinkingDelta with the reasoning item's
 // done → ThinkingComplete (signature = reasoning item ID, replayed as a
-// reasoning item on the next request), function_call items → ToolCallStart /
-// ToolCallDelta (arguments.delta) / ToolCallComplete (arguments.done),
+// reasoning item on the next request), function_call items accumulate
+// arguments.delta into one ToolCallComplete at arguments.done,
 // response.completed usage → StreamEnd.Usage.
 
 package llm
@@ -29,6 +30,7 @@ import (
 
 	"github.com/FrexCheat/aether-code/internal/config"
 	"github.com/FrexCheat/aether-code/internal/conversation"
+	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
 // openAIClient is the llm.Client backed by the OpenAI Responses API.
@@ -56,24 +58,8 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 	ch := make(chan StreamEvent, channelBuffer)
 	go func() {
 		defer close(ch)
-		send := func(ev StreamEvent) bool {
-			select {
-			case ch <- ev:
-				return true
-			case <-ctx.Done():
-				return false
-			}
-		}
-		finish := func(ev StreamEvent) {
-			select {
-			case ch <- ev:
-			default:
-				select {
-				case ch <- ev:
-				case <-ctx.Done():
-				}
-			}
-		}
+		send := func(ev StreamEvent) bool { return forwardEvent(ctx, ch, ev) }
+		finish := func(ev StreamEvent) { finishEvent(ctx, ch, ev) }
 
 		stream := c.sdk.Responses.NewStreaming(ctx, c.buildParams(req))
 		defer stream.Close()
@@ -81,7 +67,6 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 		sawCompleted := false
 		var failErr error
 		var usage UsageInfo
-		var stopReason string
 
 		// Per-item tool-call accumulation. Function calls stream their name
 		// (output_item.added), then arguments (arguments.delta), then finish
@@ -124,9 +109,6 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 					inText = true
 				case responses.ResponseFunctionToolCall:
 					tools[ev.OutputIndex] = &pendingTool{name: item.Name}
-					if !send(ToolCallStart{ToolName: item.Name, ToolID: item.CallID}) {
-						return
-					}
 				case responses.ResponseReasoningItem:
 					inReasoning = true
 					reasoningID = item.ID
@@ -149,9 +131,8 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 					}
 				}
 			case responses.ResponseFunctionCallArgumentsDeltaEvent:
-				if !send(ToolCallDelta{Text: ev.Delta}) {
-					return
-				}
+				// Arguments stream via deltas and arrive complete at the done
+				// event, which is the only one consumers see.
 			case responses.ResponseFunctionCallArgumentsDoneEvent:
 				toolID := ev.ItemID
 				name := ""
@@ -196,7 +177,6 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 					OutputTokens:    int(ev.Response.Usage.OutputTokens),
 					CacheReadTokens: int(ev.Response.Usage.InputTokensDetails.CachedTokens),
 				}
-				stopReason = string(ev.Response.Status)
 			case responses.ResponseFailedEvent:
 				detail := ev.Response.Error.Message
 				code := string(ev.Response.Error.Code)
@@ -232,7 +212,7 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 		case failErr != nil:
 			finish(StreamError{Err: failErr})
 		case sawCompleted:
-			finish(StreamEnd{StopReason: stopReason, Usage: usage})
+			finish(StreamEnd{Usage: usage})
 		default:
 			finish(StreamError{Err: errors.New("stream ended unexpectedly")})
 		}
@@ -302,23 +282,23 @@ func buildOpenAIMessages(messages []conversation.Message) responses.ResponseInpu
 	return items
 }
 
-// translateOpenAITools converts the neutral schema shape into Responses API
+// translateOpenAITools converts the neutral tool schemas into Responses API
 // function tools. Strict validation is off: our schemas come from hand-written
 // tool definitions and partial-JSON arguments must not be rejected server-side.
-func translateOpenAITools(tools []map[string]any) []responses.ToolUnionParam {
-	result := make([]responses.ToolUnionParam, 0, len(tools))
-	for _, t := range tools {
-		schema, _ := t["input_schema"].(map[string]any)
+func translateOpenAITools(schemas []tools.ToolSchema) []responses.ToolUnionParam {
+	result := make([]responses.ToolUnionParam, 0, len(schemas))
+	for _, s := range schemas {
+		schema := s.InputSchema
 		if schema == nil {
 			schema = map[string]any{}
 		}
 		ft := responses.FunctionToolParam{
-			Name:       t["name"].(string),
+			Name:       s.Name,
 			Parameters: schema,
 			Strict:     openai.Bool(false),
 		}
-		if d, ok := t["description"].(string); ok {
-			ft.Description = openai.String(d)
+		if s.Description != "" {
+			ft.Description = openai.String(s.Description)
 		}
 		result = append(result, responses.ToolUnionParam{OfFunction: &ft})
 	}

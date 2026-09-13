@@ -460,8 +460,8 @@ func TestFilteredSchemas(t *testing.T) {
 	}
 	wantOrder := []string{"glob", "grep", "read_file"}
 	for i, w := range wantOrder {
-		if got := read[i]["name"]; got != w {
-			t.Errorf("read[%d].name = %v, want %s", i, got, w)
+		if got := read[i].Name; got != w {
+			t.Errorf("read[%d].Name = %v, want %s", i, got, w)
 		}
 	}
 
@@ -475,8 +475,8 @@ func TestFilteredSchemas(t *testing.T) {
 		t.Fatalf("GetAllSchemas = %d entries, want %d", len(full), len(all))
 	}
 	for i := range full {
-		if full[i]["name"] != all[i]["name"] {
-			t.Errorf("entry %d: GetAllSchemas=%v FilteredSchemas=%v", i, full[i]["name"], all[i]["name"])
+		if full[i].Name != all[i].Name {
+			t.Errorf("entry %d: GetAllSchemas=%v FilteredSchemas=%v", i, full[i].Name, all[i].Name)
 		}
 	}
 

@@ -49,6 +49,7 @@ func main() {
 	if err := tui.Run(tui.Options{
 		Agent:        orchestrator,
 		Conv:         conv,
+		Registry:     registry,
 		ProviderName: active.Name,
 		ModelName:    active.Model,
 		Version:      version.Version,

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -106,9 +107,15 @@ type fakeEditTool struct{}
 func (fakeEditTool) Name() string             { return "edit_file" }
 func (fakeEditTool) Description() string      { return "fake" }
 func (fakeEditTool) Category() tools.Category { return tools.CategoryWrite }
-func (fakeEditTool) Schema() map[string]any   { return map[string]any{"name": "edit_file"} }
+func (fakeEditTool) Schema() tools.ToolSchema { return tools.ToolSchema{Name: "edit_file"} }
+func (fakeEditTool) Title(args map[string]any) string {
+	if p, _ := args["file_path"].(string); p != "" {
+		return "Edit " + filepath.Base(p)
+	}
+	return ""
+}
 func (fakeEditTool) Execute(context.Context, map[string]any) tools.ToolResult {
-	return tools.ToolResult{Output: "-      2  beta\n+      2  BETA"}
+	return tools.ToolResult{Output: "-      2  beta\n+      2  BETA", Diff: true}
 }
 
 func TestToolEntryLifecycleAndDiff(t *testing.T) {
@@ -119,11 +126,11 @@ func TestToolEntryLifecycleAndDiff(t *testing.T) {
 		{
 			llm.ToolCallComplete{ToolID: "tu_1", ToolName: "edit_file",
 				Arguments: map[string]any{"file_path": "main.go"}},
-			llm.StreamEnd{StopReason: "tool_use"},
+			llm.StreamEnd{},
 		},
-		{llm.StreamEnd{StopReason: "end_turn"}},
+		{llm.StreamEnd{}},
 	}}, reg, conv, "sys", false, config.DefaultMaxIterations)
-	m := newModel(Options{Agent: ag, Conv: conv, Version: "test", WorkDir: "/tmp"})
+	m := newModel(Options{Agent: ag, Conv: conv, Registry: reg, Version: "test", WorkDir: "/tmp"})
 	m = send(t, m, "edit it")
 
 	// Entries: user, tool (settled), turn footer. A tool-only turn produces
@@ -166,9 +173,9 @@ func TestUnknownToolRendersFailed(t *testing.T) {
 	ag := agent.New(&fakeProvider{scripts: [][]llm.StreamEvent{
 		{
 			llm.ToolCallComplete{ToolID: "tu_x", ToolName: "no_such_tool", Arguments: map[string]any{}},
-			llm.StreamEnd{StopReason: "tool_use"},
+			llm.StreamEnd{},
 		},
-		{llm.StreamEnd{StopReason: "end_turn"}},
+		{llm.StreamEnd{}},
 	}}, tools.NewRegistry(), conv, "sys", false, config.DefaultMaxIterations)
 	m := newModel(Options{Agent: ag, Conv: conv, Version: "test", WorkDir: "/tmp"})
 	m = send(t, m, "do it")
@@ -199,9 +206,9 @@ func TestTextFlushesBeforeToolEntry(t *testing.T) {
 			llm.TextComplete{},
 			llm.ToolCallComplete{ToolID: "tu_1", ToolName: "read_file",
 				Arguments: map[string]any{"file_path": "a.go"}},
-			llm.StreamEnd{StopReason: "tool_use"},
+			llm.StreamEnd{},
 		},
-		{llm.StreamEnd{StopReason: "end_turn"}},
+		{llm.StreamEnd{}},
 	}}
 	m := send(t, newTestModel(fake), "q")
 
@@ -230,9 +237,9 @@ func TestToolCallBeginFlushesWithoutTextComplete(t *testing.T) {
 			llm.TextDelta{Text: "fallback"},
 			llm.ToolCallComplete{ToolID: "tu_1", ToolName: "read_file",
 				Arguments: map[string]any{"file_path": "a.go"}},
-			llm.StreamEnd{StopReason: "tool_use"},
+			llm.StreamEnd{},
 		},
-		{llm.StreamEnd{StopReason: "end_turn"}},
+		{llm.StreamEnd{}},
 	}}
 	m := send(t, newTestModel(fake), "q")
 	if len(m.entries) != 4 {

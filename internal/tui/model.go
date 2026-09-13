@@ -23,12 +23,14 @@ import (
 
 	"github.com/FrexCheat/aether-code/internal/agent"
 	"github.com/FrexCheat/aether-code/internal/conversation"
+	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
 // Options configures the TUI.
 type Options struct {
 	Agent        *agent.Orchestrator
 	Conv         *conversation.Manager // shared with the agent: both sides see one history
+	Registry     *tools.Registry       // queried for tool entry titles
 	ProviderName string
 	ModelName    string
 	Version      string
@@ -151,7 +153,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m.quit()
 		case "esc":
-			// Esc cancels the in-flight loop (the terminal Cancelled event
+			// Esc cancels the in-flight loop (LoopComplete{OutcomeCancelled}
 			// then closes it); when idle it does nothing. ctrl+c still quits.
 			if m.live != nil {
 				m.live.cancel()
@@ -269,17 +271,16 @@ func continueValue(value string) string {
 }
 
 // startStream opens a new turn and wires the agent's event stream into the
-// loop. The question is appended as a user entry and held on the liveStream;
-// the agent owns the history commit for the whole turn.
+// loop. The question is appended as a user entry; the agent owns the history
+// commit for the whole turn.
 func (m *Model) startStream(text string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.entries = append(m.entries, newUserEntry(text))
 	m.live = &liveStream{
-		events:   m.opts.Agent.RunLoop(ctx, text),
-		ctx:      ctx,
-		cancel:   cancel,
-		question: text,
-		start:    timeNow(),
+		events: m.opts.Agent.RunLoop(ctx, text),
+		ctx:    ctx,
+		cancel: cancel,
+		start:  timeNow(),
 	}
 	m.input.Reset()
 	return tea.Batch(waitStream(m.live.events), m.spinner.Tick)
@@ -316,7 +317,7 @@ func (m *Model) foldEvent(ev agent.AgentEvent) {
 		// entry so a segment spoken before a tool call stays above that call.
 		m.flushText()
 	case agent.ToolCallBegin:
-		m.entries = append(m.entries, newToolEntry(e.ToolID, e.ToolName, toolTitle(e.ToolName, e.Args)))
+		m.entries = append(m.entries, newToolEntry(e.ToolID, e.ToolName, toolTitle(m.opts.Registry, e.ToolName, e.Args)))
 	case agent.ToolCallEnd:
 		// Settle the running entry with this call's id. Ids are unique per
 		// call, so same-name concurrent calls still pair correctly; results
@@ -324,7 +325,7 @@ func (m *Model) foldEvent(ev agent.AgentEvent) {
 		for i := len(m.entries) - 1; i >= 0; i-- {
 			en := &m.entries[i]
 			if en.kind == entryTool && en.toolID == e.ToolID && en.state == toolRunning {
-				en.settleTool(e.Result.IsError, e.Elapsed, editDiff(e))
+				en.settleTool(e.Result.IsError, e.Elapsed, diffText(e.Result))
 				break
 			}
 		}
@@ -334,25 +335,30 @@ func (m *Model) foldEvent(ev agent.AgentEvent) {
 		if m.live != nil {
 			m.live.turn = e.Turn
 		}
-	case agent.TurnError, agent.LoopComplete:
+	case agent.LoopError, agent.LoopComplete:
 		m.closeLive(ev)
 	default:
 		// ThinkingDelta, ThinkingComplete: not surfaced this phase.
 	}
 }
 
-// editDiff returns the diff text for edit_file results, empty for other tools.
-func editDiff(e agent.ToolCallEnd) string {
-	if e.ToolName != "edit_file" {
-		return ""
+// diffText returns the result's diff rendering when the tool marked its
+// output as one (edit_file on success), empty otherwise. Errors are plain
+// notices: a failed tool carries no diff.
+func diffText(r tools.ToolResult) string {
+	if r.Diff {
+		return r.Output
 	}
-	return e.Result.Output
+	return ""
 }
 
 // flushText commits the live stream's accumulated reply text as one assistant
 // entry and clears the buffer. It fires when a text content block ends
-// (TextComplete), as a provider fallback on ToolCallBegin, and at turn end
-// for whatever is left. Empty buffers produce no entry.
+// (TextComplete) and at turn end for whatever is left. Both streaming
+// providers emit TextComplete before their tool calls, so no ToolCallBegin
+// fallback exists: without one, a missing TextComplete defers the text to
+// turn end rather than pinning it above the tool entry mid-round. Empty
+// buffers produce no entry.
 func (m *Model) flushText() {
 	if m.live == nil {
 		return
@@ -366,7 +372,7 @@ func (m *Model) flushText() {
 // closeLive settles the in-flight loop: remaining text flushes, then the
 // terminal event grades the closing entries. LoopComplete tiers by outcome —
 // ModelStop gets the done footer, MaxIterations/UnknownTool get a yellow
-// guard-rail notice plus the footer, Cancelled a neutral notice. TurnError
+// guard-rail notice plus the footer, Cancelled a neutral notice. LoopError
 // appends an error notice. History commits already happened inside the agent
 // — this only touches the display entries.
 func (m *Model) closeLive(ev agent.AgentEvent) {
@@ -395,7 +401,7 @@ func (m *Model) closeLive(ev agent.AgentEvent) {
 		case agent.OutcomeCancelled:
 			m.entries = append(m.entries, newNoticeEntry("Cancelled.", noticeInfo))
 		}
-	case agent.TurnError:
+	case agent.LoopError:
 		m.entries = append(m.entries, newNoticeEntry("Error: "+ev.Err.Error(), noticeError))
 	}
 }

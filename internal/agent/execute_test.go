@@ -25,8 +25,8 @@ type stubTool struct {
 func (t *stubTool) Name() string             { return t.name }
 func (t *stubTool) Description() string      { return "stub " + t.name }
 func (t *stubTool) Category() tools.Category { return t.cat }
-func (t *stubTool) Schema() map[string]any {
-	return map[string]any{"name": t.name, "description": t.Description(), "input_schema": map[string]any{"type": "object"}}
+func (t *stubTool) Schema() tools.ToolSchema {
+	return tools.ToolSchema{Name: t.name, Description: t.Description(), InputSchema: map[string]any{"type": "object"}}
 }
 func (t *stubTool) Execute(_ context.Context, _ map[string]any) tools.ToolResult {
 	if t.delay > 0 {
@@ -64,8 +64,8 @@ type rendezvousTool struct {
 func (t *rendezvousTool) Name() string             { return t.name }
 func (t *rendezvousTool) Description() string      { return "rendezvous " + t.name }
 func (t *rendezvousTool) Category() tools.Category { return tools.CategoryRead }
-func (t *rendezvousTool) Schema() map[string]any {
-	return map[string]any{"name": t.name, "description": t.Description(), "input_schema": map[string]any{"type": "object"}}
+func (t *rendezvousTool) Schema() tools.ToolSchema {
+	return tools.ToolSchema{Name: t.name, Description: t.Description(), InputSchema: map[string]any{"type": "object"}}
 }
 func (t *rendezvousTool) Execute(_ context.Context, _ map[string]any) tools.ToolResult {
 	t.arrived <- struct{}{}

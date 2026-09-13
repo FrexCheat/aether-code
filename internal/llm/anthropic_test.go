@@ -12,6 +12,7 @@ import (
 
 	"github.com/FrexCheat/aether-code/internal/config"
 	"github.com/FrexCheat/aether-code/internal/conversation"
+	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
 func newAnthropicTestClient(srv *httptest.Server) Client {
@@ -35,9 +36,6 @@ func TestAnthropicStreamEndUsage(t *testing.T) {
 	end, ok := last.(StreamEnd)
 	if !ok {
 		t.Fatalf("last = %T, want StreamEnd", last)
-	}
-	if end.StopReason != "end_turn" {
-		t.Errorf("StopReason = %q, want end_turn", end.StopReason)
 	}
 	if end.Usage.OutputTokens != 5 {
 		t.Errorf("OutputTokens = %d, want 5", end.Usage.OutputTokens)
@@ -236,17 +234,11 @@ func TestAnthropicStreamToolCallAssemblesFragmentedJSON(t *testing.T) {
 	evs := collect(t, newAnthropicTestClient(srv).Stream(context.Background(), simpleReq(false)))
 
 	var text strings.Builder
-	var start ToolCallStart
-	var deltas []ToolCallDelta
 	var complete ToolCallComplete
 	for _, e := range evs {
 		switch v := e.(type) {
 		case TextDelta:
 			text.WriteString(v.Text)
-		case ToolCallStart:
-			start = v
-		case ToolCallDelta:
-			deltas = append(deltas, v)
 		case ToolCallComplete:
 			complete = v
 		}
@@ -254,24 +246,16 @@ func TestAnthropicStreamToolCallAssemblesFragmentedJSON(t *testing.T) {
 	if text.String() != "Let me read that." {
 		t.Errorf("text = %q", text.String())
 	}
-	if start.ToolName != "read_file" || start.ToolID != "toolu_01" {
-		t.Errorf("start = %+v", start)
-	}
-	// Three fragments arrived; each is a partial JSON slice, none valid alone.
-	if len(deltas) != 3 {
-		t.Fatalf("deltas = %d, want 3", len(deltas))
-	}
 	if complete.ToolID != "toolu_01" || complete.ToolName != "read_file" {
 		t.Errorf("complete = %+v", complete)
 	}
 	if complete.Arguments["file_path"] != "internal/a.go" {
 		t.Errorf("assembled arguments = %+v, want file_path=internal/a.go", complete.Arguments)
 	}
-	// Terminal state: the stream reports the tool_use stop reason.
+	// Terminal state: the stream ends after the tool call.
 	last := evs[len(evs)-1]
-	end, ok := last.(StreamEnd)
-	if !ok || end.StopReason != "tool_use" {
-		t.Errorf("last = %+v, want StreamEnd(tool_use)", last)
+	if _, ok := last.(StreamEnd); !ok {
+		t.Errorf("last = %+v, want StreamEnd", last)
 	}
 }
 
@@ -281,11 +265,11 @@ func TestAnthropicRequestBodyWithTools(t *testing.T) {
 	defer srv.Close()
 	req := Request{
 		System: "sys",
-		Tools: []map[string]any{
+		Tools: []tools.ToolSchema{
 			{
-				"name":        "read_file",
-				"description": "Read a file from disk",
-				"input_schema": map[string]any{
+				Name:        "read_file",
+				Description: "Read a file from disk",
+				InputSchema: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
 						"file_path": map[string]any{"type": "string"},

@@ -1,15 +1,15 @@
 // anthropic.go — Anthropic Messages API adapter (llm.Client).
 //
-// Single-file ownership: streaming, message translation (including consecutive
-// same-role merging per the API docs), and error classification. API key is
-// never embedded in returned error strings.
+// Streaming, message translation (including consecutive same-role merging per
+// the API docs), and error classification; delivery and arg-parsing helpers
+// are shared in stream.go. API key is never embedded in returned error
+// strings.
 //
 // Wire events map onto the unified stream as: text_delta → TextDelta with the
 // text block's content_block_stop → TextComplete, thinking_delta →
 // ThinkingDelta, signature_delta accumulates into ThinkingComplete at
-// content_block_stop, tool_use blocks → ToolCallStart /
-// ToolCallDelta (input_json_delta) / ToolCallComplete, message_delta usage →
-// StreamEnd.Usage.
+// content_block_stop, tool_use blocks accumulate input_json_delta into one
+// ToolCallComplete, message_delta usage → StreamEnd.Usage.
 
 package llm
 
@@ -25,12 +25,12 @@ import (
 
 	"github.com/FrexCheat/aether-code/internal/config"
 	"github.com/FrexCheat/aether-code/internal/conversation"
+	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
 const (
 	anthropicMaxTokens      = 16384
 	anthropicThinkingBudget = 8192
-	channelBuffer           = 64
 )
 
 // anthropicClient is the llm.Client backed by the Anthropic Messages API.
@@ -58,24 +58,8 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 	ch := make(chan StreamEvent, channelBuffer)
 	go func() {
 		defer close(ch)
-		send := func(ev StreamEvent) bool {
-			select {
-			case ch <- ev:
-				return true
-			case <-ctx.Done():
-				return false
-			}
-		}
-		finish := func(ev StreamEvent) {
-			select {
-			case ch <- ev:
-			default:
-				select {
-				case ch <- ev:
-				case <-ctx.Done():
-				}
-			}
-		}
+		send := func(ev StreamEvent) bool { return forwardEvent(ctx, ch, ev) }
+		finish := func(ev StreamEvent) { finishEvent(ctx, ch, ev) }
 
 		params := c.buildParams(req)
 		stream := c.sdk.Messages.NewStreaming(ctx, params)
@@ -83,7 +67,6 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 
 		sawStop := false
 		var usage anthropicUsage
-		var stopReason string
 
 		// Per-block accumulation. Anthropic streams blocks sequentially:
 		// start → deltas → stop before the next block starts.
@@ -114,9 +97,6 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 					curToolID, curToolName = block.ID, block.Name
 					curToolSeed = block.Input
 					curToolArgs.Reset()
-					if !send(ToolCallStart{ToolName: block.Name, ToolID: block.ID}) {
-						return
-					}
 				}
 			case anthropic.ContentBlockDeltaEvent:
 				switch d := ev.Delta.AsAny().(type) {
@@ -133,9 +113,6 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 					curSig = d.Signature
 				case anthropic.InputJSONDelta:
 					curToolArgs.WriteString(d.PartialJSON)
-					if !send(ToolCallDelta{Text: d.PartialJSON}) {
-						return
-					}
 				}
 			case anthropic.ContentBlockStopEvent:
 				switch {
@@ -168,7 +145,6 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 					curToolSeed = nil
 				}
 			case anthropic.MessageDeltaEvent:
-				stopReason = string(ev.Delta.StopReason)
 				usage = anthropicUsage{
 					input:  int(ev.Usage.InputTokens),
 					output: int(ev.Usage.OutputTokens),
@@ -186,7 +162,7 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 		case stream.Err() != nil:
 			finish(StreamError{Err: mapAnthropicError(stream.Err())})
 		case sawStop:
-			finish(StreamEnd{StopReason: stopReason, Usage: UsageInfo{
+			finish(StreamEnd{Usage: UsageInfo{
 				InputTokens:         usage.input,
 				OutputTokens:        usage.output,
 				CacheReadTokens:     usage.cacheR,
@@ -266,16 +242,16 @@ func buildAnthropicMessages(messages []conversation.Message) []anthropic.Message
 	return out
 }
 
-// translateAnthropicTools converts the neutral schema shape into Anthropic
+// translateAnthropicTools converts the neutral tool schemas into Anthropic
 // tool params.
-func translateAnthropicTools(tools []map[string]any) []anthropic.ToolUnionParam {
-	result := make([]anthropic.ToolUnionParam, 0, len(tools))
-	for _, t := range tools {
-		tool := anthropic.ToolParam{Name: t["name"].(string)}
-		if d, ok := t["description"].(string); ok {
-			tool.Description = anthropic.String(d)
+func translateAnthropicTools(schemas []tools.ToolSchema) []anthropic.ToolUnionParam {
+	result := make([]anthropic.ToolUnionParam, 0, len(schemas))
+	for _, s := range schemas {
+		tool := anthropic.ToolParam{Name: s.Name}
+		if s.Description != "" {
+			tool.Description = anthropic.String(s.Description)
 		}
-		if schema, ok := t["input_schema"].(map[string]any); ok {
+		if schema := s.InputSchema; schema != nil {
 			input := anthropic.ToolInputSchemaParam{Type: "object"}
 			if props, ok := schema["properties"]; ok {
 				input.Properties = props
@@ -285,8 +261,8 @@ func translateAnthropicTools(tools []map[string]any) []anthropic.ToolUnionParam 
 				input.Required = reqs
 			case []any:
 				for _, r := range reqs {
-					if s, ok := r.(string); ok {
-						input.Required = append(input.Required, s)
+					if str, ok := r.(string); ok {
+						input.Required = append(input.Required, str)
 					}
 				}
 			}
@@ -305,19 +281,6 @@ func translateAnthropicTools(tools []map[string]any) []anthropic.ToolUnionParam 
 		result = append(result, anthropic.ToolUnionParam{OfTool: &tool})
 	}
 	return result
-}
-
-// parseToolArgs decodes the accumulated tool-use JSON into a map. Malformed
-// (e.g. truncated) input yields an empty map rather than failing the stream.
-func parseToolArgs(raw string) map[string]any {
-	args := map[string]any{}
-	if strings.TrimSpace(raw) == "" {
-		return args
-	}
-	if err := json.Unmarshal([]byte(raw), &args); err != nil {
-		return map[string]any{}
-	}
-	return args
 }
 
 // anthropicUsage collects the cumulative usage reported by message_delta.

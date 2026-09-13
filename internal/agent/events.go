@@ -1,5 +1,6 @@
 // 事件契约：RunLoop 通过 channel 推送给 UI 的全部事件。类型定义与编排逻辑
-// 分离，本文件是 TUI 依赖的完整事件面。
+// 分离，本文件是 TUI 依赖的完整事件面；llm 层的流式事件在 RunLoop 内消费，
+// 不会越过这一层到达 UI。
 package agent
 
 import (
@@ -12,7 +13,7 @@ import (
 // AgentEvent is the sealed event stream RunLoop feeds to the UI. Text and
 // thinking events forward the provider stream; tool events bracket each
 // execution; TurnComplete reports each finished tool round; LoopComplete /
-// TurnError are terminal and close the channel.
+// LoopError are terminal and close the channel.
 type AgentEvent interface{ agentEvent() }
 
 type TextDelta struct{ Text string }
@@ -25,7 +26,7 @@ type TextComplete struct{}
 type ThinkingDelta struct{ Text string }
 
 type ThinkingComplete struct {
-	Text      string
+	Thinking  string
 	Signature string
 }
 
@@ -73,18 +74,18 @@ type LoopComplete struct {
 	Usage      llm.UsageInfo
 }
 
-// TurnError is the terminal event for a failed streaming request (network,
-// auth, server errors). Cancellation is not an error: it ends with
+// LoopError is the terminal event for a failed streaming request (network,
+// auth, server errors). It is named for the Loop because it ends the whole
+// loop, not just one turn. Cancellation is not an error: it ends with
 // LoopComplete{OutcomeCancelled} instead.
-type TurnError struct{ Err error }
+type LoopError struct{ Err error }
 
-func (TextDelta) agentEvent()     {}
-func (TextComplete) agentEvent()  {}
-func (ThinkingDelta) agentEvent() {}
-
+func (TextDelta) agentEvent()        {}
+func (TextComplete) agentEvent()     {}
+func (ThinkingDelta) agentEvent()    {}
 func (ThinkingComplete) agentEvent() {}
 func (ToolCallBegin) agentEvent()    {}
 func (ToolCallEnd) agentEvent()      {}
 func (TurnComplete) agentEvent()     {}
 func (LoopComplete) agentEvent()     {}
-func (TurnError) agentEvent()        {}
+func (LoopError) agentEvent()        {}

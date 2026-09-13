@@ -13,6 +13,7 @@ package agent
 import (
 	"context"
 	"strings"
+	"sync"
 
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
@@ -28,9 +29,9 @@ const (
 	ModePlan   Mode = "plan"
 )
 
-// defaultMaxRounds backs New when the caller passes a non-positive ceiling,
+// defaultMaxTurns backs New when the caller passes a non-positive ceiling,
 // so even a misconfigured construction can never loop forever.
-const defaultMaxRounds = 50
+const defaultMaxTurns = 50
 
 // unknownToolLimit is how many consecutive calls to unregistered tools end
 // the loop; executing any known tool resets the streak.
@@ -39,56 +40,70 @@ const unknownToolLimit = 3
 // Orchestrator wires the pieces one session talks to. The conversation
 // manager is injected, not owned: the TUI keeps its handle on history.
 type Orchestrator struct {
-	client    llm.Client
-	registry  *tools.Registry
-	conv      *conversation.Manager
-	system    string
-	thinking  bool
-	maxRounds int // executed-tool-round ceiling for one loop
-	mode      Mode
+	client   llm.Client
+	registry *tools.Registry
+	conv     *conversation.Manager
+	system   string
+	thinking bool
+	maxTurns int // turn ceiling for one loop
+
+	// mu guards mode. The TUI writes it from slash commands and reads it
+	// from the render path; the loop goroutine reads it per request — all
+	// without ordering assumptions between caller and loop.
+	mu   sync.RWMutex
+	mode Mode
 }
 
-// New builds an orchestrator. maxRounds caps the tool rounds of one loop.
+// New builds an orchestrator. maxTurns caps the tool rounds of one loop.
 func New(client llm.Client, registry *tools.Registry, conv *conversation.Manager,
-	system string, thinking bool, maxRounds int) *Orchestrator {
-	if maxRounds <= 0 {
-		maxRounds = defaultMaxRounds
+	system string, thinking bool, maxTurns int) *Orchestrator {
+	if maxTurns <= 0 {
+		maxTurns = defaultMaxTurns
 	}
 	return &Orchestrator{
-		client:    client,
-		registry:  registry,
-		conv:      conv,
-		system:    system,
-		thinking:  thinking,
-		maxRounds: maxRounds,
-		mode:      ModeNormal,
+		client:   client,
+		registry: registry,
+		conv:     conv,
+		system:   system,
+		thinking: thinking,
+		maxTurns: maxTurns,
+		mode:     ModeNormal,
 	}
 }
 
 // Mode reports the current mode.
-func (o *Orchestrator) Mode() Mode { return o.mode }
-
-// SetMode switches the tool set and prompt segment used by subsequent
-// requests. It must be called while no loop is running (the TUI only does:
-// slash commands are ignored mid-turn), so no synchronization is needed.
-func (o *Orchestrator) SetMode(m Mode) { o.mode = m }
-
-// requestSystem returns the system prompt for the current mode: plan mode
-// appends the plan-mode guidance to the base prompt.
-func (o *Orchestrator) requestSystem() string {
-	if o.mode == ModePlan {
-		return o.system + "\n\n" + prompt.PlanSegment
-	}
-	return o.system
+func (o *Orchestrator) Mode() Mode {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.mode
 }
 
-// requestTools returns the tool schema list for the current mode: everything
-// in normal mode, read-only tools in plan mode.
-func (o *Orchestrator) requestTools() []map[string]any {
-	if o.mode == ModePlan {
-		return o.registry.FilteredSchemas(func(c tools.Category) bool { return c == tools.CategoryRead })
+// SetMode switches the tool set and prompt segment used by subsequent
+// requests. It is safe to call at any time: a running loop picks the new
+// mode up at its next request boundary. The TUI currently only switches
+// between loops (slash commands are ignored mid-turn).
+func (o *Orchestrator) SetMode(m Mode) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.mode = m
+}
+
+// requestSystem returns the system prompt for the given mode: plan mode
+// appends the plan-mode guidance to the base prompt.
+func requestSystem(base string, mode Mode) string {
+	if mode == ModePlan {
+		return base + "\n\n" + prompt.PlanSegment
 	}
-	return o.registry.GetAllSchemas()
+	return base
+}
+
+// requestTools returns the tool schema list for the given mode: everything
+// in normal mode, read-only tools in plan mode.
+func requestTools(reg *tools.Registry, mode Mode) []tools.ToolSchema {
+	if mode == ModePlan {
+		return reg.FilteredSchemas(func(c tools.Category) bool { return c == tools.CategoryRead })
+	}
+	return reg.GetAllSchemas()
 }
 
 // RunLoop runs one user turn as a full agent loop: user message → stream →
@@ -96,9 +111,11 @@ func (o *Orchestrator) requestTools() []map[string]any {
 // and commands serially) and feed the results back → repeat until it stops.
 //
 // The returned channel closes after exactly one terminal event: a
-// LoopComplete on every non-stream-error path, a TurnError when a streaming
-// request fails. Cancellation follows ctx; a cancelled loop ends with
-// LoopComplete{OutcomeCancelled}, never TurnError.
+// LoopComplete on every non-stream-error path, a LoopError when a streaming
+// request fails. Consumers must drain the channel until it closes — the
+// terminal send does not consult ctx, which is what guarantees the contract.
+// Cancellation follows ctx; a cancelled loop ends with
+// LoopComplete{OutcomeCancelled}, never LoopError.
 func (o *Orchestrator) RunLoop(ctx context.Context, userText string) <-chan AgentEvent {
 	ch := make(chan AgentEvent, 64)
 	go func() {
@@ -127,108 +144,62 @@ func (o *Orchestrator) RunLoop(ctx context.Context, userText string) <-chan Agen
 		var unknownStreak int   // consecutive unknown-tool calls across turns
 		var usage llm.UsageInfo // accumulated over completed rounds
 
-		for turn := 1; ; turn++ {
+		for {
 			// Repair the tool_use/tool_result pairing at the request boundary so
 			// history left dangling by an interrupted run still yields a legal
 			// request; the repair is never written back into the history.
 			msgs := conversation.EnsureToolPairing(o.conv.GetMessages())
+			// The mode is read per request, not pushed: a switch made between
+			// turns takes effect at the next request boundary on its own.
+			mode := o.Mode()
 			events := o.client.Stream(ctx, llm.Request{
-				System:   o.requestSystem(),
+				System:   requestSystem(o.system, mode),
 				Messages: msgs,
-				Tools:    o.requestTools(),
+				Tools:    requestTools(o.registry, mode),
 				Thinking: o.thinking,
 			})
 
-			var text strings.Builder
-			var thinking []conversation.ThinkingBlock
-			var toolUses []conversation.ToolUseBlock
-			var streamEnd llm.StreamEnd
-			var streamErr error
-			cancelled := false
-
-		forward:
-			for ev := range events {
-				switch e := ev.(type) {
-				case llm.TextDelta:
-					text.WriteString(e.Text)
-					if !send(TextDelta{Text: e.Text}) {
-						cancelled = true
-						break forward
-					}
-				case llm.TextComplete:
-					if !send(TextComplete{}) {
-						cancelled = true
-						break forward
-					}
-				case llm.ThinkingDelta:
-					if !send(ThinkingDelta{Text: e.Text}) {
-						cancelled = true
-						break forward
-					}
-				case llm.ThinkingComplete:
-					thinking = append(thinking, conversation.ThinkingBlock{
-						Text:      e.Thinking,
-						Signature: e.Signature,
-					})
-					if !send(ThinkingComplete{Text: e.Thinking, Signature: e.Signature}) {
-						cancelled = true
-						break forward
-					}
-				case llm.ToolCallComplete:
-					toolUses = append(toolUses, conversation.ToolUseBlock{
-						ID:   e.ToolID,
-						Name: e.ToolName,
-						Args: e.Arguments,
-					})
-					if !send(ToolCallBegin{ToolID: e.ToolID, ToolName: e.ToolName, Args: e.Arguments}) {
-						cancelled = true
-						break forward
-					}
-				case llm.StreamEnd:
-					streamEnd = e
-					break forward
-				case llm.StreamError:
-					streamErr = e.Err
-					break forward
-				}
-			}
+			ts := consumeStream(events, send)
+			// Record the round's usage as soon as the stream reported it, so
+			// the cancel branch below cannot drop the last round's tally.
+			usage = addUsage(usage, ts.end.Usage)
 
 			// Cancellation outranks stream errors: a cancelled request
 			// surfaces as a StreamError carrying ctx.Err(), but the user
 			// action is a cancel, not a failure.
-			if cancelled || ctx.Err() != nil {
+			if ts.cancelled || ctx.Err() != nil {
 				// Keep what arrived and keep the history pair-complete: the
 				// assistant turn (partial text, any fully-announced calls)
 				// commits, every announced-but-unexecuted call gets a
 				// synthetic failure result.
-				o.commitAssistant(text.String(), thinking, toolUses)
-				o.commitSyntheticResults(toolUses, "cancelled before execution")
+				o.commitAssistant(ts.text.String(), ts.thinking, ts.toolUses)
+				o.commitSyntheticResults(ts.toolUses, "cancelled before execution")
 				terminal(LoopComplete{Outcome: OutcomeCancelled, TotalTurns: turns, Usage: usage})
 				return
 			}
-			if streamErr != nil {
-				terminal(TurnError{Err: streamErr})
+			if ts.err != nil {
+				terminal(LoopError{Err: ts.err})
 				return
 			}
-			usage = addUsage(usage, streamEnd.Usage)
 
-			// Commit the assistant message before executing tools so the
-			// history is coherent even if an execution panics the process
-			// later. Tool turns carry the thinking segments too: replaying
-			// them (with the provider's signature) is required to continue a
+			// Commit the assistant message before executing tools: the
+			// history then already carries every announced call, so the
+			// result commit below (real or synthetic) always finds its pair.
+			// Tool turns carry the thinking segments too: replaying them
+			// (with the provider's signature) is required to continue a
 			// thinking chain.
-			o.commitAssistant(text.String(), thinking, toolUses)
+			o.commitAssistant(ts.text.String(), ts.thinking, ts.toolUses)
 
-			if len(toolUses) == 0 {
+			if len(ts.toolUses) == 0 {
 				terminal(LoopComplete{Outcome: OutcomeModelStop, TotalTurns: turns, Usage: usage})
 				return
 			}
 
-			// Guard rail: the round ceiling counts executed tool rounds. The
+			// Guard rail: the ceiling counts executed tool rounds. The
 			// model's calls stay unexecuted; synthetic failure results keep
 			// the history pair-complete and tell the model why.
-			if turns >= o.maxRounds {
-				o.commitSyntheticResults(toolUses, "iteration limit reached before this call could run")
+			if turns >= o.maxTurns {
+				o.commitSyntheticResults(ts.toolUses, "iteration limit reached before this call could run")
 				terminal(LoopComplete{Outcome: OutcomeMaxIterations, TotalTurns: turns, Usage: usage})
 				return
 			}
@@ -236,48 +207,29 @@ func (o *Orchestrator) RunLoop(ctx context.Context, userText string) <-chan Agen
 			// Execute this turn's calls. Events go out in original call
 			// order (per batch join); results are collected in the same
 			// order regardless of completion timing.
-			outcomes := executeToolCalls(ctx, toolUses, o.registry, func(i int, oc execOutcome) {
+			outcomes := executeToolCalls(ctx, ts.toolUses, o.registry, func(i int, oc execOutcome) {
 				send(ToolCallEnd{
-					ToolID:   toolUses[i].ID,
-					ToolName: toolUses[i].Name,
+					ToolID:   ts.toolUses[i].ID,
+					ToolName: ts.toolUses[i].Name,
 					Result:   oc.Result,
 					Elapsed:  oc.Elapsed,
 				})
 			})
-
-			results := make([]conversation.ToolResultBlock, 0, len(outcomes))
-			for i, oc := range outcomes {
-				results = append(results, conversation.ToolResultBlock{
-					ToolUseID: toolUses[i].ID,
-					Content:   oc.Result.Output,
-					IsError:   oc.Result.IsError,
-				})
-			}
-			o.conv.AddToolResults(results...)
+			o.conv.AddToolResults(toolResultBlocks(ts.toolUses, outcomes)...)
 			turns++
 
-			// Unknown-tool streak, walked in call order so "consecutive"
-			// means consecutive in the model's own sequence. Known-tool
-			// executions reset it; reaching the limit ends the loop before
-			// the next request.
-			for _, oc := range outcomes {
-				if oc.Unknown {
-					unknownStreak++
-					if unknownStreak >= unknownToolLimit {
-						break
-					}
-				} else {
-					unknownStreak = 0
-				}
-			}
+			// The streak walks call order so "consecutive" means consecutive
+			// in the model's own sequence; reaching the limit ends the loop
+			// before the next request.
+			unknownStreak = bumpUnknownStreak(unknownStreak, outcomes)
 			if unknownStreak >= unknownToolLimit {
 				terminal(LoopComplete{Outcome: OutcomeUnknownTool, TotalTurns: turns, Usage: usage})
 				return
 			}
 
 			// The turn is done: results are on record, the next iteration is
-			// the next turn. A failed send here is the cancellation path
-			// below finishing the loop.
+			// the next turn. A failed send here means ctx is done; the check
+			// below finishes the loop.
 			send(TurnComplete{Turn: turns})
 			if ctx.Err() != nil {
 				terminal(LoopComplete{Outcome: OutcomeCancelled, TotalTurns: turns, Usage: usage})
@@ -286,6 +238,100 @@ func (o *Orchestrator) RunLoop(ctx context.Context, userText string) <-chan Agen
 		}
 	}()
 	return ch
+}
+
+// turnStream is one request's streamed output: the assistant turn parts
+// accumulate here for the history commit while the events forward to the UI.
+type turnStream struct {
+	text      strings.Builder
+	thinking  []conversation.ThinkingBlock
+	toolUses  []conversation.ToolUseBlock
+	end       llm.StreamEnd
+	err       error
+	cancelled bool // a send failed: ctx is done and the loop should unwind
+}
+
+// consumeStream drains one provider stream: text, thinking and tool events
+// forward to the UI through send while their content accumulates for the
+// history commit. It stops at StreamEnd or StreamError, or as soon as send
+// reports cancellation — a cancelled stream may end without either terminal
+// event.
+func consumeStream(events <-chan llm.StreamEvent, send func(AgentEvent) bool) turnStream {
+	var ts turnStream
+forward:
+	for ev := range events {
+		switch e := ev.(type) {
+		case llm.TextDelta:
+			ts.text.WriteString(e.Text)
+			if !send(TextDelta{Text: e.Text}) {
+				ts.cancelled = true
+				break forward
+			}
+		case llm.TextComplete:
+			if !send(TextComplete{}) {
+				ts.cancelled = true
+				break forward
+			}
+		case llm.ThinkingDelta:
+			if !send(ThinkingDelta{Text: e.Text}) {
+				ts.cancelled = true
+				break forward
+			}
+		case llm.ThinkingComplete:
+			ts.thinking = append(ts.thinking, conversation.ThinkingBlock{
+				Text:      e.Thinking,
+				Signature: e.Signature,
+			})
+			if !send(ThinkingComplete{Thinking: e.Thinking, Signature: e.Signature}) {
+				ts.cancelled = true
+				break forward
+			}
+		case llm.ToolCallComplete:
+			ts.toolUses = append(ts.toolUses, conversation.ToolUseBlock{
+				ID:   e.ToolID,
+				Name: e.ToolName,
+				Args: e.Arguments,
+			})
+			if !send(ToolCallBegin{ToolID: e.ToolID, ToolName: e.ToolName, Args: e.Arguments}) {
+				ts.cancelled = true
+				break forward
+			}
+		case llm.StreamEnd:
+			ts.end = e
+			break forward
+		case llm.StreamError:
+			ts.err = e.Err
+			break forward
+		}
+	}
+	return ts
+}
+
+// toolResultBlocks pairs each outcome with its call, in original call order,
+// ready for the history commit.
+func toolResultBlocks(calls []conversation.ToolUseBlock, outcomes []execOutcome) []conversation.ToolResultBlock {
+	results := make([]conversation.ToolResultBlock, 0, len(outcomes))
+	for i, oc := range outcomes {
+		results = append(results, conversation.ToolResultBlock{
+			ToolUseID: calls[i].ID,
+			Content:   oc.Result.Output,
+			IsError:   oc.Result.IsError,
+		})
+	}
+	return results
+}
+
+// bumpUnknownStreak walks one turn's outcomes in call order: known-tool
+// executions reset the streak, unknown calls extend it.
+func bumpUnknownStreak(streak int, outcomes []execOutcome) int {
+	for _, oc := range outcomes {
+		if oc.Unknown {
+			streak++
+		} else {
+			streak = 0
+		}
+	}
+	return streak
 }
 
 // commitAssistant appends the assistant turn for the current round: plain

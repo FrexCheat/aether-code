@@ -17,6 +17,7 @@ import (
 
 	"github.com/FrexCheat/aether-code/internal/config"
 	"github.com/FrexCheat/aether-code/internal/conversation"
+	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
 // Request is a single streaming completion request.
@@ -27,10 +28,10 @@ type Request struct {
 	Messages []conversation.Message
 	// Thinking enables extended thinking / reasoning on providers that support it.
 	Thinking bool
-	// Tools is the tool list in the provider-neutral schema shape
-	// {"name", "description", "input_schema"}. Adapters translate it into
-	// their own API format; empty means no tools are offered this request.
-	Tools []map[string]any
+	// Tools is the tool list in the provider-neutral shape produced by
+	// tools.Registry. Adapters translate it into their own API format;
+	// empty means no tools are offered this request.
+	Tools []tools.ToolSchema
 }
 
 // Client is the unified abstraction implemented by every protocol adapter.

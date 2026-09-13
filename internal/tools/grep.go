@@ -27,25 +27,37 @@ func (t *GrepTool) Description() string {
 }
 func (t *GrepTool) Category() Category { return CategoryRead }
 
-func (t *GrepTool) Schema() map[string]any {
-	return toolSchema(t.Name(), t.Description(), map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"pattern": map[string]any{
-				"type":        "string",
-				"description": "Go regular expression to search for",
+func (t *GrepTool) Schema() ToolSchema {
+	return ToolSchema{
+		Name:        t.Name(),
+		Description: t.Description(),
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"pattern": map[string]any{
+					"type":        "string",
+					"description": "Go regular expression to search for",
+				},
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Directory (or single file) to search in (default: working directory)",
+				},
+				"include": map[string]any{
+					"type":        "string",
+					"description": "Glob filtering which file names are searched, e.g. \"*.go\"",
+				},
 			},
-			"path": map[string]any{
-				"type":        "string",
-				"description": "Directory (or single file) to search in (default: working directory)",
-			},
-			"include": map[string]any{
-				"type":        "string",
-				"description": "Glob filtering which file names are searched, e.g. \"*.go\"",
-			},
+			"required": []string{"pattern"},
 		},
-		"required": []string{"pattern"},
-	})
+	}
+}
+
+// Title summarizes the call for the UI: "Grep: TODO".
+func (t *GrepTool) Title(args map[string]any) string {
+	if pattern, _ := args["pattern"].(string); pattern != "" {
+		return "Grep: " + pattern
+	}
+	return ""
 }
 
 func (t *GrepTool) Execute(_ context.Context, args map[string]any) ToolResult {

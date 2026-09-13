@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -61,11 +62,13 @@ func (b *blockingClient) Stream(ctx context.Context, _ llm.Request) <-chan llm.S
 }
 
 // recordingTool remembers the args it was executed with; delay simulates a
-// slow tool so out-of-order completion can be staged.
+// slow tool so out-of-order completion can be staged. Execute may run
+// concurrently for read-batch calls, so the seen slice is mutex-guarded.
 type recordingTool struct {
 	name  string
 	cat   tools.Category
 	delay time.Duration
+	mu    sync.Mutex
 	seen  []map[string]any
 }
 
@@ -76,14 +79,16 @@ func newRecordingTool(name string, cat tools.Category) *recordingTool {
 func (t *recordingTool) Name() string             { return t.name }
 func (t *recordingTool) Description() string      { return "records args" }
 func (t *recordingTool) Category() tools.Category { return t.cat }
-func (t *recordingTool) Schema() map[string]any {
-	return map[string]any{"name": t.Name(), "description": t.Description(), "input_schema": map[string]any{"type": "object"}}
+func (t *recordingTool) Schema() tools.ToolSchema {
+	return tools.ToolSchema{Name: t.Name(), Description: t.Description(), InputSchema: map[string]any{"type": "object"}}
 }
 func (t *recordingTool) Execute(_ context.Context, args map[string]any) tools.ToolResult {
 	if t.delay > 0 {
 		time.Sleep(t.delay)
 	}
+	t.mu.Lock()
 	t.seen = append(t.seen, args)
+	t.mu.Unlock()
 	return tools.ToolResult{Output: "echo ok"}
 }
 
@@ -92,7 +97,7 @@ func toolCall(id, name string, args map[string]any) llm.StreamEvent {
 }
 
 // collectLoop drains one loop and verifies the terminal contract: exactly one
-// terminal event (LoopComplete or TurnError), and it is last.
+// terminal event (LoopComplete or LoopError), and it is last.
 func collectLoop(t *testing.T, o *Orchestrator, text string) []AgentEvent {
 	t.Helper()
 	return drainLoop(t, o.RunLoop(context.Background(), text))
@@ -109,7 +114,7 @@ func drainLoop(t *testing.T, ch <-chan AgentEvent) []AgentEvent {
 	terminals := 0
 	for ev := range ch {
 		switch ev.(type) {
-		case LoopComplete, TurnError:
+		case LoopComplete, LoopError:
 			terminals++
 			if terminals > 1 {
 				t.Fatalf("second terminal event: %+v (events so far: %d)", ev, len(evs))
@@ -141,11 +146,11 @@ func TestRunLoopEndToEndWithToolCall(t *testing.T) {
 			llm.TextDelta{Text: "checking "},
 			llm.TextDelta{Text: "the file"},
 			toolCall("tu_1", "echo_tool", map[string]any{"path": "a.go"}),
-			llm.StreamEnd{StopReason: "tool_use", Usage: llm.UsageInfo{InputTokens: 10, OutputTokens: 5}},
+			llm.StreamEnd{Usage: llm.UsageInfo{InputTokens: 10, OutputTokens: 5}},
 		},
 		{
 			llm.TextDelta{Text: "all good"},
-			llm.StreamEnd{StopReason: "end_turn", Usage: llm.UsageInfo{InputTokens: 20, OutputTokens: 3}},
+			llm.StreamEnd{Usage: llm.UsageInfo{InputTokens: 20, OutputTokens: 3}},
 		},
 	}}
 	o := New(fc, reg, conv, "sys", false, 50)
@@ -230,7 +235,7 @@ func TestRunLoopEndToEndWithToolCall(t *testing.T) {
 	if len(fc.reqs[1].Messages) != 3 {
 		t.Errorf("second request messages = %d, want 3", len(fc.reqs[1].Messages))
 	}
-	if len(fc.reqs[1].Tools) != 1 || fc.reqs[1].Tools[0]["name"] != "echo_tool" {
+	if len(fc.reqs[1].Tools) != 1 || fc.reqs[1].Tools[0].Name != "echo_tool" {
 		t.Errorf("request tools = %+v", fc.reqs[1].Tools)
 	}
 }
@@ -254,8 +259,8 @@ func typeName(ev AgentEvent) string {
 		return "TurnComplete"
 	case LoopComplete:
 		return "LoopComplete"
-	case TurnError:
-		return "TurnError"
+	case LoopError:
+		return "LoopError"
 	default:
 		return "unknown"
 	}
@@ -265,7 +270,7 @@ func TestRunLoopPlainReply(t *testing.T) {
 	fc := &fakeClient{scripts: [][]llm.StreamEvent{
 		{
 			llm.TextDelta{Text: "just text"},
-			llm.StreamEnd{StopReason: "end_turn"},
+			llm.StreamEnd{},
 		},
 	}}
 	o, conv := newTestOrchestrator(t, fc, 50)
@@ -296,9 +301,9 @@ func TestRunLoopMultiRoundTurnCounting(t *testing.T) {
 	reg := tools.NewRegistry()
 	reg.Register(tool)
 	fc := &fakeClient{scripts: [][]llm.StreamEvent{
-		{toolCall("tu_1", "echo_tool", nil), llm.StreamEnd{StopReason: "tool_use"}},
-		{toolCall("tu_2", "echo_tool", nil), llm.StreamEnd{StopReason: "tool_use"}},
-		{llm.TextDelta{Text: "done"}, llm.StreamEnd{StopReason: "end_turn"}},
+		{toolCall("tu_1", "echo_tool", nil), llm.StreamEnd{}},
+		{toolCall("tu_2", "echo_tool", nil), llm.StreamEnd{}},
+		{llm.TextDelta{Text: "done"}, llm.StreamEnd{}},
 	}}
 	o, _ := newTestOrchestrator(t, fc, 50)
 	o.registry.Register(tool)
@@ -331,9 +336,9 @@ func TestRunLoopRecordsThinkingInHistory(t *testing.T) {
 			llm.ThinkingComplete{Thinking: "hmm", Signature: "sig_1"},
 			llm.TextDelta{Text: "calling"},
 			toolCall("tu_1", "echo_tool", nil),
-			llm.StreamEnd{StopReason: "tool_use"},
+			llm.StreamEnd{},
 		},
-		{llm.StreamEnd{StopReason: "end_turn"}},
+		{llm.StreamEnd{}},
 	}}
 	tool := newRecordingTool("echo_tool", tools.CategoryRead)
 	reg := tools.NewRegistry()
@@ -356,9 +361,9 @@ func TestRunLoopUnknownToolGetsErrorResult(t *testing.T) {
 	fc := &fakeClient{scripts: [][]llm.StreamEvent{
 		{
 			toolCall("tu_x", "no_such_tool", nil),
-			llm.StreamEnd{StopReason: "tool_use"},
+			llm.StreamEnd{},
 		},
-		{llm.StreamEnd{StopReason: "end_turn"}},
+		{llm.StreamEnd{}},
 	}}
 	o, conv := newTestOrchestrator(t, fc, 50)
 	evs := collectLoop(t, o, "do the thing")
@@ -402,9 +407,9 @@ func TestRunLoopStreamError(t *testing.T) {
 	evs := collectLoop(t, o, "hi")
 
 	last := lastEvent(evs)
-	te, ok := last.(TurnError)
+	te, ok := last.(LoopError)
 	if !ok || te.Err != context.DeadlineExceeded {
-		t.Fatalf("last = %+v, want TurnError", last)
+		t.Fatalf("last = %+v, want LoopError", last)
 	}
 	// Nothing committed: the user message was added but no assistant turn.
 	msgs := conv.GetMessages()
@@ -422,9 +427,9 @@ func TestRunLoopMultipleToolCallsInOrder(t *testing.T) {
 		{
 			toolCall("tu_1", "echo_tool", map[string]any{"n": 1.0}),
 			toolCall("tu_2", "echo_tool", map[string]any{"n": 2.0}),
-			llm.StreamEnd{StopReason: "tool_use"},
+			llm.StreamEnd{},
 		},
-		{llm.StreamEnd{StopReason: "end_turn"}},
+		{llm.StreamEnd{}},
 	}}
 	o := New(fc, reg, conv, "sys", false, 50)
 	evs := collectLoop(t, o, "two calls")
@@ -467,8 +472,8 @@ func TestRunLoopMaxIterationsSynthesizesResults(t *testing.T) {
 	reg := tools.NewRegistry()
 	reg.Register(tool)
 	fc := &fakeClient{scripts: [][]llm.StreamEvent{
-		{toolCall("tu_1", "echo_tool", nil), llm.StreamEnd{StopReason: "tool_use"}},
-		{toolCall("tu_1", "echo_tool", nil), llm.StreamEnd{StopReason: "tool_use"}},
+		{toolCall("tu_1", "echo_tool", nil), llm.StreamEnd{}},
+		{toolCall("tu_1", "echo_tool", nil), llm.StreamEnd{}},
 	}}
 	o, conv := newTestOrchestrator(t, fc, 1)
 	o.registry.Register(tool)
@@ -502,7 +507,7 @@ func TestRunLoopMaxIterationsSynthesizesResults(t *testing.T) {
 
 func TestRunLoopCancelKeepsPartialHistoryLegal(t *testing.T) {
 	// Stream: one announced tool call, then hang until cancelled. The loop
-	// must end with LoopComplete{Cancelled} — not TurnError — with the
+	// must end with LoopComplete{Cancelled} — not LoopError — with the
 	// announced-but-unexecuted call repaired by a synthetic result.
 	fc := &blockingClient{first: toolCall("tu_1", "echo_tool", nil), started: make(chan struct{})}
 	reg := tools.NewRegistry()
@@ -522,8 +527,8 @@ func TestRunLoopCancelKeepsPartialHistoryLegal(t *testing.T) {
 		t.Fatalf("terminal = %+v, want Cancelled", final)
 	}
 	for _, ev := range evs {
-		if _, ok := ev.(TurnError); ok {
-			t.Errorf("cancel surfaced as TurnError: %+v", ev)
+		if _, ok := ev.(LoopError); ok {
+			t.Errorf("cancel surfaced as LoopError: %+v", ev)
 		}
 	}
 
@@ -550,7 +555,7 @@ func TestRunLoopUnknownStreakStopsLoop(t *testing.T) {
 			toolCall("tu_1", "nope", nil),
 			toolCall("tu_2", "nah", nil),
 			toolCall("tu_3", "nada", nil),
-			llm.StreamEnd{StopReason: "tool_use"},
+			llm.StreamEnd{},
 		},
 	}}
 	o, conv := newTestOrchestrator(t, fc, 50)
@@ -588,9 +593,9 @@ func TestRunLoopKnownToolResetsStreak(t *testing.T) {
 			toolCall("tu_2", "echo_tool", nil),
 			toolCall("tu_3", "nope", nil),
 			toolCall("tu_4", "nope", nil),
-			llm.StreamEnd{StopReason: "tool_use"},
+			llm.StreamEnd{},
 		},
-		{llm.StreamEnd{StopReason: "end_turn"}},
+		{llm.StreamEnd{}},
 	}}
 	o, _ := newTestOrchestrator(t, fc, 50)
 	o.registry.Register(tool)
@@ -641,9 +646,9 @@ func TestRunLoopOutOfOrderCompletionKeepsOriginalOrderTrio(t *testing.T) {
 		{
 			toolCall("tu_1", "slow_tool", nil),
 			toolCall("tu_2", "fast_tool", nil),
-			llm.StreamEnd{StopReason: "tool_use"},
+			llm.StreamEnd{},
 		},
-		{llm.StreamEnd{StopReason: "end_turn"}},
+		{llm.StreamEnd{}},
 	}}
 	o, conv := newTestOrchestrator(t, fc, 50)
 	o.registry.Register(slow)
@@ -672,9 +677,9 @@ func TestRunLoopPostAbortHistoryStaysPairComplete(t *testing.T) {
 	reg := tools.NewRegistry()
 	reg.Register(tool)
 	fc := &fakeClient{scripts: [][]llm.StreamEvent{
-		{toolCall("tu_1", "echo_tool", nil), llm.StreamEnd{StopReason: "tool_use"}},
-		{toolCall("tu_1", "echo_tool", nil), llm.StreamEnd{StopReason: "tool_use"}},
-		{llm.TextDelta{Text: "recovered"}, llm.StreamEnd{StopReason: "end_turn"}},
+		{toolCall("tu_1", "echo_tool", nil), llm.StreamEnd{}},
+		{toolCall("tu_1", "echo_tool", nil), llm.StreamEnd{}},
+		{llm.TextDelta{Text: "recovered"}, llm.StreamEnd{}},
 	}}
 	o, _ := newTestOrchestrator(t, fc, 1)
 	o.registry.Register(tool)
@@ -711,15 +716,15 @@ func TestRunLoopRealToolsReadEditLoop(t *testing.T) {
 	fc := &fakeClient{scripts: [][]llm.StreamEvent{
 		{
 			toolCall("tu_1", "read_file", map[string]any{"file_path": "note.txt"}),
-			llm.StreamEnd{StopReason: "tool_use"},
+			llm.StreamEnd{},
 		},
 		{
 			toolCall("tu_2", "edit_file", map[string]any{
 				"file_path": "note.txt", "old_string": "alpha", "new_string": "beta",
 			}),
-			llm.StreamEnd{StopReason: "tool_use"},
+			llm.StreamEnd{},
 		},
-		{llm.TextDelta{Text: "edited"}, llm.StreamEnd{StopReason: "end_turn"}},
+		{llm.TextDelta{Text: "edited"}, llm.StreamEnd{}},
 	}}
 	o, conv := newTestOrchestrator(t, fc, 50)
 	o.registry = reg
@@ -750,7 +755,7 @@ func TestRunLoopPlanModeFiltersToolsAndPrompt(t *testing.T) {
 	reg.Register(read)
 	reg.Register(write)
 	fc := &fakeClient{scripts: [][]llm.StreamEvent{
-		{llm.StreamEnd{StopReason: "end_turn"}},
+		{llm.StreamEnd{}},
 	}}
 	conv := conversation.NewManager()
 	o := New(fc, reg, conv, "sys", false, 50)
@@ -767,7 +772,7 @@ func TestRunLoopPlanModeFiltersToolsAndPrompt(t *testing.T) {
 	if !strings.HasPrefix(req.System, "sys") {
 		t.Errorf("plan-mode system prompt lost the base prompt: %q", req.System)
 	}
-	if len(req.Tools) != 1 || req.Tools[0]["name"] != "echo_tool" {
+	if len(req.Tools) != 1 || req.Tools[0].Name != "echo_tool" {
 		t.Errorf("plan-mode tools = %+v, want only the read tool", req.Tools)
 	}
 

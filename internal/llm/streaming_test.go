@@ -78,7 +78,7 @@ func assertTextThenDone(t *testing.T, evs []StreamEvent) {
 			_ = v
 		case ThinkingDelta, ThinkingComplete:
 			// thinking fixtures also flow through here; only text matters.
-		case ToolCallStart, ToolCallDelta, ToolCallComplete:
+		case ToolCallComplete:
 			t.Fatalf("unexpected tool event in text stream: %+v", e)
 		case StreamError:
 			t.Fatalf("unexpected StreamError: %v", v.Err)
