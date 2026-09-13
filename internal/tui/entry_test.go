@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/FrexCheat/aether-code/internal/agent"
@@ -17,70 +18,46 @@ import (
 	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
-// freeze the clock so lifecycle timing (turn timer, tool elapsed) is
-// deterministic.
+// freeze the clock so lifecycle timing (turn timer) is deterministic.
 func init() {
 	timeNow = func() time.Time { return time.Unix(1000, 0) }
 	timeSince = func(time.Time) time.Duration { return 7 * time.Second }
-}
-
-func TestCachedRenderMemoizesPerWidth(t *testing.T) {
-	e := newAssistantEntry("x")
-	calls := 0
-	render := func(md string) string { calls++; return "<" + md + ">" }
-	if got := e.cachedRender(80, render); got != "<x>" || calls != 1 {
-		t.Fatalf("first = %q calls=%d", got, calls)
-	}
-	if got := e.cachedRender(80, render); got != "<x>" || calls != 1 {
-		t.Fatalf("cached = %q calls=%d", got, calls)
-	}
-	if got := e.cachedRender(40, render); got != "<x>" || calls != 2 {
-		t.Fatalf("after width change = %q calls=%d", got, calls)
-	}
 }
 
 func TestWholeTurnCommitOnStreamEnd(t *testing.T) {
 	fake := &fakeProvider{events: []llm.StreamEvent{
 		llm.TextDelta{Text: "a"}, llm.TextDelta{Text: "b"}, llm.StreamEnd{},
 	}}
-	m := send(t, newTestModel(fake), "q")
-	last := lastEntry(t, m)
-	if last.kind != entryTurn {
-		t.Fatalf("last entry = %+v, want turn footer", last)
-	}
-	if last.elapsed != 7*time.Second || last.doneAt.IsZero() {
-		t.Fatalf("turn footer timing not set: %+v", last)
-	}
-	reply := m.entries[len(m.entries)-2]
-	if reply.kind != entryAssistant || reply.text != "ab" {
-		t.Fatalf("reply entry = %+v, want assistant 'ab'", reply)
-	}
+	m, rec := newTestModel(fake)
+	m = send(t, m, "q")
 	if m.conv.Len() != 2 {
 		t.Fatalf("conv.Len = %d, want 2", m.conv.Len())
 	}
 	if m.live != nil {
 		t.Fatal("stream should be idle after Done")
 	}
-	chat := ansi.Strip(renderTop(&m))
-	if !strings.Contains(chat, "ab") || !strings.Contains(chat, "7s · done") {
-		t.Errorf("committed reply should render with turn footer:\n%s", chat)
+	// No TextComplete in the script: the reply flushes at loop end, above the
+	// footer (same chunk or its own, order holds either way).
+	chat := ansi.Strip(rec.joined())
+	if !strings.Contains(chat, "ab") {
+		t.Errorf("committed reply should print:\n%s", chat)
+	}
+	if last := ansi.Strip(rec.lastChunk()); !strings.Contains(last, "7s · done") {
+		t.Errorf("last chunk = %q, want turn footer", last)
 	}
 }
 
 func TestErrorDoesNotCommitAssistantReply(t *testing.T) {
 	fake := &fakeProvider{events: []llm.StreamEvent{llm.StreamError{Err: errors.New("boom")}}}
-	m := send(t, newTestModel(fake), "q")
+	m, rec := newTestModel(fake)
+	m = send(t, m, "q")
 	// The user question is committed by the agent before streaming; the
 	// failed turn's assistant reply is not.
 	if m.conv.Len() != 1 {
 		t.Fatalf("conv.Len = %d, want 1 (user question only)", m.conv.Len())
 	}
-	last := lastEntry(t, m)
-	if last.kind != entryNotice || last.severity != noticeError {
-		t.Fatalf("last entry = %+v, want error notice", last)
-	}
-	if !strings.Contains(ansi.Strip(renderTop(&m)), "Error: boom") {
-		t.Error("error notice should render")
+	if last := ansi.Strip(rec.lastChunk()); !strings.Contains(last, "Error: boom") {
+		t.Errorf("last chunk = %q, want error notice", last)
 	}
 }
 
@@ -91,13 +68,14 @@ func TestThinkingIgnored(t *testing.T) {
 		llm.TextDelta{Text: "!"},
 		llm.StreamEnd{},
 	}}
-	m := send(t, newTestModel(fake), "q")
-	reply := m.entries[len(m.entries)-2] // turn footer is last
-	if reply.text != "visible!" {
-		t.Fatalf("assistant text = %q, thinking must be ignored", reply.text)
+	m, rec := newTestModel(fake)
+	m = send(t, m, "q")
+	chat := ansi.Strip(rec.joined())
+	if !strings.Contains(chat, "visible!") {
+		t.Fatalf("assistant text = want 'visible!', got:\n%s", chat)
 	}
-	if strings.Contains(ansi.Strip(renderTop(&m)), "hidden-thinking") {
-		t.Error("thinking must not render")
+	if strings.Contains(chat, "hidden-thinking") {
+		t.Error("thinking must not print")
 	}
 }
 
@@ -131,37 +109,32 @@ func TestToolEntryLifecycleAndDiff(t *testing.T) {
 		{llm.StreamEnd{}},
 	}}, reg, conv, "sys", false, config.DefaultMaxIterations)
 	m := newModel(Options{Agent: ag, Conv: conv, Registry: reg, Version: "test", WorkDir: "/tmp"})
+	rec := &printRecorder{}
+	m.print = rec.record
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = mm.(Model)
 	m = send(t, m, "edit it")
 
-	// Entries: user, tool (settled), turn footer. A tool-only turn produces
-	// no assistant entry — empty text segments are skipped instead of
-	// rendering a husk.
-	if len(m.entries) != 3 {
-		t.Fatalf("entries = %d, want 3", len(m.entries))
+	// A tool-only turn produces no assistant block — empty text segments are
+	// skipped instead of rendering a husk.
+	tool := rec.lastChunk()
+	stripped := ansi.Strip(tool)
+	if !strings.Contains(stripped, "● Edit main.go") {
+		t.Fatalf("tool block missing title:\n%q", tool)
 	}
-	tool := m.entries[1]
-	if tool.kind != entryTool || tool.toolName != "edit_file" || tool.state != toolDone {
-		t.Fatalf("tool entry = %+v", tool)
+	if !strings.Contains(stripped, "(0.0s)") {
+		t.Errorf("tool block missing elapsed time:\n%s", stripped)
 	}
-	if tool.text != "Edit main.go" {
-		t.Errorf("tool title = %q, want %q", tool.text, "Edit main.go")
-	}
-
-	chat := ansi.Strip(renderTop(&m))
-	if !strings.Contains(chat, "● Edit main.go") || !strings.Contains(chat, "(0.0s)") {
-		t.Errorf("tool status line missing:\n%s", chat)
-	}
-	if !strings.Contains(chat, "beta") || !strings.Contains(chat, "BETA") {
-		t.Errorf("diff content missing:\n%s", chat)
+	if !strings.Contains(stripped, "beta") || !strings.Contains(stripped, "BETA") {
+		t.Errorf("diff content missing:\n%s", stripped)
 	}
 	// Diff lines indent under the title text, after the dot.
-	if !strings.Contains(chat, "    +      2  BETA") {
-		t.Errorf("diff line not indented under the tool title:\n%s", chat)
+	if !strings.Contains(stripped, "    +      2  BETA") {
+		t.Errorf("diff line not indented under the tool title:\n%s", stripped)
 	}
-	// Colored: the raw render must carry the green/red styles.
-	raw := renderTop(&m)
-	if !strings.Contains(raw, styleDiffAdd.Render("+      2  BETA")) {
-		t.Errorf("diff add line not colored:\n%s", raw)
+	// Colored: the printed chunk must carry the green/red styles.
+	if !strings.Contains(tool, styleDiffAdd.Render("+      2  BETA")) {
+		t.Errorf("diff add line not colored:\n%q", tool)
 	}
 	// History: user → assistant(tool_use) → user(tool_result).
 	if conv.Len() != 3 {
@@ -182,45 +155,36 @@ func TestUnknownToolRendersFailed(t *testing.T) {
 		{llm.StreamEnd{}},
 	}}, tools.NewRegistry(), conv, "sys", false, config.DefaultMaxIterations)
 	m := newModel(Options{Agent: ag, Conv: conv, Version: "test", WorkDir: "/tmp"})
+	rec := &printRecorder{}
+	m.print = rec.record
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = mm.(Model)
 	m = send(t, m, "do it")
 
-	tool := m.entries[1]
-	if tool.kind != entryTool || tool.state != toolFailed {
-		t.Fatalf("tool entry = %+v, want failed tool entry", tool)
-	}
-	raw := renderTop(&m)
+	raw := rec.lastChunk()
 	if !strings.Contains(raw, styleToolFailed.Render("●")) {
-		t.Errorf("failed tool should render a red dot:\n%s", raw)
+		t.Errorf("failed tool should render a red dot:\n%q", raw)
 	}
 	if !strings.Contains(ansi.Strip(raw), "no_such_tool") {
-		t.Errorf("failed tool title missing:\n%s", raw)
+		t.Errorf("failed tool title missing:\n%q", raw)
 	}
 }
 
 // TestRunningToolRendersSpinner checks the in-flight tool line: the spinner
 // frame leads the title, indented one step right of user/assistant messages.
 func TestRunningToolRendersSpinner(t *testing.T) {
-	m := startBlockedLive(t)
+	m, _ := startBlockedLive(t)
 	mm, _ := m.Update(streamBatchMsg{
 		agent.ToolCallBegin{ToolID: "tu_1", ToolName: "read_file", Args: map[string]any{"file_path": "a.go"}},
 	})
 	m = mm.(Model)
-	chat := ansi.Strip(renderTop(&m))
+	frame := ansi.Strip(m.View().Content)
 	// The spinner has not ticked, so the model's current frame is deterministic.
 	want := toolIndent + m.spinner.View() + " Read a.go"
-	if !strings.Contains(chat, want) {
-		t.Errorf("running tool line = want %q, got:\n%s", want, chat)
+	if !strings.Contains(frame, want) {
+		t.Errorf("running tool line = want %q, got:\n%s", want, frame)
 	}
 	m.live.cancel()
-}
-
-// lastEntry returns the most recent committed entry.
-func lastEntry(t *testing.T, m Model) *entry {
-	t.Helper()
-	if len(m.entries) == 0 {
-		t.Fatal("no entries")
-	}
-	return &m.entries[len(m.entries)-1]
 }
 
 func TestTextFlushesBeforeToolEntry(t *testing.T) {
@@ -234,28 +198,24 @@ func TestTextFlushesBeforeToolEntry(t *testing.T) {
 		},
 		{llm.StreamEnd{}},
 	}}
-	m := send(t, newTestModel(fake), "q")
+	m, rec := newTestModel(fake)
+	m = send(t, m, "q")
 
 	// The text block ends (TextComplete) before the tool call: the assistant
-	// entry must sit above the tool entry, not be deferred to turn end.
-	if len(m.entries) != 4 {
-		t.Fatalf("entries = %d, want 4 (user, assistant, tool, turn)", len(m.entries))
+	// block must print above the tool block, not be deferred to turn end.
+	chat := ansi.Strip(rec.joined())
+	ia, ib := strings.Index(chat, "先看一下文件"), strings.Index(chat, "Read a.go")
+	if ia < 0 || ib < 0 {
+		t.Fatalf("missing blocks:\n%s", chat)
 	}
-	if m.entries[1].kind != entryAssistant || m.entries[1].text != "先看一下文件" {
-		t.Errorf("entries[1] = %+v, want assistant text before the tool entry", m.entries[1])
-	}
-	if m.entries[2].kind != entryTool || m.entries[2].toolName != "read_file" {
-		t.Errorf("entries[2] = %+v, want tool entry", m.entries[2])
-	}
-	chat := ansi.Strip(renderTop(&m))
-	if strings.Index(chat, "先看一下文件") > strings.Index(chat, "Read a.go") {
-		t.Errorf("assistant text should render above the tool entry:\n%s", chat)
+	if ia > ib {
+		t.Errorf("assistant text should print above the tool block:\n%s", chat)
 	}
 }
 
 func TestToolCallBeginFlushesWithoutTextComplete(t *testing.T) {
 	// Without TextComplete the text stays buffered until turn end; the tool
-	// entry still renders (display order may invert, history stays correct).
+	// block still prints (display order may invert, history stays correct).
 	fake := &fakeProvider{scripts: [][]llm.StreamEvent{
 		{
 			llm.TextDelta{Text: "fallback"},
@@ -265,11 +225,14 @@ func TestToolCallBeginFlushesWithoutTextComplete(t *testing.T) {
 		},
 		{llm.StreamEnd{}},
 	}}
-	m := send(t, newTestModel(fake), "q")
-	if len(m.entries) != 4 {
-		t.Fatalf("entries = %d, want 4 (user, tool, assistant, turn)", len(m.entries))
+	m, rec := newTestModel(fake)
+	m = send(t, m, "q")
+	chat := ansi.Strip(rec.joined())
+	ia, ib := strings.Index(chat, "Read a.go"), strings.Index(chat, "fallback")
+	if ia < 0 || ib < 0 {
+		t.Fatalf("missing blocks:\n%s", chat)
 	}
-	if m.entries[2].kind != entryAssistant || m.entries[2].text != "fallback" {
-		t.Errorf("entries[2] = %+v, want assistant flushed at turn end", m.entries[2])
+	if ia > ib {
+		t.Errorf("tool block should print before the deferred assistant text:\n%s", chat)
 	}
 }

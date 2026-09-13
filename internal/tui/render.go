@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -10,92 +11,72 @@ import (
 	"github.com/FrexCheat/aether-code/internal/agent"
 )
 
+const toolIndent = "  "
+
+type noticeSeverity int
+
 const (
-	statusBarHeight = 1
-	toolIndent      = "  "
+	noticeInfo noticeSeverity = iota
+	noticeWarn
+	noticeError
 )
 
-func renderTop(m *Model) string {
+func renderNoticeBlock(text string, severity noticeSeverity) string {
 	var b strings.Builder
-	b.WriteString(renderBanner(m.opts.Version, m.opts.WorkDir, m.width))
-	b.WriteString("\n\n")
-	b.WriteString(renderReady())
-	b.WriteString("\n\n")
-	for i := range m.entries {
-		renderEntry(&b, m, &m.entries[i])
-		b.WriteString("\n")
-	}
-	if m.live != nil {
-		renderLive(&b, m)
+	b.WriteString(styleNoticePrefix.Render("! AetherCode"))
+	b.WriteString("\n")
+	switch severity {
+	case noticeError:
+		b.WriteString(styleError.Render(text))
+	case noticeWarn:
+		b.WriteString(styleWarn.Render(text))
+	default:
+		b.WriteString(text)
 	}
 	return b.String()
 }
 
-func renderEntry(b *strings.Builder, m *Model, e *entry) {
-	switch e.kind {
-	case entryUser:
-		b.WriteString(styleUserBubble.Width(m.width).Render(e.text))
-		b.WriteString("\n")
-	case entryAssistant:
-		out := e.cachedRender(m.width, func(md string) string {
-			if m.renderer == nil {
-				return md
-			}
-			r, err := m.renderer.Render(md)
-			if err != nil {
-				return md
-			}
-			return strings.Trim(r, "\n")
-		})
-		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, styleAssistantDot.Render("●")+" ", out))
-		b.WriteString("\n")
-	case entryNotice:
-		b.WriteString(styleNoticePrefix.Render("! AetherCode"))
-		b.WriteString("\n")
-		switch e.severity {
-		case noticeError:
-			b.WriteString(styleError.Render(e.text))
-		case noticeWarn:
-			b.WriteString(styleWarn.Render(e.text))
-		default:
-			b.WriteString(e.text)
-		}
-		b.WriteString("\n")
-	case entryTool:
-		renderToolEntry(b, m, e)
-	case entryTurn:
-		b.WriteString(styleDim.Render(fmt.Sprintf("%ds · done %s", int(e.elapsed.Seconds()), e.doneAt.Format("3:04 PM"))))
-		b.WriteString("\n")
-	}
+func renderUserBlock(m *Model, text string) string {
+	return styleUserBubble.Width(m.width).Render(text)
 }
 
-func renderToolEntry(b *strings.Builder, m *Model, e *entry) {
-	switch e.state {
-	case toolRunning:
-		b.WriteString(toolIndent)
-		b.WriteString(styleSpinner.Render(m.spinner.View()))
-		b.WriteString(" ")
-		b.WriteString(e.text)
-		b.WriteString("\n")
-	case toolDone, toolFailed:
-		dot := styleToolDone.Render("●")
-		if e.state == toolFailed {
-			dot = styleToolFailed.Render("●")
+func renderAssistantBlock(m *Model, text string) string {
+	out := text
+	if m.renderer != nil {
+		if r, err := m.renderer.Render(text); err == nil {
+			out = strings.Trim(r, "\n")
 		}
-		var body strings.Builder
-		body.WriteString(e.text)
-		body.WriteString(styleDim.Render(fmt.Sprintf(" (%.1fs)", e.elapsed.Seconds())))
-		if e.diff != "" {
-			body.WriteString("\n")
-			body.WriteString(renderDiffLines(e.diff))
-		}
-		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, toolIndent+dot+" ", body.String()))
-		b.WriteString("\n")
 	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, styleAssistantDot.Render("●")+" ", out)
 }
 
-// renderDiffLines colors BuildDiff output line by line: "- " removals red,
-// "+ " additions green, everything else (context / header lines) dim.
+func renderToolRunningBlock(m *Model, tc toolCall) string {
+	return toolIndent + styleSpinner.Render(m.spinner.View()) + " " + tc.title
+}
+
+func renderToolDoneBlock(title string, failed bool, elapsed time.Duration, diff string) string {
+	dot := styleToolDone.Render("●")
+	if failed {
+		dot = styleToolFailed.Render("●")
+	}
+	var body strings.Builder
+	body.WriteString(title)
+	body.WriteString(styleDim.Render(fmt.Sprintf(" (%.1fs)", elapsed.Seconds())))
+	if diff != "" {
+		body.WriteString("\n")
+		body.WriteString(renderDiffLines(diff))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, toolIndent+dot+" ", body.String())
+}
+
+func renderTurnBlock(elapsed time.Duration, doneAt time.Time) string {
+	return styleDim.Render(fmt.Sprintf("%ds · done %s", int(elapsed.Seconds()), doneAt.Format("3:04 PM")))
+}
+
+func renderClearedBlock() string {
+	return styleDim.Render("— context cleared —")
+}
+
 func renderDiffLines(diff string) string {
 	lines := strings.Split(diff, "\n")
 	for i, line := range lines {
@@ -111,14 +92,14 @@ func renderDiffLines(diff string) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderLive(b *strings.Builder, m *Model) {
+// renderLive is the progress line shown while a turn runs.
+func renderLive(m *Model) string {
 	secs := int(timeSince(m.live.start).Seconds())
 	progress := fmt.Sprintf("Imagining… (%ds)", secs)
 	if m.live.turn > 0 {
 		progress = fmt.Sprintf("Imagining… (Turn %d · %ds)", m.live.turn, secs)
 	}
-	b.WriteString(styleSpinner.Render(m.spinner.View() + " " + progress))
-	b.WriteString("\n")
+	return styleSpinner.Render(m.spinner.View() + " " + progress)
 }
 
 func (m Model) renderInput() string {
@@ -139,13 +120,16 @@ func (m Model) renderStatus() string {
 }
 
 func (m Model) View() tea.View {
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		m.viewport.View(),
-		m.renderInput(),
-		m.renderStatus(),
-	)
-	v := tea.NewView(content)
+	var parts []string
+	for _, tc := range m.running {
+		parts = append(parts, renderToolRunningBlock(&m, tc))
+	}
+	if m.live != nil {
+		parts = append(parts, renderLive(&m))
+	}
+	parts = append(parts, m.renderInput(), m.renderStatus())
+	v := tea.NewView(lipgloss.JoinVertical(lipgloss.Left, parts...))
 	v.AltScreen = false
-	v.MouseMode = tea.MouseModeCellMotion
+	v.MouseMode = tea.MouseModeNone
 	return v
 }

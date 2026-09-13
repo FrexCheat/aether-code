@@ -1,21 +1,32 @@
-// Package tui implements the interactive terminal interface: banner, chat
-// viewport, input box, status bar, per-block reply commit, spinner and slash
-// commands.
+// Package tui implements the interactive terminal interface: a startup
+// banner, chat history printed to the terminal's main buffer, a live frame
+// with the input box and status bar, per-block reply commit, spinner and
+// slash commands.
 //
-// Data flow is deliberately flat: a committed []entry history plus a single
-// in-flight liveStream. Reply text is not streamed onto the screen — each
-// text content block commits whole when the block ends (TextComplete), so
-// while a turn runs the only animated thing is the bubbles spinner line.
+// The program runs inline (no alternate screen). Committed content — user
+// questions, settled replies, tool results, notices — is printed above the
+// live frame via tea.Println and accumulates in the terminal's own
+// scrollback, so wheel scrolling and text selection stay native. The live
+// frame holds only in-flight state: running tool lines, the progress
+// spinner, the input box and the status bar. It starts right below the
+// banner and is pushed down as history prints, pinning to the bottom once
+// the screen fills.
+//
+// Data flow is deliberately flat: one shared conversation history plus a
+// single in-flight liveStream. Reply text is not streamed onto the screen —
+// each text content block commits whole when the block ends (TextComplete),
+// so while a turn runs the only animated thing is the spinner line.
 package tui
 
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
 	"charm.land/glamour/v2/styles"
@@ -23,6 +34,11 @@ import (
 	"github.com/FrexCheat/aether-code/internal/agent"
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/tools"
+)
+
+var (
+	timeNow   = time.Now
+	timeSince = time.Since
 )
 
 type Options struct {
@@ -38,14 +54,47 @@ type Options struct {
 type Model struct {
 	opts     Options
 	conv     *conversation.Manager
-	entries  []entry
 	live     *liveStream // nil when idle
-	viewport viewport.Model
+	running  []toolCall  // tool calls in flight, shown in the live frame
 	input    textarea.Model
 	spinner  spinner.Model
 	width    int
-	height   int
 	renderer *glamour.TermRenderer
+
+	// print emits committed content above the live frame. Production wires
+	// tea.Println; tests capture into a recorder instead. It must only be
+	// called from Update paths: printing stays ordered against the event
+	// stream via tea.Sequence (see startStream and handleStreamBatch).
+	print func(string) tea.Cmd
+	// bannerDone marks the opening block printed on the first window size.
+	bannerDone bool
+}
+
+// toolCall is one in-flight tool call shown in the live frame between
+// ToolCallBegin and ToolCallEnd. id is the model-issued call id: two calls
+// to the same tool may be in flight at once, so name alone cannot pair
+// Begin with End.
+type toolCall struct {
+	id    string
+	title string
+}
+
+// toolTitle summarizes one tool call's arguments into a human title by
+// asking the tool itself (TitledTool), mewcode style: Read a.go / Write a.go
+// (12 lines) / Edit a.go / Bash: <command> / Glob: pattern. Tools that don't
+// implement the interface — and unregistered names — fall back to the plain
+// tool name.
+func toolTitle(reg *tools.Registry, name string, args map[string]any) string {
+	if reg != nil {
+		if t := reg.Get(name); t != nil {
+			if tt, ok := t.(tools.TitledTool); ok {
+				if title := tt.Title(args); title != "" {
+					return title
+				}
+			}
+		}
+	}
+	return name
 }
 
 // Run starts the program and blocks until it exits.
@@ -69,15 +118,12 @@ func newModel(opts Options) Model {
 	in.SetStyles(inputStyles())
 	in.Focus()
 
-	vp := viewport.New()
-	vp.MouseWheelEnabled = true
-
 	return Model{
-		opts:     opts,
-		conv:     opts.Conv,
-		viewport: vp,
-		input:    in,
-		spinner:  spinner.New(spinner.WithSpinner(spinner.Dot)),
+		opts:    opts,
+		conv:    opts.Conv,
+		input:   in,
+		spinner: spinner.New(spinner.WithSpinner(spinner.Dot)),
+		print:   func(s string) tea.Cmd { return tea.Println(s) },
 	}
 }
 
@@ -86,52 +132,32 @@ func (m Model) Init() tea.Cmd {
 	return m.input.Focus()
 }
 
-// refresh pushes the new frame into the viewport, following the bottom only
-// when the user is already there. It runs inside Update (where Model is
-// addressable), never in View: bubbletea renders from a snapshot and any
-// viewport motion done in View would be lost before the next frame.
-func (m *Model) refresh() {
-	atBottom := m.viewport.AtBottom()
-	// The input grows/shrinks as its content does, so the chat area has to be
-	// re-derived from it before the frame is laid out.
-	m.syncViewportHeight()
-	m.viewport.SetContent(renderTop(m))
-	if atBottom {
-		m.viewport.GotoBottom()
+// println emits committed content above the live frame through the wired
+// print function (tea.Println in production). The trailing newline appended
+// here is the one-blank-line separator every block keeps between itself and
+// whatever prints next (or the live frame below). The nil guard keeps
+// zero-value models from panicking.
+func (m *Model) println(block string) tea.Cmd {
+	if m.print == nil || block == "" {
+		return nil
 	}
-}
-
-// syncViewportHeight resizes the chat viewport to whatever is left above the
-// input box and status bar, so the stacked regions always add up to the window
-// height and the input never pushes the status bar off screen.
-func (m *Model) syncViewportHeight() {
-	if m.width <= 0 || m.height <= 0 {
-		return
-	}
-	chatH := m.height - inputViewHeight(m) - statusBarHeight
-	if chatH < 1 {
-		chatH = 1
-	}
-	m.viewport.SetHeight(chatH)
-}
-
-// inputViewHeight is the rendered height of the input box: the textarea's
-// content plus the rounded border's top and bottom. styleInputBox has no
-// vertical padding, so it is simply content + 2.
-func inputViewHeight(m *Model) int {
-	return m.input.Height() + 2
+	return m.print(block + "\n")
 }
 
 // Update implements tea.Model. It is the single entry point for every visible
-// state change: size, keys, stream batches and ticks are all dispatched here,
-// and arms that change content end with a refresh so the viewport never goes
-// stale.
+// state change: size, keys, stream batches and ticks are all dispatched here.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
+		m.width = msg.Width
 		m.relayout()
-		m.refresh()
+		// The opening block prints once, on the first size report: only
+		// then is the real width known, so narrow terminals get the
+		// text-only banner variant.
+		if !m.bannerDone {
+			m.bannerDone = true
+			return m, m.println(renderStartup(m.opts.Version, m.opts.WorkDir, m.width))
+		}
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -161,20 +187,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
-		m.refresh()
 		return m, cmd
 	}
 
-	var cmds []tea.Cmd
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
-	cmds = append(cmds, cmd)
-	m.viewport, cmd = m.viewport.Update(msg)
-	cmds = append(cmds, cmd)
-	// Typing/pasting changes the input's height; refresh re-sizes the viewport
-	// to the leftover space and keeps it pinned to the bottom when it was.
-	m.refresh()
-	return m, tea.Batch(cmds...)
+	return m, cmd
 }
 
 func (m Model) quit() (Model, tea.Cmd) {
@@ -193,7 +211,6 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 	// place, so multi-line prompts can be typed like in a terminal.
 	if lineContinues(m.input) {
 		m.input.SetValue(continueValue(m.input.Value()))
-		m.refresh()
 		return m, nil
 	}
 	text := strings.TrimSpace(m.input.Value())
@@ -206,35 +223,25 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 		return m.quit()
 	case cmdClear:
 		m.conv.Clear()
-		m.entries = nil
 		m.input.Reset()
-		m.refresh()
-		return m, nil
+		return m, m.println(renderClearedBlock())
 	case cmdPlan:
 		// Mode switches only take effect between loops: handleEnter's
 		// early return above already ignored them while a loop is in flight.
 		m.opts.Agent.SetMode(agent.ModePlan)
-		m.entries = append(m.entries, newNoticeEntry(
-			"Plan mode on: only read tools are offered — the model drafts a plan. Use /do to switch back for execution.", noticeInfo))
 		m.input.Reset()
-		m.refresh()
-		return m, nil
+		return m, m.println(renderNoticeBlock(
+			"Plan mode on: only read tools are offered — the model drafts a plan. Use /do to switch back for execution.", noticeInfo))
 	case cmdDo:
 		m.opts.Agent.SetMode(agent.ModeNormal)
-		m.entries = append(m.entries, newNoticeEntry(
+		m.input.Reset()
+		return m, m.println(renderNoticeBlock(
 			"Plan mode off: all tools available. Send your execution instruction.", noticeInfo))
-		m.input.Reset()
-		m.refresh()
-		return m, nil
 	case cmdUnknown:
-		m.entries = append(m.entries, newNoticeEntry(hint, noticeError))
 		m.input.Reset()
-		m.refresh()
-		return m, nil
+		return m, m.println(renderNoticeBlock(hint, noticeError))
 	}
-	c := m.startStream(text)
-	m.refresh()
-	return m, c
+	return m, m.startStream(text)
 }
 
 // lineContinues reports whether an Enter press should start a new line instead
@@ -257,11 +264,13 @@ func continueValue(value string) string {
 }
 
 // startStream opens a new turn and wires the agent's event stream into the
-// loop. The question is appended as a user entry; the agent owns the history
-// commit for the whole turn.
+// loop. The question is printed to the history first; the agent owns the
+// history commit for the whole turn. The user block is sequenced before
+// waitStream so it can never lose a race against the first batch's blocks:
+// Sequence enqueues the print message before the stream wait even starts.
 func (m *Model) startStream(text string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
-	m.entries = append(m.entries, newUserEntry(text))
+	block := renderUserBlock(m, text)
 	m.live = &liveStream{
 		events: m.opts.Agent.RunLoop(ctx, text),
 		ctx:    ctx,
@@ -269,56 +278,73 @@ func (m *Model) startStream(text string) tea.Cmd {
 		start:  timeNow(),
 	}
 	m.input.Reset()
-	return tea.Batch(waitStream(m.live.events), m.spinner.Tick)
+	return tea.Sequence(m.println(block),
+		tea.Batch(waitStream(m.live.events), m.spinner.Tick))
 }
 
-// handleStreamBatch folds a coalesced batch of events into the live turn and
-// commits the reply whole on a terminal event. It returns a Model value so
-// Update's dynamic type stays stable: every arm of Update yields exactly Model,
-// never *Model.
+// handleStreamBatch folds a coalesced batch of events, printing the blocks it
+// committed and re-arming the wait. Blocks queued here are sequenced before
+// the next waitStream for the same reason as startStream: the print message
+// is enqueued before the next batch can be produced, so printed history
+// never reorders under streaming bursts. It returns a Model value so Update's
+// dynamic type stays stable: every arm of Update yields exactly Model, never
+// *Model.
 func (m *Model) handleStreamBatch(batch streamBatchMsg) (Model, tea.Cmd) {
+	var out []string
 	for _, ev := range batch {
-		m.foldEvent(ev)
+		out = append(out, m.foldEvent(ev)...)
 		if m.live == nil { // a terminal event consumed; drop remaining events
 			break
 		}
 	}
-	if m.live != nil {
-		return *m, waitStream(m.live.events)
+	var cmd tea.Cmd
+	if len(out) > 0 {
+		// One print per Update: blocks join into a single chunk with a blank
+		// line between them, so a burst of commits lands as one ordered slab.
+		cmd = m.println(strings.Join(out, "\n\n"))
 	}
-	m.refresh()
-	return *m, nil
+	if m.live != nil {
+		return *m, tea.Sequence(cmd, waitStream(m.live.events))
+	}
+	return *m, cmd
 }
 
-// foldEvent folds one agent event. Text deltas accumulate on the live stream;
-// tool events open and settle tool entries; terminal events close the loop.
-func (m *Model) foldEvent(ev agent.AgentEvent) {
+// foldEvent folds one agent event and returns the blocks to print. Text
+// deltas accumulate on the live stream; tool calls move between the live
+// frame and the printed history; terminal events close the loop.
+func (m *Model) foldEvent(ev agent.AgentEvent) []string {
 	switch e := ev.(type) {
 	case agent.TextDelta:
 		if m.live != nil {
 			m.live.text.WriteString(e.Text)
 		}
 	case agent.TextComplete:
-		m.flushText()
+		return m.flushText()
 	case agent.ToolCallBegin:
-		m.entries = append(m.entries, newToolEntry(e.ToolID, e.ToolName, toolTitle(m.opts.Registry, e.ToolName, e.Args)))
+		m.running = append(m.running, toolCall{
+			id:    e.ToolID,
+			title: toolTitle(m.opts.Registry, e.ToolName, e.Args),
+		})
 	case agent.ToolCallEnd:
-		for i := len(m.entries) - 1; i >= 0; i-- {
-			en := &m.entries[i]
-			if en.kind == entryTool && en.toolID == e.ToolID && en.state == toolRunning {
-				en.settleTool(e.Result.IsError, e.Elapsed, diffText(e.Result))
-				break
+		for i := range m.running {
+			if m.running[i].id != e.ToolID {
+				continue
 			}
+			tc := m.running[i]
+			m.running = slices.Delete(m.running, i, i+1)
+			return []string{renderToolDoneBlock(tc.title, e.Result.IsError, e.Elapsed, diffText(e.Result))}
 		}
+		// No matching Begin: a stray End after cancel; nothing to settle.
 	case agent.TurnComplete:
 		if m.live != nil {
 			m.live.turn = e.Turn
 		}
 	case agent.LoopError, agent.LoopComplete:
-		m.closeLive(ev)
+		return m.closeLive(ev)
 	default:
 		// ThinkingDelta, ThinkingComplete: not surfaced this phase.
 	}
+	return nil
 }
 
 // diffText returns the result's diff rendering when the tool marked its
@@ -331,55 +357,63 @@ func diffText(r tools.ToolResult) string {
 	return ""
 }
 
-func (m *Model) flushText() {
+// flushText commits the accumulated reply text as a printed assistant block.
+func (m *Model) flushText() []string {
 	if m.live == nil {
-		return
+		return nil
 	}
 	if text := m.live.text.String(); text != "" {
-		m.entries = append(m.entries, newAssistantEntry(text))
 		m.live.text.Reset()
+		return []string{renderAssistantBlock(m, text)}
 	}
+	return nil
 }
 
-func (m *Model) closeLive(ev agent.AgentEvent) {
+// closeLive closes the turn on a terminal event, flushing pending text first
+// and printing the outcome notice and footer. Any tool calls still marked
+// running die with the loop (their End events would only arrive as strays).
+func (m *Model) closeLive(ev agent.AgentEvent) []string {
 	ls := m.live
 	if ls == nil {
-		return
+		return nil
 	}
 	defer func() {
 		ls.cancel()
 		m.live = nil
+		m.running = nil
 	}()
-	m.flushText()
+	out := m.flushText()
 	switch ev := ev.(type) {
 	case agent.LoopComplete:
 		switch ev.Outcome {
 		case agent.OutcomeModelStop:
-			m.entries = append(m.entries, newTurnEntry(timeSince(ls.start), timeNow()))
+			out = append(out, renderTurnBlock(timeSince(ls.start), timeNow()))
 		case agent.OutcomeMaxIterations:
-			m.entries = append(m.entries, newNoticeEntry(
+			out = append(out, renderNoticeBlock(
 				fmt.Sprintf("Turn limit reached after %d turn(s) — the loop stopped before running out of control.", ev.TotalTurns), noticeWarn))
-			m.entries = append(m.entries, newTurnEntry(timeSince(ls.start), timeNow()))
+			out = append(out, renderTurnBlock(timeSince(ls.start), timeNow()))
 		case agent.OutcomeUnknownTool:
-			m.entries = append(m.entries, newNoticeEntry(
+			out = append(out, renderNoticeBlock(
 				"Stopped: the model called unknown tools repeatedly.", noticeWarn))
-			m.entries = append(m.entries, newTurnEntry(timeSince(ls.start), timeNow()))
+			out = append(out, renderTurnBlock(timeSince(ls.start), timeNow()))
 		case agent.OutcomeCancelled:
-			m.entries = append(m.entries, newNoticeEntry("Cancelled.", noticeInfo))
+			out = append(out, renderNoticeBlock("Cancelled.", noticeInfo))
 		}
 	case agent.LoopError:
-		m.entries = append(m.entries, newNoticeEntry("Error: "+ev.Err.Error(), noticeError))
+		out = append(out, renderNoticeBlock("Error: "+ev.Err.Error(), noticeError))
 	}
+	return out
 }
 
+// relayout rebuilds width-dependent state: the input's width and the markdown
+// renderer's wrap width. Already-printed history keeps its original wrapping —
+// it lives in the terminal's buffer and cannot be re-flowed.
 func (m *Model) relayout() {
-	if m.width <= 0 || m.height <= 0 {
+	if m.width <= 0 {
 		return
 	}
 
-	m.viewport.SetWidth(m.width)
 	m.input.SetWidth(max(m.width-6, 10))
-	m.syncViewportHeight()
 
 	wrap := max(m.width-2, 20)
 

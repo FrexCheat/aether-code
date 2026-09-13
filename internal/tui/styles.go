@@ -8,22 +8,17 @@ import (
 var (
 	// User messages render as a full-width gray bar (Width set per render)
 	// with no role header; assistant messages lead with a plain white dot.
-	styleUserBubble = lipgloss.NewStyle().
-			Background(lipgloss.Color("8")).
-			Padding(0, 1)
+	styleUserBubble   = lipgloss.NewStyle().Background(lipgloss.Color("8")).Padding(0, 1)
 	styleAssistantDot = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
 	styleDim          = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	styleError        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
 	styleWarn         = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // guard-rail notices (turn limit, unknown tool)
-	styleInputBox     = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("8")).
-				Padding(0, 1)
+	styleInputBox     = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1)
 	styleStatusBar    = lipgloss.NewStyle().Reverse(true)
 	styleNoticePrefix = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
 	styleBanner       = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 	styleTitle        = lipgloss.NewStyle().Bold(true)
-	styleReady        = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	styleTips         = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	styleSpinner      = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 
 	// Tool entries: settled status colors and edit diff line colors.
