@@ -11,15 +11,18 @@ import (
 )
 
 // liveStream is the lifecycle of one in-flight turn: the event channel, its
-// cancel func, the user's question, the accumulated text deltas (committed at
-// each text block's end) and the timing start of the whole agent loop. Model
-// holds it via *liveStream; nil means idle. History commits happen inside the
-// agent; the TUI only renders.
+// context and cancel func, the user's question, the accumulated text deltas
+// (committed at each text block's end), the turn counter fed by TurnComplete
+// events, and the timing start of the whole agent loop. Model holds it via
+// *liveStream; nil means idle. History commits happen inside the agent; the
+// TUI only renders.
 type liveStream struct {
 	events   <-chan agent.AgentEvent
+	ctx      context.Context // mirrors the ctx passed to RunLoop; nil Err means still running
 	cancel   context.CancelFunc
 	question string
 	text     strings.Builder
+	turn     int // executed tool rounds so far, from TurnComplete events
 	start    time.Time
 }
 

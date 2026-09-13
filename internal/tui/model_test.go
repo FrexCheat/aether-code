@@ -7,22 +7,25 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/FrexCheat/aether-code/internal/agent"
+	"github.com/FrexCheat/aether-code/internal/config"
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/FrexCheat/aether-code/internal/prompt"
 	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
-// fakeProvider replays a fixed event list and records the last request.
+// fakeProvider replays one event list per request (index-matched via scripts,
+// falling back to the single events list) and records the last request.
 type fakeProvider struct {
-	events  []llm.StreamEvent
-	block   bool // if true, never send or close (simulates an in-flight stream)
+	events  []llm.StreamEvent   // replayed for every request
+	scripts [][]llm.StreamEvent // per-request scripts; wins over events when set
+	block   bool                // if true, never send or close (simulates an in-flight stream)
 	calls   atomic.Int32
 	lastReq llm.Request
 }
@@ -30,11 +33,19 @@ type fakeProvider struct {
 func (f *fakeProvider) Stream(ctx context.Context, req llm.Request) <-chan llm.StreamEvent {
 	f.calls.Add(1)
 	f.lastReq = req
-	ch := make(chan llm.StreamEvent, len(f.events)+1)
 	if f.block {
-		return ch
+		return make(chan llm.StreamEvent) // never sent, never closed: in-flight forever
 	}
-	for _, ev := range f.events {
+	script := f.events
+	if f.scripts != nil {
+		idx := int(f.calls.Load()) - 1
+		if idx >= len(f.scripts) {
+			idx = len(f.scripts) - 1
+		}
+		script = f.scripts[idx]
+	}
+	ch := make(chan llm.StreamEvent, len(script)+1)
+	for _, ev := range script {
 		ch <- ev
 	}
 	close(ch)
@@ -43,7 +54,7 @@ func (f *fakeProvider) Stream(ctx context.Context, req llm.Request) <-chan llm.S
 
 func newTestModel(p llm.Client) Model {
 	conv := conversation.NewManager()
-	ag := agent.New(p, tools.NewRegistry(), conv, prompt.System, false)
+	ag := agent.New(p, tools.NewRegistry(), conv, prompt.System, false, config.DefaultMaxIterations)
 	m := newModel(Options{
 		Agent: ag, Conv: conv, ProviderName: "fake", ModelName: "fake-1",
 		Version: "test", WorkDir: "/tmp",
@@ -396,4 +407,211 @@ func TestInputStylesHaveNoBackground(t *testing.T) {
 	if bg := s.Focused.Selection.GetBackground(); bg == noBg {
 		t.Error("selection should keep a background for legibility")
 	}
+}
+
+// fakeTool is a registered stand-in with a configurable category, used to
+// verify plan-mode tool filtering (only read tools offered).
+type fakeTool struct {
+	name string
+	cat  tools.Category
+}
+
+func (t fakeTool) Name() string             { return t.name }
+func (t fakeTool) Description() string      { return "fake" }
+func (t fakeTool) Category() tools.Category { return t.cat }
+func (t fakeTool) Schema() map[string]any   { return map[string]any{"name": t.name} }
+func (t fakeTool) Execute(context.Context, map[string]any) tools.ToolResult {
+	return tools.ToolResult{Output: "ok"}
+}
+
+// startBlockedLive opens a live turn against a blocking provider and returns
+// the model with m.live != nil (the waitStream cmd is not run).
+func startBlockedLive(t *testing.T) Model {
+	t.Helper()
+	fake := &fakeProvider{block: true}
+	m := newTestModel(fake)
+	m.input.SetValue("q")
+	mm, _ := m.Update(enter())
+	m = mm.(Model)
+	if m.live == nil {
+		t.Fatal("expected live stream after enter")
+	}
+	return m
+}
+
+func TestPlanDoSwitchModes(t *testing.T) {
+	conv := conversation.NewManager()
+	reg := tools.NewRegistry()
+	reg.Register(fakeTool{name: "read_tool", cat: tools.CategoryRead})
+	reg.Register(fakeTool{name: "write_tool", cat: tools.CategoryWrite})
+	fake := &fakeProvider{scripts: [][]llm.StreamEvent{
+		{llm.TextDelta{Text: "plan"}, llm.StreamEnd{}},
+	}}
+	ag := agent.New(fake, reg, conv, prompt.System, false, config.DefaultMaxIterations)
+	m := newModel(Options{Agent: ag, Conv: conv, ProviderName: "fake", ModelName: "m", Version: "test", WorkDir: "/tmp"})
+
+	m = send(t, m, "/plan")
+	if ag.Mode() != agent.ModePlan {
+		t.Fatalf("mode = %s, want plan", ag.Mode())
+	}
+	last := lastEntry(t, m)
+	if last.kind != entryNotice || last.severity != noticeInfo {
+		t.Errorf("/plan notice = %+v", last)
+	}
+	if status := ansi.Strip(m.renderStatus()); !strings.Contains(status, "[plan]") {
+		t.Errorf("status bar should show [plan] in plan mode: %q", status)
+	}
+
+	// The next request carries the plan segment and only read tools.
+	m = send(t, m, "draft a plan")
+	req := fake.lastReq
+	if !strings.Contains(req.System, "PLAN MODE") || !strings.HasPrefix(req.System, prompt.System) {
+		t.Errorf("plan-mode system prompt = %q", req.System)
+	}
+	if len(req.Tools) != 1 || req.Tools[0]["name"] != "read_tool" {
+		t.Errorf("plan-mode tools = %+v, want only the read tool", req.Tools)
+	}
+
+	// /do switches back: base prompt, full tool set.
+	m = send(t, m, "/do")
+	if ag.Mode() != agent.ModeNormal {
+		t.Fatalf("mode = %s, want normal after /do", ag.Mode())
+	}
+	if status := ansi.Strip(m.renderStatus()); strings.Contains(status, "[plan]") {
+		t.Errorf("status bar should drop [plan] in normal mode: %q", status)
+	}
+	m = send(t, m, "execute it")
+	req = fake.lastReq
+	if strings.Contains(req.System, "PLAN MODE") {
+		t.Errorf("normal-mode system prompt carries the plan segment: %q", req.System)
+	}
+	if len(req.Tools) != 2 {
+		t.Errorf("normal-mode tools = %+v, want both", req.Tools)
+	}
+}
+
+func TestEscCancelsLiveTurn(t *testing.T) {
+	m := startBlockedLive(t)
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = mm.(Model)
+	if m.live == nil {
+		t.Fatal("esc must not close the live turn itself; the Cancelled event does")
+	}
+	if m.live.ctx.Err() == nil {
+		t.Error("esc must cancel the loop context")
+	}
+	// While still live, commands are ignored — mode must not change.
+	m.input.SetValue("/plan")
+	mm, _ = m.Update(enter())
+	m = mm.(Model)
+	if m.opts.Agent.Mode() != agent.ModeNormal {
+		t.Errorf("mode changed while live: %s", m.opts.Agent.Mode())
+	}
+	m.live.cancel()
+}
+
+func TestEscIdleIsNoop(t *testing.T) {
+	m := newTestModel(&fakeProvider{})
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = mm.(Model)
+	if m.live != nil {
+		t.Error("esc while idle must not open a stream")
+	}
+}
+
+func TestToolCallEndPairsByToolID(t *testing.T) {
+	// Two same-name calls in flight; ends arrive in call order. Name-based
+	// pairing would swap the results; ToolID pairing must not.
+	m := startBlockedLive(t)
+	mm, _ := m.Update(streamBatchMsg{
+		agent.ToolCallBegin{ToolID: "tu_1", ToolName: "echo_tool", Args: map[string]any{}},
+		agent.ToolCallBegin{ToolID: "tu_2", ToolName: "echo_tool", Args: map[string]any{}},
+	})
+	m = mm.(Model)
+	mm, _ = m.Update(streamBatchMsg{
+		agent.ToolCallEnd{ToolID: "tu_1", ToolName: "echo_tool", Result: tools.ToolResult{Output: "first", IsError: true}},
+		agent.ToolCallEnd{ToolID: "tu_2", ToolName: "echo_tool", Result: tools.ToolResult{Output: "second"}},
+	})
+	m = mm.(Model)
+
+	if m.entries[1].toolID != "tu_1" || m.entries[1].state != toolFailed {
+		t.Errorf("entries[1] = %+v, want tu_1 failed", m.entries[1])
+	}
+	if m.entries[2].toolID != "tu_2" || m.entries[2].state != toolDone {
+		t.Errorf("entries[2] = %+v, want tu_2 done", m.entries[2])
+	}
+	m.live.cancel()
+}
+
+// foldTerminal opens a live turn and folds one terminal event into it.
+func foldTerminal(t *testing.T, term agent.AgentEvent) Model {
+	t.Helper()
+	m := startBlockedLive(t)
+	mm, _ := m.Update(streamBatchMsg{term})
+	return mm.(Model)
+}
+
+func TestLoopCompleteOutcomeTiers(t *testing.T) {
+	// ModelStop: the plain done footer.
+	m := foldTerminal(t, agent.LoopComplete{Outcome: agent.OutcomeModelStop, TotalTurns: 2})
+	if m.live != nil {
+		t.Fatal("terminal event must close the live turn")
+	}
+	if last := lastEntry(t, m); last.kind != entryTurn {
+		t.Errorf("ModelStop last entry = %+v, want turn footer", last)
+	}
+
+	// MaxIterations: yellow guard-rail notice, then the footer.
+	m = foldTerminal(t, agent.LoopComplete{Outcome: agent.OutcomeMaxIterations, TotalTurns: 50})
+	notice := m.entries[len(m.entries)-2]
+	if notice.kind != entryNotice || notice.severity != noticeWarn {
+		t.Errorf("MaxIterations notice = %+v, want warn notice", notice)
+	}
+	if last := lastEntry(t, m); last.kind != entryTurn {
+		t.Errorf("MaxIterations last entry = %+v, want turn footer", last)
+	}
+
+	// UnknownTool: yellow notice, then the footer.
+	m = foldTerminal(t, agent.LoopComplete{Outcome: agent.OutcomeUnknownTool, TotalTurns: 3})
+	notice = m.entries[len(m.entries)-2]
+	if notice.kind != entryNotice || notice.severity != noticeWarn {
+		t.Errorf("UnknownTool notice = %+v, want warn notice", notice)
+	}
+	if last := lastEntry(t, m); last.kind != entryTurn {
+		t.Errorf("UnknownTool last entry = %+v, want turn footer", last)
+	}
+
+	// Cancelled: a neutral notice and no footer.
+	m = foldTerminal(t, agent.LoopComplete{Outcome: agent.OutcomeCancelled})
+	last := lastEntry(t, m)
+	if last.kind != entryNotice || last.severity != noticeInfo {
+		t.Errorf("Cancelled last entry = %+v, want neutral notice", last)
+	}
+
+	// The guard-rail wording renders through the notice path.
+	chat := ansi.Strip(renderTop(&m))
+	if !strings.Contains(chat, "Cancelled.") {
+		t.Errorf("cancel notice missing from render:\n%s", chat)
+	}
+}
+
+func TestTurnCompleteTracksLiveTurnCounter(t *testing.T) {
+	m := startBlockedLive(t)
+	mm, _ := m.Update(streamBatchMsg{agent.TurnComplete{Turn: 3}})
+	m = mm.(Model)
+	if m.live == nil || m.live.turn != 3 {
+		t.Fatalf("live turn = %d, want 3", m.live.turn)
+	}
+	// The spinner line shows the turn number once one has completed.
+	if !strings.Contains(ansi.Strip(renderTop(&m)), "Turn 3") {
+		t.Error("live line should show the current turn")
+	}
+	m.live.cancel()
+
+	// Turn 0 (pure reply, no tool round yet) hides the turn part.
+	m = startBlockedLive(t)
+	if strings.Contains(ansi.Strip(renderTop(&m)), "Turn") {
+		t.Error("turn counter must stay hidden before the first TurnComplete")
+	}
+	m.live.cancel()
 }

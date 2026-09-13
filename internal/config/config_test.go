@@ -104,3 +104,36 @@ func TestLoadInvalidYAML(t *testing.T) {
 		t.Errorf("expected YAML error, got %v", err)
 	}
 }
+
+// --- agent section ---
+
+func TestLoadAgentMaxIterationsExplicit(t *testing.T) {
+	cfg, _, err := loadSample(t, "agent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent.MaxIterations != 10 {
+		t.Fatalf("MaxIterations = %d, want 10", cfg.Agent.MaxIterations)
+	}
+}
+
+func TestLoadAgentMaxIterationsDefault(t *testing.T) {
+	// valid.yaml has no agent section at all.
+	cfg, _, err := loadSample(t, "valid")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent.MaxIterations != DefaultMaxIterations {
+		t.Fatalf("MaxIterations = %d, want default %d", cfg.Agent.MaxIterations, DefaultMaxIterations)
+	}
+}
+
+func TestLoadAgentMaxIterationsNonPositive(t *testing.T) {
+	cfg, _, err := loadSample(t, "agent_nonpositive")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent.MaxIterations != DefaultMaxIterations {
+		t.Fatalf("MaxIterations = %d, want default %d", cfg.Agent.MaxIterations, DefaultMaxIterations)
+	}
+}

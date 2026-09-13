@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/FrexCheat/aether-code/internal/agent"
+	"github.com/FrexCheat/aether-code/internal/config"
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/FrexCheat/aether-code/internal/tools"
@@ -74,7 +75,7 @@ func TestErrorDoesNotCommitAssistantReply(t *testing.T) {
 		t.Fatalf("conv.Len = %d, want 1 (user question only)", m.conv.Len())
 	}
 	last := lastEntry(t, m)
-	if last.kind != entryNotice || !last.isError {
+	if last.kind != entryNotice || last.severity != noticeError {
 		t.Fatalf("last entry = %+v, want error notice", last)
 	}
 	if !strings.Contains(ansi.Strip(renderTop(&m)), "Error: boom") {
@@ -114,11 +115,14 @@ func TestToolEntryLifecycleAndDiff(t *testing.T) {
 	conv := conversation.NewManager()
 	reg := tools.NewRegistry()
 	reg.Register(fakeEditTool{})
-	ag := agent.New(&fakeProvider{events: []llm.StreamEvent{
-		llm.ToolCallComplete{ToolID: "tu_1", ToolName: "edit_file",
-			Arguments: map[string]any{"file_path": "main.go"}},
-		llm.StreamEnd{StopReason: "tool_use"},
-	}}, reg, conv, "sys", false)
+	ag := agent.New(&fakeProvider{scripts: [][]llm.StreamEvent{
+		{
+			llm.ToolCallComplete{ToolID: "tu_1", ToolName: "edit_file",
+				Arguments: map[string]any{"file_path": "main.go"}},
+			llm.StreamEnd{StopReason: "tool_use"},
+		},
+		{llm.StreamEnd{StopReason: "end_turn"}},
+	}}, reg, conv, "sys", false, config.DefaultMaxIterations)
 	m := newModel(Options{Agent: ag, Conv: conv, Version: "test", WorkDir: "/tmp"})
 	m = send(t, m, "edit it")
 
@@ -159,10 +163,13 @@ func TestToolEntryLifecycleAndDiff(t *testing.T) {
 
 func TestUnknownToolRendersFailed(t *testing.T) {
 	conv := conversation.NewManager()
-	ag := agent.New(&fakeProvider{events: []llm.StreamEvent{
-		llm.ToolCallComplete{ToolID: "tu_x", ToolName: "no_such_tool", Arguments: map[string]any{}},
-		llm.StreamEnd{StopReason: "tool_use"},
-	}}, tools.NewRegistry(), conv, "sys", false)
+	ag := agent.New(&fakeProvider{scripts: [][]llm.StreamEvent{
+		{
+			llm.ToolCallComplete{ToolID: "tu_x", ToolName: "no_such_tool", Arguments: map[string]any{}},
+			llm.StreamEnd{StopReason: "tool_use"},
+		},
+		{llm.StreamEnd{StopReason: "end_turn"}},
+	}}, tools.NewRegistry(), conv, "sys", false, config.DefaultMaxIterations)
 	m := newModel(Options{Agent: ag, Conv: conv, Version: "test", WorkDir: "/tmp"})
 	m = send(t, m, "do it")
 
@@ -186,12 +193,15 @@ func lastEntry(t *testing.T, m Model) *entry {
 }
 
 func TestTextFlushesBeforeToolEntry(t *testing.T) {
-	fake := &fakeProvider{events: []llm.StreamEvent{
-		llm.TextDelta{Text: "先看一下文件"},
-		llm.TextComplete{},
-		llm.ToolCallComplete{ToolID: "tu_1", ToolName: "read_file",
-			Arguments: map[string]any{"file_path": "a.go"}},
-		llm.StreamEnd{StopReason: "tool_use"},
+	fake := &fakeProvider{scripts: [][]llm.StreamEvent{
+		{
+			llm.TextDelta{Text: "先看一下文件"},
+			llm.TextComplete{},
+			llm.ToolCallComplete{ToolID: "tu_1", ToolName: "read_file",
+				Arguments: map[string]any{"file_path": "a.go"}},
+			llm.StreamEnd{StopReason: "tool_use"},
+		},
+		{llm.StreamEnd{StopReason: "end_turn"}},
 	}}
 	m := send(t, newTestModel(fake), "q")
 
@@ -215,11 +225,14 @@ func TestTextFlushesBeforeToolEntry(t *testing.T) {
 func TestToolCallBeginFlushesWithoutTextComplete(t *testing.T) {
 	// Without TextComplete the text stays buffered until turn end; the tool
 	// entry still renders (display order may invert, history stays correct).
-	fake := &fakeProvider{events: []llm.StreamEvent{
-		llm.TextDelta{Text: "fallback"},
-		llm.ToolCallComplete{ToolID: "tu_1", ToolName: "read_file",
-			Arguments: map[string]any{"file_path": "a.go"}},
-		llm.StreamEnd{StopReason: "tool_use"},
+	fake := &fakeProvider{scripts: [][]llm.StreamEvent{
+		{
+			llm.TextDelta{Text: "fallback"},
+			llm.ToolCallComplete{ToolID: "tu_1", ToolName: "read_file",
+				Arguments: map[string]any{"file_path": "a.go"}},
+			llm.StreamEnd{StopReason: "tool_use"},
+		},
+		{llm.StreamEnd{StopReason: "end_turn"}},
 	}}
 	m := send(t, newTestModel(fake), "q")
 	if len(m.entries) != 4 {

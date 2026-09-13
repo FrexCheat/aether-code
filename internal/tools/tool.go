@@ -86,15 +86,22 @@ func (r *Registry) Get(name string) Tool {
 	return r.tools[name]
 }
 
-// GetAllSchemas builds the tool list for one request in the single neutral
-// shape {"name", "description", "input_schema"}; each llm adapter translates
-// it into its own API format.
+// GetAllSchemas builds the tool list for one request from every registered
+// tool; it is FilteredSchemas with no filter.
+func (r *Registry) GetAllSchemas() []map[string]any {
+	return r.FilteredSchemas(func(Category) bool { return true })
+}
+
+// FilteredSchemas builds the tool list for one request from the tools whose
+// category passes include, in the single neutral shape
+// {"name", "description", "input_schema"}; each llm adapter translates it
+// into its own API format.
 //
 // Tools are walked in sorted-name order, not map order. Go map iteration is
 // randomized; unsorted, the same tool set would serialize into a different
 // array every request, and the prompt-cache prefix after the tools block
 // would be invalidated even though nothing changed semantically.
-func (r *Registry) GetAllSchemas() []map[string]any {
+func (r *Registry) FilteredSchemas(include func(Category) bool) []map[string]any {
 	names := make([]string, 0, len(r.tools))
 	for name := range r.tools {
 		names = append(names, name)
@@ -103,7 +110,9 @@ func (r *Registry) GetAllSchemas() []map[string]any {
 
 	schemas := make([]map[string]any, 0, len(names))
 	for _, name := range names {
-		schemas = append(schemas, r.tools[name].Schema())
+		if include(r.tools[name].Category()) {
+			schemas = append(schemas, r.tools[name].Schema())
+		}
 	}
 	return schemas
 }

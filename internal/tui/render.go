@@ -6,6 +6,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"github.com/FrexCheat/aether-code/internal/agent"
 )
 
 const (
@@ -55,9 +57,12 @@ func renderEntry(b *strings.Builder, m *Model, e *entry) {
 	case entryNotice:
 		b.WriteString(styleNoticePrefix.Render("! AetherCode"))
 		b.WriteString("\n")
-		if e.isError {
+		switch e.severity {
+		case noticeError:
 			b.WriteString(styleError.Render(e.text))
-		} else {
+		case noticeWarn:
+			b.WriteString(styleWarn.Render(e.text))
+		default:
 			b.WriteString(e.text)
 		}
 		b.WriteString("\n\n")
@@ -115,14 +120,19 @@ func renderDiffLines(diff string) string {
 	return strings.Join(lines, "\n")
 }
 
-// renderLive shows the assistant marker plus the bubbles spinner and the
-// whole-turn elapsed seconds at the bottom of the in-flight turn — the turn
-// is the only unit the timer measures (tool entries carry their own).
+// renderLive shows the assistant marker plus the bubbles spinner, the current
+// turn number once the loop has executed tool rounds, and the whole-loop
+// elapsed seconds at the bottom of the in-flight turn — the loop is the only
+// unit the timer measures (tool entries carry their own).
 func renderLive(b *strings.Builder, m *Model) {
 	b.WriteString(styleAssistantPrefix.Render("● AetherCode"))
 	b.WriteString("\n")
 	secs := int(timeSince(m.live.start).Seconds())
-	b.WriteString(styleSpinner.Render(m.spinner.View() + " " + fmt.Sprintf("Imagining… (%ds)", secs)))
+	progress := fmt.Sprintf("Imagining… (%ds)", secs)
+	if m.live.turn > 0 {
+		progress = fmt.Sprintf("Imagining… (Turn %d · %ds)", m.live.turn, secs)
+	}
+	b.WriteString(styleSpinner.Render(m.spinner.View() + " " + progress))
 	b.WriteString("\n\n")
 }
 
@@ -132,6 +142,9 @@ func (m Model) renderInput() string {
 
 func (m Model) renderStatus() string {
 	left := " " + m.opts.ProviderName
+	if m.opts.Agent.Mode() == agent.ModePlan {
+		left += " [plan]"
+	}
 	right := m.opts.ModelName + " "
 	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if pad < 1 {

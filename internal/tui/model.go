@@ -10,6 +10,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -149,6 +150,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c":
 			return m.quit()
+		case "esc":
+			// Esc cancels the in-flight loop (the terminal Cancelled event
+			// then closes it); when idle it does nothing. ctrl+c still quits.
+			if m.live != nil {
+				m.live.cancel()
+			}
+			return m, nil
 		case "enter":
 			return m.handleEnter()
 		}
@@ -214,8 +222,24 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 		m.input.Reset()
 		m.refresh()
 		return m, nil
+	case cmdPlan:
+		// Mode switches only take effect between loops: handleEnter's
+		// early return above already ignored them while a loop is in flight.
+		m.opts.Agent.SetMode(agent.ModePlan)
+		m.entries = append(m.entries, newNoticeEntry(
+			"Plan mode on: only read tools are offered — the model drafts a plan. Use /do to switch back for execution.", noticeInfo))
+		m.input.Reset()
+		m.refresh()
+		return m, nil
+	case cmdDo:
+		m.opts.Agent.SetMode(agent.ModeNormal)
+		m.entries = append(m.entries, newNoticeEntry(
+			"Plan mode off: all tools available. Send your execution instruction.", noticeInfo))
+		m.input.Reset()
+		m.refresh()
+		return m, nil
 	case cmdUnknown:
-		m.entries = append(m.entries, newNoticeEntry(hint, true))
+		m.entries = append(m.entries, newNoticeEntry(hint, noticeError))
 		m.input.Reset()
 		m.refresh()
 		return m, nil
@@ -251,7 +275,8 @@ func (m *Model) startStream(text string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.entries = append(m.entries, newUserEntry(text))
 	m.live = &liveStream{
-		events:   m.opts.Agent.RunTurn(ctx, text),
+		events:   m.opts.Agent.RunLoop(ctx, text),
+		ctx:      ctx,
 		cancel:   cancel,
 		question: text,
 		start:    timeNow(),
@@ -279,7 +304,7 @@ func (m *Model) handleStreamBatch(batch streamBatchMsg) (Model, tea.Cmd) {
 }
 
 // foldEvent folds one agent event. Text deltas accumulate on the live stream;
-// tool events open and settle tool entries; terminal events close the turn.
+// tool events open and settle tool entries; terminal events close the loop.
 func (m *Model) foldEvent(ev agent.AgentEvent) {
 	switch e := ev.(type) {
 	case agent.TextDelta:
@@ -291,18 +316,25 @@ func (m *Model) foldEvent(ev agent.AgentEvent) {
 		// entry so a segment spoken before a tool call stays above that call.
 		m.flushText()
 	case agent.ToolCallBegin:
-		m.entries = append(m.entries, newToolEntry(e.ToolName, toolTitle(e.ToolName, e.Args)))
+		m.entries = append(m.entries, newToolEntry(e.ToolID, e.ToolName, toolTitle(e.ToolName, e.Args)))
 	case agent.ToolCallEnd:
-		// Settle the last running entry for this tool name. Calls run in
-		// order, so the newest running entry with this name is the match.
+		// Settle the running entry with this call's id. Ids are unique per
+		// call, so same-name concurrent calls still pair correctly; results
+		// arrive in the model's original call order.
 		for i := len(m.entries) - 1; i >= 0; i-- {
 			en := &m.entries[i]
-			if en.kind == entryTool && en.toolName == e.ToolName && en.state == toolRunning {
+			if en.kind == entryTool && en.toolID == e.ToolID && en.state == toolRunning {
 				en.settleTool(e.Result.IsError, e.Elapsed, editDiff(e))
 				break
 			}
 		}
-	case agent.TurnEnd, agent.TurnError:
+	case agent.TurnComplete:
+		// One tool round finished and the next request is going out; the
+		// spinner line shows which turn is running.
+		if m.live != nil {
+			m.live.turn = e.Turn
+		}
+	case agent.TurnError, agent.LoopComplete:
 		m.closeLive(ev)
 	default:
 		// ThinkingDelta, ThinkingComplete: not surfaced this phase.
@@ -331,10 +363,12 @@ func (m *Model) flushText() {
 	}
 }
 
-// closeLive settles the in-flight turn: remaining text flushes, TurnEnd
-// appends the whole-turn done footer, TurnError appends an error notice.
-// History commits already happened inside the agent — this only touches the
-// display entries.
+// closeLive settles the in-flight loop: remaining text flushes, then the
+// terminal event grades the closing entries. LoopComplete tiers by outcome —
+// ModelStop gets the done footer, MaxIterations/UnknownTool get a yellow
+// guard-rail notice plus the footer, Cancelled a neutral notice. TurnError
+// appends an error notice. History commits already happened inside the agent
+// — this only touches the display entries.
 func (m *Model) closeLive(ev agent.AgentEvent) {
 	ls := m.live
 	if ls == nil {
@@ -346,10 +380,23 @@ func (m *Model) closeLive(ev agent.AgentEvent) {
 	}()
 	m.flushText()
 	switch ev := ev.(type) {
-	case agent.TurnEnd:
-		m.entries = append(m.entries, newTurnEntry(timeSince(ls.start), timeNow()))
+	case agent.LoopComplete:
+		switch ev.Outcome {
+		case agent.OutcomeModelStop:
+			m.entries = append(m.entries, newTurnEntry(timeSince(ls.start), timeNow()))
+		case agent.OutcomeMaxIterations:
+			m.entries = append(m.entries, newNoticeEntry(
+				fmt.Sprintf("Turn limit reached after %d turn(s) — the loop stopped before running out of control.", ev.TotalTurns), noticeWarn))
+			m.entries = append(m.entries, newTurnEntry(timeSince(ls.start), timeNow()))
+		case agent.OutcomeUnknownTool:
+			m.entries = append(m.entries, newNoticeEntry(
+				"Stopped: the model called unknown tools repeatedly.", noticeWarn))
+			m.entries = append(m.entries, newTurnEntry(timeSince(ls.start), timeNow()))
+		case agent.OutcomeCancelled:
+			m.entries = append(m.entries, newNoticeEntry("Cancelled.", noticeInfo))
+		}
 	case agent.TurnError:
-		m.entries = append(m.entries, newNoticeEntry("Error: "+ev.Err.Error(), true))
+		m.entries = append(m.entries, newNoticeEntry("Error: "+ev.Err.Error(), noticeError))
 	}
 }
 

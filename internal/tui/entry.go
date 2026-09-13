@@ -33,6 +33,16 @@ const (
 	toolFailed
 )
 
+// noticeSeverity grades a notice entry: plain info, yellow guard-rail warning
+// (loop stopped by the turn cap or unknown-tool streak), or red error.
+type noticeSeverity int
+
+const (
+	noticeInfo noticeSeverity = iota
+	noticeWarn
+	noticeError
+)
+
 // entry is one committed, displayable line of history. User, assistant and
 // notice entries carry only text; tool entries carry the call's title, state,
 // duration and edit diff; the turn entry closes one agent loop with its whole
@@ -40,13 +50,14 @@ const (
 type entry struct {
 	kind     entryKind
 	text     string
-	isError  bool // notice error severity
+	severity noticeSeverity // notice grading
 	elapsed  time.Duration
 	doneAt   time.Time
 	width    int    // markdown cache key
 	rendered string // cached markdown render
 
 	// Tool entry fields.
+	toolID   string // model-issued call id; pairs Begin with End
 	toolName string
 	state    toolState
 	diff     string // edit_file result: line-numbered diff text
@@ -66,13 +77,15 @@ func newTurnEntry(elapsed time.Duration, doneAt time.Time) entry {
 	return entry{kind: entryTurn, elapsed: elapsed, doneAt: doneAt}
 }
 
-func newNoticeEntry(text string, isError bool) entry {
-	return entry{kind: entryNotice, text: text, isError: isError}
+func newNoticeEntry(text string, severity noticeSeverity) entry {
+	return entry{kind: entryNotice, text: text, severity: severity}
 }
 
 // newToolEntry opens a tool entry in running state; settleTool closes it.
-func newToolEntry(name, title string) entry {
-	return entry{kind: entryTool, toolName: name, state: toolRunning, text: title}
+// toolID is the model-issued call id: two calls to the same tool may be in
+// flight at once, so name alone cannot pair Begin with End.
+func newToolEntry(toolID, name, title string) entry {
+	return entry{kind: entryTool, toolID: toolID, toolName: name, state: toolRunning, text: title}
 }
 
 func (p *entry) settleTool(failed bool, elapsed time.Duration, diff string) {
