@@ -55,7 +55,7 @@ func (t *GrepTool) Schema() ToolSchema {
 // Title summarizes the call for the UI: "Grep: TODO".
 func (t *GrepTool) Title(args map[string]any) string {
 	if pattern, _ := args["pattern"].(string); pattern != "" {
-		return "Grep: " + pattern
+		return "Grep(" + pattern + ")"
 	}
 	return ""
 }

@@ -2,13 +2,14 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/FrexCheat/aether-code/internal/agent"
+	"github.com/FrexCheat/aether-code/internal/llm"
 )
 
 const toolIndent = "  "
@@ -69,8 +70,11 @@ func renderToolDoneBlock(title string, failed bool, elapsed time.Duration, diff 
 	return lipgloss.JoinHorizontal(lipgloss.Top, toolIndent+dot+" ", body.String())
 }
 
-func renderTurnBlock(elapsed time.Duration, doneAt time.Time) string {
-	return styleDim.Render(fmt.Sprintf("%ds · done %s", int(elapsed.Seconds()), doneAt.Format("3:04 PM")))
+// renderTurnBlock is the done footer printed to the scrollback when a loop
+// finishes: elapsed time, wall-clock done time, and the loop's token usage.
+func renderTurnBlock(elapsed time.Duration, doneAt time.Time, usage llm.UsageInfo) string {
+	return styleDim.Render(fmt.Sprintf("%ds · done %s · ↓ %s tokens",
+		int(elapsed.Seconds()), doneAt.Format("3:04 PM"), formatTokenCount(totalTokens(usage))))
 }
 
 func renderClearedBlock() string {
@@ -92,14 +96,10 @@ func renderDiffLines(diff string) string {
 	return strings.Join(lines, "\n")
 }
 
-// renderLive is the progress line shown while a turn runs.
+// renderLive is the progress line shown while a loop runs.
 func renderLive(m *Model) string {
 	secs := int(timeSince(m.live.start).Seconds())
-	progress := fmt.Sprintf("Imagining… (%ds)", secs)
-	if m.live.turn > 0 {
-		progress = fmt.Sprintf("Imagining… (Turn %d · %ds)", m.live.turn, secs)
-	}
-	return styleSpinner.Render(m.spinner.View() + " " + progress)
+	return styleSpinner.Render(m.spinner.View() + fmt.Sprintf(" Imagining… (%ds)", secs))
 }
 
 func (m Model) renderInput() string {
@@ -108,15 +108,29 @@ func (m Model) renderInput() string {
 
 func (m Model) renderStatus() string {
 	left := " " + m.opts.ProviderName
-	if m.opts.Agent.Mode() == agent.ModePlan {
-		left += " [plan]"
-	}
 	right := m.opts.ModelName + " "
 	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if pad < 1 {
 		pad = 1
 	}
 	return styleStatusBar.Width(m.width).Render(left + strings.Repeat(" ", pad) + right)
+}
+
+// totalTokens sums the four metered usage counters — the same quantity the
+// provider bills for the loop.
+func totalTokens(u llm.UsageInfo) int {
+	return u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheCreationTokens
+}
+
+// formatTokenCount renders a token count for the footer: plain digits below
+// 1000, otherwise one decimal in k with a trailing ".0" trimmed
+// (850 → "850", 1234 → "1.2k", 15300 → "15.3k", 20000 → "20k").
+func formatTokenCount(n int) string {
+	if n < 1000 {
+		return strconv.Itoa(n)
+	}
+	k := strconv.FormatFloat(float64(n)/1000, 'f', 1, 64)
+	return strings.TrimSuffix(k, ".0") + "k"
 }
 
 func (m Model) View() tea.View {

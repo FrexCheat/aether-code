@@ -41,8 +41,6 @@ const (
 	StoppedByUser  LoopStopReason = "cancelled"      // user cancelled the turn
 )
 
-type TurnComplete struct{ Turn int }
-
 type LoopComplete struct {
 	Reason     LoopStopReason
 	TotalTurns int
@@ -57,6 +55,5 @@ func (ThinkingDelta) agentEvent()    {}
 func (ThinkingComplete) agentEvent() {}
 func (ToolCallBegin) agentEvent()    {}
 func (ToolCallEnd) agentEvent()      {}
-func (TurnComplete) agentEvent()     {}
 func (LoopComplete) agentEvent()     {}
 func (LoopError) agentEvent()        {}

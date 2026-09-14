@@ -1,71 +1,41 @@
-// Package agent orchestrates a full agent loop: it assembles the LLM request
+// Package agent runs the agent loop: it assembles the LLM request
 // (history + tool list), consumes the provider stream, executes the model's
 // tool calls, and feeds the results back until the model stops asking.
 //
 // A Turn is one iteration — one request plus its tool executions; the Loop is
-// the whole sequence of turns. RunLoop drives one Loop per user message and
+// the whole sequence of turns. Run drives one Loop over the conversation and
 // reports progress through the event stream defined in events.go.
 package agent
 
 import (
 	"context"
 	"strings"
-	"sync"
 
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
-	"github.com/FrexCheat/aether-code/internal/prompt"
 	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
-type Mode string
-
-const (
-	ModeNormal Mode = "normal"
-	ModePlan   Mode = "plan"
-)
-
+// defaultMaxTurns caps the tool rounds one Run may execute before the loop
+// stops with StoppedByLimit.
 const defaultMaxTurns = 50
 
-type Orchestrator struct {
+// Agent drives the agent loop over a conversation. It holds no session state:
+// the conversation belongs to the caller and is passed to Run, so Agent is
+// immutable after New.
+type Agent struct {
 	client   llm.Client
 	registry *tools.Registry
-	conv     *conversation.Manager
-	system   string
-	thinking bool
-	maxTurns int
-	mu       sync.RWMutex
-	mode     Mode
 }
 
-func New(client llm.Client, registry *tools.Registry, conv *conversation.Manager, system string, thinking bool, maxTurns int) *Orchestrator {
-	if maxTurns <= 0 {
-		maxTurns = defaultMaxTurns
-	}
-	return &Orchestrator{
-		client:   client,
-		registry: registry,
-		conv:     conv,
-		system:   system,
-		thinking: thinking,
-		maxTurns: maxTurns,
-		mode:     ModeNormal,
-	}
+func New(client llm.Client, registry *tools.Registry) *Agent {
+	return &Agent{client: client, registry: registry}
 }
 
-func (o *Orchestrator) Mode() Mode {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-	return o.mode
-}
-
-func (o *Orchestrator) SetMode(m Mode) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.mode = m
-}
-
-func (o *Orchestrator) RunLoop(ctx context.Context, userText string) <-chan AgentEvent {
+// Run drives conv until the model stops requesting tools. The caller seeds
+// conv with the user message beforehand; Run owns the loop from that point on
+// and reports progress through the returned event channel.
+func (a *Agent) Run(ctx context.Context, conv *conversation.Manager) <-chan AgentEvent {
 	ch := make(chan AgentEvent, 64)
 	go func() {
 		defer close(ch)
@@ -81,36 +51,24 @@ func (o *Orchestrator) RunLoop(ctx context.Context, userText string) <-chan Agen
 			ch <- ev
 		}
 
-		o.conv.AddUserMessage(userText)
+		var totalUsage llm.UsageInfo // accumulated over completed rounds
 
-		var turns int           // executed tool rounds
-		var usage llm.UsageInfo // accumulated over completed rounds
-
-		for {
-			msgs := conversation.EnsureToolPairing(o.conv.GetMessages())
-			mode := o.Mode()
-
-			system := o.system
-			schemas := o.registry.Schemas(nil)
-			if mode == ModePlan {
-				system += "\n\n" + prompt.PlanSegment
-				schemas = o.registry.Schemas(func(c tools.Category) bool { return c == tools.CategoryRead })
-			}
-
-			events := o.client.Stream(ctx, llm.Request{
-				System:   system,
+		// turn is the current loop iteration, 1-based; turn-1 equals the
+		// number of tool rounds executed so far.
+		for turn := 1; ; turn++ {
+			msgs := conversation.EnsureToolPairing(conv.GetMessages())
+			events := a.client.Stream(ctx, llm.Request{
 				Messages: msgs,
-				Tools:    schemas,
-				Thinking: o.thinking,
+				Tools:    a.registry.Schemas(),
 			})
 
 			var (
-				text      strings.Builder
-				thinking  []conversation.ThinkingBlock
-				toolUses  []conversation.ToolUseBlock
-				end       llm.StreamEnd
-				streamErr error
-				cancelled bool
+				text           strings.Builder
+				thinkingBlocks []conversation.ThinkingBlock
+				toolUses       []conversation.ToolUseBlock
+				streamEnd      llm.StreamEnd
+				streamErr      error
+				cancelled      bool
 			)
 		consume:
 			for ev := range events {
@@ -132,7 +90,7 @@ func (o *Orchestrator) RunLoop(ctx context.Context, userText string) <-chan Agen
 						break consume
 					}
 				case llm.ThinkingComplete:
-					thinking = append(thinking, conversation.ThinkingBlock{
+					thinkingBlocks = append(thinkingBlocks, conversation.ThinkingBlock{
 						Text:      e.Thinking,
 						Signature: e.Signature,
 					})
@@ -151,7 +109,7 @@ func (o *Orchestrator) RunLoop(ctx context.Context, userText string) <-chan Agen
 						break consume
 					}
 				case llm.StreamEnd:
-					end = e
+					streamEnd = e
 					break consume
 				case llm.StreamError:
 					streamErr = e.Err
@@ -159,15 +117,15 @@ func (o *Orchestrator) RunLoop(ctx context.Context, userText string) <-chan Agen
 				}
 			}
 
-			usage.InputTokens += end.Usage.InputTokens
-			usage.OutputTokens += end.Usage.OutputTokens
-			usage.CacheReadTokens += end.Usage.CacheReadTokens
-			usage.CacheCreationTokens += end.Usage.CacheCreationTokens
+			totalUsage.InputTokens += streamEnd.Usage.InputTokens
+			totalUsage.OutputTokens += streamEnd.Usage.OutputTokens
+			totalUsage.CacheReadTokens += streamEnd.Usage.CacheReadTokens
+			totalUsage.CacheCreationTokens += streamEnd.Usage.CacheCreationTokens
 
 			if cancelled || ctx.Err() != nil {
-				o.commitAssistant(text.String(), thinking, toolUses)
-				o.commitSyntheticResults(toolUses, "cancelled before execution")
-				terminal(LoopComplete{Reason: StoppedByUser, TotalTurns: turns, Usage: usage})
+				commitAssistant(conv, text.String(), thinkingBlocks, toolUses)
+				commitSyntheticResults(conv, toolUses, "cancelled before execution")
+				terminal(LoopComplete{Reason: StoppedByUser, TotalTurns: turn - 1, Usage: totalUsage})
 				return
 			}
 			if streamErr != nil {
@@ -175,20 +133,20 @@ func (o *Orchestrator) RunLoop(ctx context.Context, userText string) <-chan Agen
 				return
 			}
 
-			o.commitAssistant(text.String(), thinking, toolUses)
+			commitAssistant(conv, text.String(), thinkingBlocks, toolUses)
 
 			if len(toolUses) == 0 {
-				terminal(LoopComplete{Reason: StoppedByModel, TotalTurns: turns, Usage: usage})
+				terminal(LoopComplete{Reason: StoppedByModel, TotalTurns: turn - 1, Usage: totalUsage})
 				return
 			}
 
-			if turns >= o.maxTurns {
-				o.commitSyntheticResults(toolUses, "iteration limit reached before this call could run")
-				terminal(LoopComplete{Reason: StoppedByLimit, TotalTurns: turns, Usage: usage})
+			if turn > defaultMaxTurns {
+				commitSyntheticResults(conv, toolUses, "iteration limit reached before this call could run")
+				terminal(LoopComplete{Reason: StoppedByLimit, TotalTurns: turn - 1, Usage: totalUsage})
 				return
 			}
 
-			callResults := executeToolCalls(ctx, toolUses, o.registry, func(i int, res callResult) {
+			callResults := executeToolCalls(ctx, toolUses, a.registry, func(i int, res callResult) {
 				send(ToolCallEnd{
 					ToolID:   toolUses[i].ID,
 					ToolName: toolUses[i].Name,
@@ -205,27 +163,20 @@ func (o *Orchestrator) RunLoop(ctx context.Context, userText string) <-chan Agen
 					IsError:   res.Result.IsError,
 				})
 			}
-			o.conv.AddToolResults(resultBlocks...)
-			turns++
-
-			send(TurnComplete{Turn: turns})
-			if ctx.Err() != nil {
-				terminal(LoopComplete{Reason: StoppedByUser, TotalTurns: turns, Usage: usage})
-				return
-			}
+			conv.AddToolResults(resultBlocks...)
 		}
 	}()
 	return ch
 }
 
-func (o *Orchestrator) commitAssistant(text string, thinking []conversation.ThinkingBlock, toolUses []conversation.ToolUseBlock) {
+func commitAssistant(conv *conversation.Manager, text string, thinking []conversation.ThinkingBlock, toolUses []conversation.ToolUseBlock) {
 	if text == "" && len(thinking) == 0 && len(toolUses) == 0 {
 		return
 	}
-	o.conv.AddAssistantFull(text, thinking, toolUses)
+	conv.AddAssistantFull(text, thinking, toolUses)
 }
 
-func (o *Orchestrator) commitSyntheticResults(toolUses []conversation.ToolUseBlock, reason string) {
+func commitSyntheticResults(conv *conversation.Manager, toolUses []conversation.ToolUseBlock, reason string) {
 	if len(toolUses) == 0 {
 		return
 	}
@@ -237,5 +188,5 @@ func (o *Orchestrator) commitSyntheticResults(toolUses []conversation.ToolUseBlo
 			IsError:   true,
 		})
 	}
-	o.conv.AddToolResults(results...)
+	conv.AddToolResults(results...)
 }

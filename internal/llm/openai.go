@@ -23,13 +23,15 @@ import (
 
 // openAIClient is the llm.Client backed by the OpenAI Responses API.
 type openAIClient struct {
-	sdk   openai.Client
-	model string
+	sdk          openai.Client
+	model        string
+	systemPrompt string
+	thinking     bool
 }
 
 var _ Client = (*openAIClient)(nil)
 
-func newOpenAIClient(cfg config.Provider, httpClient *http.Client) Client {
+func newOpenAIClient(cfg config.Provider, httpClient *http.Client, systemPrompt string) Client {
 	opts := []option.RequestOption{
 		option.WithAPIKey(cfg.APIKey),
 		option.WithBaseURL(cfg.BaseURL),
@@ -38,7 +40,12 @@ func newOpenAIClient(cfg config.Provider, httpClient *http.Client) Client {
 	if httpClient != nil {
 		opts = append(opts, option.WithHTTPClient(httpClient))
 	}
-	return &openAIClient{sdk: openai.NewClient(opts...), model: cfg.Model}
+	return &openAIClient{
+		sdk:          openai.NewClient(opts...),
+		model:        cfg.Model,
+		systemPrompt: systemPrompt,
+		thinking:     cfg.Thinking,
+	}
 }
 
 // Stream implements Client.
@@ -205,10 +212,10 @@ func (c *openAIClient) buildParams(req Request) responses.ResponseNewParams {
 		Model: shared.ResponsesModel(c.model),
 		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: buildOpenAIMessages(req.Messages)},
 	}
-	if req.System != "" {
-		params.Instructions = openai.String(req.System)
+	if c.systemPrompt != "" {
+		params.Instructions = openai.String(c.systemPrompt)
 	}
-	if req.Thinking {
+	if c.thinking {
 		params.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffortMedium}
 	}
 	if len(req.Tools) > 0 {

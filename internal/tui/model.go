@@ -42,8 +42,8 @@ var (
 )
 
 type Options struct {
-	Agent        *agent.Orchestrator
-	Conv         *conversation.Manager // shared with the agent: both sides see one history
+	Agent        *agent.Agent
+	Conv         *conversation.Manager // owned by the TUI: it seeds user messages and clears history
 	Registry     *tools.Registry       // queried for tool entry titles
 	ProviderName string
 	ModelName    string
@@ -195,18 +195,6 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 		m.conv.Clear()
 		m.input.Reset()
 		return m, m.println(renderClearedBlock())
-	case cmdPlan:
-		// Mode switches only take effect between loops: handleEnter's
-		// early return above already ignored them while a loop is in flight.
-		m.opts.Agent.SetMode(agent.ModePlan)
-		m.input.Reset()
-		return m, m.println(renderNoticeBlock(
-			"Plan mode on: only read tools are offered — the model drafts a plan. Use /do to switch back for execution.", noticeInfo))
-	case cmdDo:
-		m.opts.Agent.SetMode(agent.ModeNormal)
-		m.input.Reset()
-		return m, m.println(renderNoticeBlock(
-			"Plan mode off: all tools available. Send your execution instruction.", noticeInfo))
 	case cmdUnknown:
 		m.input.Reset()
 		return m, m.println(renderNoticeBlock(hint, noticeError))
@@ -230,8 +218,11 @@ func continueValue(value string) string {
 func (m *Model) startStream(text string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	block := renderUserBlock(m, text)
+	// The conversation belongs to the TUI: seeding the user message here keeps
+	// the agent a stateless loop driver over a conversation it merely borrows.
+	m.conv.AddUserMessage(text)
 	m.live = &liveStream{
-		events: m.opts.Agent.RunLoop(ctx, text),
+		events: m.opts.Agent.Run(ctx, m.conv),
 		ctx:    ctx,
 		cancel: cancel,
 		start:  timeNow(),
@@ -292,10 +283,6 @@ func (m *Model) foldEvent(ev agent.AgentEvent) []string {
 			m.running = slices.Delete(m.running, i, i+1)
 			return []string{renderToolDoneBlock(tc.title, e.Result.IsError, e.Elapsed, diffText(e.Result))}
 		}
-	case agent.TurnComplete:
-		if m.live != nil {
-			m.live.turn = e.Turn
-		}
 	case agent.LoopError, agent.LoopComplete:
 		return m.closeLive(ev)
 	default:
@@ -335,13 +322,14 @@ func (m *Model) closeLive(ev agent.AgentEvent) []string {
 	out := m.flushText()
 	switch ev := ev.(type) {
 	case agent.LoopComplete:
+		usage := ev.Usage
 		switch ev.Reason {
 		case agent.StoppedByModel:
-			out = append(out, renderTurnBlock(timeSince(ls.start), timeNow()))
+			out = append(out, renderTurnBlock(timeSince(ls.start), timeNow(), usage))
 		case agent.StoppedByLimit:
 			out = append(out, renderNoticeBlock(
 				fmt.Sprintf("Turn limit reached after %d turn(s) — the loop stopped before running out of control.", ev.TotalTurns), noticeWarn))
-			out = append(out, renderTurnBlock(timeSince(ls.start), timeNow()))
+			out = append(out, renderTurnBlock(timeSince(ls.start), timeNow(), usage))
 		case agent.StoppedByUser:
 			out = append(out, renderNoticeBlock("Cancelled.", noticeInfo))
 		}

@@ -28,7 +28,7 @@ func main() {
 		fail(err)
 	}
 	active := cfg.Active()
-	client, err := llm.NewClient(active, nil)
+	client, err := llm.NewClient(active, nil, prompt.System)
 	if err != nil {
 		fail(err)
 	}
@@ -44,10 +44,10 @@ func main() {
 	registry.Register(&tools.GrepTool{WorkDir: cwd})
 
 	conv := conversation.NewManager()
-	orchestrator := agent.New(client, registry, conv, prompt.System, active.Thinking, cfg.Agent.MaxIterations)
+	ag := agent.New(client, registry)
 
 	if err := tui.Run(tui.Options{
-		Agent:        orchestrator,
+		Agent:        ag,
 		Conv:         conv,
 		Registry:     registry,
 		ProviderName: active.Name,

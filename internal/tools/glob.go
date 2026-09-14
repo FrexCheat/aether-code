@@ -47,7 +47,7 @@ func (t *GlobTool) Schema() ToolSchema {
 // Title summarizes the call for the UI: "Glob: **/*.go".
 func (t *GlobTool) Title(args map[string]any) string {
 	if pattern, _ := args["pattern"].(string); pattern != "" {
-		return "Glob: " + pattern
+		return "Glob(" + pattern + ")"
 	}
 	return ""
 }

@@ -126,7 +126,7 @@ func (t *BashTool) Title(args map[string]any) string {
 	if cmd == "" {
 		return ""
 	}
-	return "Bash: " + truncateTitle(cmd, titleCmdLimit)
+	return "Bash(" + truncateTitle(cmd, titleCmdLimit) + ")"
 }
 
 func (t *BashTool) Execute(ctx context.Context, args map[string]any) ToolResult {

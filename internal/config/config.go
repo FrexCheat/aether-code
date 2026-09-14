@@ -21,10 +21,6 @@ const (
 // FileName is the configuration file name looked up in the working directory.
 const FileName = "aethercode.yaml"
 
-// DefaultMaxIterations is the agent-loop tool-round ceiling applied when the
-// config omits agent.max_iterations or gives a non-positive value.
-const DefaultMaxIterations = 50
-
 // Provider is one LLM backend entry.
 type Provider struct {
 	Name     string   `yaml:"name"`
@@ -35,18 +31,10 @@ type Provider struct {
 	Thinking bool     `yaml:"thinking"`
 }
 
-// AgentConfig tunes the agent loop.
-type AgentConfig struct {
-	// MaxIterations caps how many tool rounds one turn may run. Values <= 0
-	// are treated as unset and normalized to DefaultMaxIterations.
-	MaxIterations int `yaml:"max_iterations"`
-}
-
 // Config is the top-level configuration document.
 type Config struct {
-	Default   string      `yaml:"default"`
-	Providers []Provider  `yaml:"providers"`
-	Agent     AgentConfig `yaml:"agent"`
+	Default   string     `yaml:"default"`
+	Providers []Provider `yaml:"providers"`
 }
 
 // Load reads and validates dir/aethercode.yaml. Returned errors include the
@@ -60,9 +48,6 @@ func Load(dir string) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("%s: invalid YAML: %w", path, err)
-	}
-	if cfg.Agent.MaxIterations <= 0 {
-		cfg.Agent.MaxIterations = DefaultMaxIterations
 	}
 	if err := cfg.validate(path); err != nil {
 		return nil, err

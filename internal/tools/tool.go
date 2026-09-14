@@ -82,10 +82,8 @@ func (r *Registry) Get(name string) Tool {
 	return r.tools[name]
 }
 
-func (r *Registry) Schemas(include func(Category) bool) []ToolSchema {
-	if include == nil {
-		include = func(Category) bool { return true }
-	}
+// Schemas returns the schema of every registered tool, ordered by name.
+func (r *Registry) Schemas() []ToolSchema {
 	names := make([]string, 0, len(r.tools))
 	for name := range r.tools {
 		names = append(names, name)
@@ -94,9 +92,7 @@ func (r *Registry) Schemas(include func(Category) bool) []ToolSchema {
 
 	schemas := make([]ToolSchema, 0, len(names))
 	for _, name := range names {
-		if include(r.tools[name].Category()) {
-			schemas = append(schemas, r.tools[name].Schema())
-		}
+		schemas = append(schemas, r.tools[name].Schema())
 	}
 	return schemas
 }

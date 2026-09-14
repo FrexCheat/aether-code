@@ -1,9 +1,0 @@
-default: claude
-agent:
-  max_iterations: -3
-providers:
-  - name: claude
-    protocol: anthropic
-    model: claude-sonnet-5
-    base_url: https://api.anthropic.com
-    api_key: sk-ant-xxx

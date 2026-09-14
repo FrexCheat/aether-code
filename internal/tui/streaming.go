@@ -10,17 +10,16 @@ import (
 	"github.com/FrexCheat/aether-code/internal/agent"
 )
 
-// liveStream is the lifecycle of one in-flight turn: the event channel, its
+// liveStream is the lifecycle of one in-flight loop: the event channel, its
 // context and cancel func, the accumulated text deltas (committed at each
-// text block's end), the turn counter fed by TurnComplete events, and the
-// timing start of the whole agent loop. Model holds it via *liveStream; nil
-// means idle. History commits happen inside the agent; the TUI only renders.
+// text block's end), and the timing start of the whole agent loop. Model
+// holds it via *liveStream; nil means idle. History commits happen inside the
+// agent; the TUI only renders.
 type liveStream struct {
 	events <-chan agent.AgentEvent
-	ctx    context.Context // mirrors the ctx passed to RunLoop; nil Err means still running
+	ctx    context.Context // mirrors the ctx passed to Agent.Run; nil Err means still running
 	cancel context.CancelFunc
 	text   strings.Builder
-	turn   int // executed tool rounds so far, from TurnComplete events
 	start  time.Time
 }
 

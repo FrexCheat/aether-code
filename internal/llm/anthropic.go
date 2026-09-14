@@ -24,13 +24,15 @@ const (
 
 // anthropicClient is the llm.Client backed by the Anthropic Messages API.
 type anthropicClient struct {
-	sdk   anthropic.Client
-	model string
+	sdk          anthropic.Client
+	model        string
+	systemPrompt string
+	thinking     bool
 }
 
 var _ Client = (*anthropicClient)(nil)
 
-func newAnthropicClient(cfg config.Provider, httpClient *http.Client) Client {
+func newAnthropicClient(cfg config.Provider, httpClient *http.Client, systemPrompt string) Client {
 	opts := []option.RequestOption{
 		option.WithAPIKey(cfg.APIKey),
 		option.WithBaseURL(cfg.BaseURL),
@@ -39,7 +41,12 @@ func newAnthropicClient(cfg config.Provider, httpClient *http.Client) Client {
 	if httpClient != nil {
 		opts = append(opts, option.WithHTTPClient(httpClient))
 	}
-	return &anthropicClient{sdk: anthropic.NewClient(opts...), model: cfg.Model}
+	return &anthropicClient{
+		sdk:          anthropic.NewClient(opts...),
+		model:        cfg.Model,
+		systemPrompt: systemPrompt,
+		thinking:     cfg.Thinking,
+	}
 }
 
 // Stream implements Client.
@@ -162,10 +169,10 @@ func (c *anthropicClient) buildParams(req Request) anthropic.MessageNewParams {
 		MaxTokens: anthropicMaxTokens,
 		Messages:  buildAnthropicMessages(req.Messages),
 	}
-	if req.System != "" {
-		params.System = []anthropic.TextBlockParam{{Text: req.System}}
+	if c.systemPrompt != "" {
+		params.System = []anthropic.TextBlockParam{{Text: c.systemPrompt}}
 	}
-	if req.Thinking {
+	if c.thinking {
 		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(anthropicThinkingBudget)
 	}
 	if len(req.Tools) > 0 {
