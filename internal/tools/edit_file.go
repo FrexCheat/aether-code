@@ -174,7 +174,7 @@ func BuildDiff(oldStr, newStr string) DiffResult {
 	var sb strings.Builder
 	oldNo, newNo := ctxStart+1, ctxStart+1
 	line := func(marker string, no int, text string) {
-		fmt.Fprintf(&sb, "%s %6d  %s\n", marker, no, text)
+		fmt.Fprintf(&sb, "%s %3d  %s\n", marker, no, text)
 	}
 	for _, l := range oldLines[ctxStart:prefix] {
 		line(" ", oldNo, l)

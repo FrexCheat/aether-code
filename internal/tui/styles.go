@@ -24,8 +24,8 @@ var (
 	// Tool entries: settled status colors and edit diff line colors.
 	styleToolDone   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	styleToolFailed = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
-	styleDiffAdd    = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	styleDiffRemove = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	styleDiffAdd    = lipgloss.NewStyle().Background(lipgloss.Color("2"))
+	styleDiffRemove = lipgloss.NewStyle().Background(lipgloss.Color("1"))
 )
 
 // inputStyles returns textarea styles with no background fill. The bubbles
