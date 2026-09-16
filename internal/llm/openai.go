@@ -159,11 +159,7 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 				}
 			case responses.ResponseCompletedEvent:
 				sawCompleted = true
-				usage = UsageInfo{
-					InputTokens:     int(ev.Response.Usage.InputTokens),
-					OutputTokens:    int(ev.Response.Usage.OutputTokens),
-					CacheReadTokens: int(ev.Response.Usage.InputTokensDetails.CachedTokens),
-				}
+				usage = openAIUsage(ev.Response.Usage)
 			case responses.ResponseFailedEvent:
 				detail := ev.Response.Error.Message
 				code := string(ev.Response.Error.Code)
@@ -207,6 +203,19 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 	return ch
 }
 
+func openAIUsage(u responses.ResponseUsage) UsageInfo {
+	cached := int(u.InputTokensDetails.CachedTokens)
+	input := int(u.InputTokens) - cached
+	if input < 0 {
+		input = 0
+	}
+	return UsageInfo{
+		InputTokens:     input,
+		OutputTokens:    int(u.OutputTokens),
+		CacheReadTokens: cached,
+	}
+}
+
 func (c *openAIClient) buildParams(req Request) responses.ResponseNewParams {
 	params := responses.ResponseNewParams{
 		Model: shared.ResponsesModel(c.model),
@@ -224,12 +233,6 @@ func (c *openAIClient) buildParams(req Request) responses.ResponseNewParams {
 	return params
 }
 
-// buildOpenAIMessages converts the unified history into Responses API input
-// items. Assistant thinking is replayed as reasoning items referenced by the
-// item ID captured at stream time (the API resolves it server-side), followed
-// by the visible message and one function_call item per tool call; tool
-// results become function_call_output items. The API accepts arbitrary item
-// order, so no role merging is needed.
 func buildOpenAIMessages(messages []conversation.Message) responses.ResponseInputParam {
 	items := make(responses.ResponseInputParam, 0, len(messages))
 	for _, m := range messages {
@@ -269,9 +272,6 @@ func buildOpenAIMessages(messages []conversation.Message) responses.ResponseInpu
 	return items
 }
 
-// translateOpenAITools converts the neutral tool schemas into Responses API
-// function tools. Strict validation is off: our schemas come from hand-written
-// tool definitions and partial-JSON arguments must not be rejected server-side.
 func translateOpenAITools(schemas []tools.ToolSchema) []responses.ToolUnionParam {
 	result := make([]responses.ToolUnionParam, 0, len(schemas))
 	for _, s := range schemas {
@@ -292,8 +292,6 @@ func translateOpenAITools(schemas []tools.ToolSchema) []responses.ToolUnionParam
 	return result
 }
 
-// mapOpenAIError classifies a transport/API error returned by the SDK's
-// stream.Err() onto the five kinds.
 func mapOpenAIError(err error) error {
 	if err == nil {
 		return nil
@@ -314,8 +312,6 @@ func mapOpenAIError(err error) error {
 	return classify(status, "", code, message, err)
 }
 
-// extractOpenAIMeta pulls the HTTP status and API error code out of an SDK
-// error, falling back to the raw message.
 func extractOpenAIMeta(err error) (status int, code, message string) {
 	var ae *openai.Error
 	if errors.As(err, &ae) {

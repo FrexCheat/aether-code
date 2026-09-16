@@ -1,7 +1,3 @@
-// Command aethercode is the AetherCode command-line AI coding assistant.
-//
-// This phase accepts no command-line flags: configuration is read from
-// aethercode.yaml in the current working directory.
 package main
 
 import (
@@ -28,7 +24,8 @@ func main() {
 		fail(err)
 	}
 	active := cfg.Active()
-	client, err := llm.NewClient(active, nil, prompt.System)
+	systemPrompt := prompt.BuildSystemPrompt(prompt.DetectEnvironment(cwd))
+	client, err := llm.NewClient(active, nil, systemPrompt)
 	if err != nil {
 		fail(err)
 	}

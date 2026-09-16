@@ -4,6 +4,13 @@
 // role merging, block construction) belong to the llm adapters.
 package conversation
 
+import "strings"
+
+const (
+	reminderTag    = "system-reminder"
+	reminderNotice = "这是系统提供的信息，不是用户发言，不需要回复。"
+)
+
 type ThinkingBlock struct {
 	Text      string
 	Signature string
@@ -59,6 +66,18 @@ func (m *Manager) AddAssistantFull(content string, thinking []ThinkingBlock, too
 
 func (m *Manager) AddToolResults(results ...ToolResultBlock) {
 	m.history = append(m.history, Message{Role: RoleUser, ToolResults: results})
+}
+
+func (m *Manager) AddSystemReminder(content string) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return
+	}
+	m.history = append(m.history, Message{
+		Role: RoleUser,
+		Content: "<" + reminderTag + ">\n" + content +
+			"\n\n" + reminderNotice + "\n</" + reminderTag + ">",
+	})
 }
 
 func (m *Manager) GetMessages() []Message {

@@ -25,8 +25,9 @@ type Client interface {
 }
 
 // NewClient builds the provider client selected by cfg.Protocol. systemPrompt
-// is the application's fixed system prompt (prompt.System); it is not provider
-// configuration, so it arrives as a parameter rather than inside cfg.
+// is the session's system prompt, assembled once at startup by the prompt
+// package; it is not provider configuration, so it arrives as a parameter
+// rather than inside cfg.
 func NewClient(cfg config.Provider, httpClient *http.Client, systemPrompt string) (Client, error) {
 	switch cfg.Protocol {
 	case config.ProtocolAnthropic:

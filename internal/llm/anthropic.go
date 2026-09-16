@@ -170,7 +170,13 @@ func (c *anthropicClient) buildParams(req Request) anthropic.MessageNewParams {
 		Messages:  buildAnthropicMessages(req.Messages),
 	}
 	if c.systemPrompt != "" {
-		params.System = []anthropic.TextBlockParam{{Text: c.systemPrompt}}
+		// Cache breakpoint #1: the system block. The API's cache prefix is
+		// ordered tools → system → messages, so this one breakpoint also covers
+		// the tool definitions — both are re-sent on every turn of the loop.
+		params.System = []anthropic.TextBlockParam{{
+			Text:         c.systemPrompt,
+			CacheControl: anthropic.NewCacheControlEphemeralParam(),
+		}}
 	}
 	if c.thinking {
 		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(anthropicThinkingBudget)
@@ -178,7 +184,26 @@ func (c *anthropicClient) buildParams(req Request) anthropic.MessageNewParams {
 	if len(req.Tools) > 0 {
 		params.Tools = translateAnthropicTools(req.Tools)
 	}
+	// Cache breakpoint #2: the tail of the conversation, re-marked on every
+	// request so it follows the history as it grows.
+	markMessageTailForCache(params.Messages)
 	return params
+}
+
+func markMessageTailForCache(msgs []anthropic.MessageParam) {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != anthropic.MessageParamRoleUser || len(msgs[i].Content) == 0 {
+			continue
+		}
+		last := &msgs[i].Content[len(msgs[i].Content)-1]
+		switch {
+		case last.OfText != nil:
+			last.OfText.CacheControl = anthropic.NewCacheControlEphemeralParam()
+		case last.OfToolResult != nil:
+			last.OfToolResult.CacheControl = anthropic.NewCacheControlEphemeralParam()
+		}
+		return
+	}
 }
 
 func buildAnthropicMessages(messages []conversation.Message) []anthropic.MessageParam {

@@ -22,6 +22,18 @@ const (
 	noticeError
 )
 
+func totalTokens(u llm.UsageInfo) int {
+	return u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheCreationTokens
+}
+
+func formatTokenCount(n int) string {
+	if n < 1000 {
+		return strconv.Itoa(n)
+	}
+	k := strconv.FormatFloat(float64(n)/1000, 'f', 1, 64)
+	return strings.TrimSuffix(k, ".0") + "k"
+}
+
 func renderNoticeBlock(text string, severity noticeSeverity) string {
 	var b strings.Builder
 	b.WriteString(styleNoticePrefix.Render("! AetherCode"))
@@ -70,11 +82,13 @@ func renderToolDoneBlock(title string, failed bool, elapsed time.Duration, diff 
 	return lipgloss.JoinHorizontal(lipgloss.Top, toolIndent+dot+" ", body.String())
 }
 
-// renderTurnBlock is the done footer printed to the scrollback when a loop
-// finishes: elapsed time, wall-clock done time, and the loop's token usage.
 func renderTurnBlock(elapsed time.Duration, doneAt time.Time, usage llm.UsageInfo) string {
-	return styleDim.Render(fmt.Sprintf("%ds · done %s · ↓ %s tokens",
-		int(elapsed.Seconds()), doneAt.Format("3:04 PM"), formatTokenCount(totalTokens(usage))))
+	line := fmt.Sprintf("%ds · done %s · ↓ %s tokens",
+		int(elapsed.Seconds()), doneAt.Format("3:04 PM"), formatTokenCount(totalTokens(usage)))
+	if usage.CacheReadTokens > 0 {
+		line += " · cache " + formatTokenCount(usage.CacheReadTokens)
+	}
+	return styleDim.Render(line)
 }
 
 func renderClearedBlock() string {
@@ -96,7 +110,6 @@ func renderDiffLines(diff string) string {
 	return strings.Join(lines, "\n")
 }
 
-// renderLive is the progress line shown while a loop runs.
 func renderLive(m *Model) string {
 	secs := int(timeSince(m.live.start).Seconds())
 	return styleSpinner.Render(m.spinner.View() + fmt.Sprintf(" Imagining… (%ds)", secs))
@@ -114,23 +127,6 @@ func (m Model) renderStatus() string {
 		pad = 1
 	}
 	return styleStatusBar.Width(m.width).Render(left + strings.Repeat(" ", pad) + right)
-}
-
-// totalTokens sums the four metered usage counters — the same quantity the
-// provider bills for the loop.
-func totalTokens(u llm.UsageInfo) int {
-	return u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheCreationTokens
-}
-
-// formatTokenCount renders a token count for the footer: plain digits below
-// 1000, otherwise one decimal in k with a trailing ".0" trimmed
-// (850 → "850", 1234 → "1.2k", 15300 → "15.3k", 20000 → "20k").
-func formatTokenCount(n int) string {
-	if n < 1000 {
-		return strconv.Itoa(n)
-	}
-	k := strconv.FormatFloat(float64(n)/1000, 'f', 1, 64)
-	return strings.TrimSuffix(k, ".0") + "k"
 }
 
 func (m Model) View() tea.View {

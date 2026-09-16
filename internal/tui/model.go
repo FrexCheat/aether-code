@@ -1,21 +1,3 @@
-// Package tui implements the interactive terminal interface: a startup
-// banner, chat history printed to the terminal's main buffer, a live frame
-// with the input box and status bar, per-block reply commit, spinner and
-// slash commands.
-//
-// The program runs inline (no alternate screen). Committed content — user
-// questions, settled replies, tool results, notices — is printed above the
-// live frame via tea.Println and accumulates in the terminal's own
-// scrollback, so wheel scrolling and text selection stay native. The live
-// frame holds only in-flight state: running tool lines, the progress
-// spinner, the input box and the status bar. It starts right below the
-// banner and is pushed down as history prints, pinning to the bottom once
-// the screen fills.
-//
-// Data flow is deliberately flat: one shared conversation history plus a
-// single in-flight liveStream. Reply text is not streamed onto the screen —
-// each text content block commits whole when the block ends (TextComplete),
-// so while a turn runs the only animated thing is the spinner line.
 package tui
 
 import (
@@ -43,8 +25,8 @@ var (
 
 type Options struct {
 	Agent        *agent.Agent
-	Conv         *conversation.Manager // owned by the TUI: it seeds user messages and clears history
-	Registry     *tools.Registry       // queried for tool entry titles
+	Conv         *conversation.Manager
+	Registry     *tools.Registry
 	ProviderName string
 	ModelName    string
 	Version      string
@@ -82,7 +64,44 @@ func toolTitle(reg *tools.Registry, name string, args map[string]any) string {
 	return name
 }
 
-// Run starts the program and blocks until it exits.
+func lineContinues(in textarea.Model) bool {
+	value := in.Value()
+	if !strings.HasSuffix(strings.TrimRight(value, " \t"), `\`) {
+		return false
+	}
+	lines := strings.Split(value, "\n")
+	return in.Line() == len(lines)-1 && in.Column() == len([]rune(lines[len(lines)-1]))
+}
+
+func continueValue(value string) string {
+	return strings.TrimSuffix(strings.TrimRight(value, " \t"), `\`) + "\n"
+}
+
+func (m *Model) println(block string) tea.Cmd {
+	if m.print == nil || block == "" {
+		return nil
+	}
+	return m.print(block + "\n")
+}
+
+func diffText(r tools.ToolResult) string {
+	if r.Diff {
+		return r.Output
+	}
+	return ""
+}
+
+func (m *Model) flushText() []string {
+	if m.live == nil {
+		return nil
+	}
+	if text := m.live.text.String(); text != "" {
+		m.live.text.Reset()
+		return []string{renderAssistantBlock(m, text)}
+	}
+	return nil
+}
+
 func Run(opts Options) error {
 	_, err := tea.NewProgram(newModel(opts)).Run()
 	return err
@@ -103,25 +122,18 @@ func newModel(opts Options) Model {
 	in.SetStyles(inputStyles())
 	in.Focus()
 
-	return Model{
+	m := Model{
 		opts:    opts,
 		conv:    opts.Conv,
 		input:   in,
 		spinner: spinner.New(spinner.WithSpinner(spinner.Dot)),
 		print:   func(s string) tea.Cmd { return tea.Println(s) },
 	}
+	return m
 }
 
-// Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
 	return m.input.Focus()
-}
-
-func (m *Model) println(block string) tea.Cmd {
-	if m.print == nil || block == "" {
-		return nil
-	}
-	return m.print(block + "\n")
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -176,9 +188,6 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 	if m.live != nil {
 		return m, nil // input is ignored while a turn is in flight
 	}
-	// Shell-style line continuation: "<text>\" + Enter starts a new line
-	// instead of submitting. The backslash is dropped and a newline takes its
-	// place, so multi-line prompts can be typed like in a terminal.
 	if lineContinues(m.input) {
 		m.input.SetValue(continueValue(m.input.Value()))
 		return m, nil
@@ -202,24 +211,9 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 	return m, m.startStream(text)
 }
 
-func lineContinues(in textarea.Model) bool {
-	value := in.Value()
-	if !strings.HasSuffix(strings.TrimRight(value, " \t"), `\`) {
-		return false
-	}
-	lines := strings.Split(value, "\n")
-	return in.Line() == len(lines)-1 && in.Column() == len([]rune(lines[len(lines)-1]))
-}
-
-func continueValue(value string) string {
-	return strings.TrimSuffix(strings.TrimRight(value, " \t"), `\`) + "\n"
-}
-
 func (m *Model) startStream(text string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	block := renderUserBlock(m, text)
-	// The conversation belongs to the TUI: seeding the user message here keeps
-	// the agent a stateless loop driver over a conversation it merely borrows.
 	m.conv.AddUserMessage(text)
 	m.live = &liveStream{
 		events: m.opts.Agent.Run(ctx, m.conv),
@@ -231,13 +225,6 @@ func (m *Model) startStream(text string) tea.Cmd {
 	return tea.Sequence(m.println(block), tea.Batch(waitStream(m.live.events), m.spinner.Tick))
 }
 
-// handleStreamBatch folds a coalesced batch of events, printing the blocks it
-// committed and re-arming the wait. Blocks queued here are sequenced before
-// the next waitStream for the same reason as startStream: the print message
-// is enqueued before the next batch can be produced, so printed history
-// never reorders under streaming bursts. It returns a Model value so Update's
-// dynamic type stays stable: every arm of Update yields exactly Model, never
-// *Model.
 func (m *Model) handleStreamBatch(batch streamBatchMsg) (Model, tea.Cmd) {
 	var out []string
 	for _, ev := range batch {
@@ -248,8 +235,6 @@ func (m *Model) handleStreamBatch(batch streamBatchMsg) (Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	if len(out) > 0 {
-		// One print per Update: blocks join into a single chunk with a blank
-		// line between them, so a burst of commits lands as one ordered slab.
 		cmd = m.println(strings.Join(out, "\n\n"))
 	}
 	if m.live != nil {
@@ -258,9 +243,6 @@ func (m *Model) handleStreamBatch(batch streamBatchMsg) (Model, tea.Cmd) {
 	return *m, cmd
 }
 
-// foldEvent folds one agent event and returns the blocks to print. Text
-// deltas accumulate on the live stream; tool calls move between the live
-// frame and the printed history; terminal events close the loop.
 func (m *Model) foldEvent(ev agent.AgentEvent) []string {
 	switch e := ev.(type) {
 	case agent.TextDelta:
@@ -287,24 +269,6 @@ func (m *Model) foldEvent(ev agent.AgentEvent) []string {
 		return m.closeLive(ev)
 	default:
 		// ThinkingDelta, ThinkingComplete: not surfaced this phase.
-	}
-	return nil
-}
-
-func diffText(r tools.ToolResult) string {
-	if r.Diff {
-		return r.Output
-	}
-	return ""
-}
-
-func (m *Model) flushText() []string {
-	if m.live == nil {
-		return nil
-	}
-	if text := m.live.text.String(); text != "" {
-		m.live.text.Reset()
-		return []string{renderAssistantBlock(m, text)}
 	}
 	return nil
 }
@@ -343,11 +307,8 @@ func (m *Model) reLayout() {
 	if m.width <= 0 {
 		return
 	}
-
 	m.input.SetWidth(max(m.width-6, 10))
-
 	wrap := max(m.width-2, 20)
-
 	sc := styles.DarkStyleConfig
 	var zeroMargin uint
 	sc.Document.Margin = &zeroMargin
