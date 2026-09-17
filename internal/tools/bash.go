@@ -11,10 +11,7 @@ import (
 	"time"
 )
 
-// BashDefaultTimeout bounds one command when the model doesn't ask for more.
 const BashDefaultTimeout = 120 * time.Second
-
-// BashMaxTimeout is the ceiling for a caller-requested timeout.
 const BashMaxTimeout = 10 * time.Minute
 
 // commandErrorThresholds gives special commands the exit code at or above
@@ -89,7 +86,7 @@ type BashTool struct {
 	WorkDir string
 }
 
-func (t *BashTool) Name() string { return "bash" }
+func (t *BashTool) Name() string { return "Bash" }
 func (t *BashTool) Description() string {
 	return BashDescription
 }
@@ -132,11 +129,11 @@ func (t *BashTool) Title(args map[string]any) string {
 func (t *BashTool) Execute(ctx context.Context, args map[string]any) ToolResult {
 	command, ok := argString(args, "command")
 	if !ok {
-		return errResult("bash: missing required string argument \"command\"")
+		return errResult("Bash: missing required string argument \"command\"")
 	}
 	seconds, err := argInt(args, "timeout")
 	if err != nil {
-		return errResult("bash: " + err.Error())
+		return errResult("Bash: " + err.Error())
 	}
 	timeout := BashDefaultTimeout
 	if seconds > 0 {
@@ -187,11 +184,11 @@ func (t *BashTool) Execute(ctx context.Context, args map[string]any) ToolResult 
 
 	if runCtx.Err() == context.DeadlineExceeded {
 		return errResult(fmt.Sprintf(
-			"bash: command timed out after %s and was killed; output so far:\n%s", timeout, out))
+			"Bash: command timed out after %s and was killed; output so far:\n%s", timeout, out))
 	}
 	if err != nil {
 		if _, isExit := err.(*exec.ExitError); !isExit {
-			return errResult(fmt.Sprintf("bash: failed to run command: %v", err))
+			return errResult(fmt.Sprintf("Bash: failed to run command: %v", err))
 		}
 	}
 	return ToolResult{Output: out}

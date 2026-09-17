@@ -18,7 +18,7 @@ type EditFileTool struct {
 	FileStateCache *FileStateCache
 }
 
-func (t *EditFileTool) Name() string { return "edit_file" }
+func (t *EditFileTool) Name() string { return "Edit" }
 func (t *EditFileTool) Description() string {
 	return EditFileDescription
 }
@@ -60,58 +60,58 @@ func (t *EditFileTool) Title(args map[string]any) string {
 func (t *EditFileTool) Execute(_ context.Context, args map[string]any) ToolResult {
 	path, ok := argString(args, "file_path")
 	if !ok {
-		return errResult("edit_file: missing required string argument \"file_path\"")
+		return errResult("Edit: missing required string argument \"file_path\"")
 	}
 	oldStr, ok := args["old_string"].(string)
 	if !ok {
-		return errResult("edit_file: missing required string argument \"old_string\"")
+		return errResult("Edit: missing required string argument \"old_string\"")
 	}
 	newStr, ok := args["new_string"].(string)
 	if !ok {
-		return errResult("edit_file: missing required string argument \"new_string\"")
+		return errResult("Edit: missing required string argument \"new_string\"")
 	}
 	if oldStr == "" {
-		return errResult("edit_file: \"old_string\" must not be empty")
+		return errResult("Edit: \"old_string\" must not be empty")
 	}
 
 	full := ResolveWorkPath(t.WorkDir, path)
 	if t.FileStateCache != nil {
 		if ok, msg := t.FileStateCache.Check(full); !ok {
-			return errResult("edit_file: " + msg)
+			return errResult("Edit: " + msg)
 		}
 	}
 	data, err := os.ReadFile(full)
 	if err != nil {
-		return errResult(fmt.Sprintf("edit_file: cannot read %s: %v", path, err))
+		return errResult(fmt.Sprintf("Edit: cannot read %s: %v", path, err))
 	}
 	orig := string(data)
 
 	switch n := strings.Count(orig, oldStr); {
 	case n == 0:
 		return errResult(fmt.Sprintf(
-			"edit_file: old_string not found in %s; read the file again and use an exact excerpt including surrounding lines", path))
+			"Edit: old_string not found in %s; read the file again and use an exact excerpt including surrounding lines", path))
 	case n > 1:
 		return errResult(fmt.Sprintf(
-			"edit_file: old_string appears %d times in %s; include more surrounding lines to make it unique", n, path))
+			"Edit: old_string appears %d times in %s; include more surrounding lines to make it unique", n, path))
 	}
 
 	updated := strings.Replace(orig, oldStr, newStr, 1)
 	tmp, err := os.CreateTemp(filepath.Dir(full), "."+filepath.Base(full)+".tmp-*")
 	if err != nil {
-		return errResult(fmt.Sprintf("edit_file: cannot create temp file for %s: %v", path, err))
+		return errResult(fmt.Sprintf("Edit: cannot create temp file for %s: %v", path, err))
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
 
 	if _, err := tmp.WriteString(updated); err != nil {
 		tmp.Close()
-		return errResult(fmt.Sprintf("edit_file: cannot write %s: %v", path, err))
+		return errResult(fmt.Sprintf("Edit: cannot write %s: %v", path, err))
 	}
 	if err := tmp.Close(); err != nil {
-		return errResult(fmt.Sprintf("edit_file: cannot write %s: %v", path, err))
+		return errResult(fmt.Sprintf("Edit: cannot write %s: %v", path, err))
 	}
 	if err := os.Rename(tmpName, full); err != nil {
-		return errResult(fmt.Sprintf("edit_file: cannot replace %s: %v", path, err))
+		return errResult(fmt.Sprintf("Edit: cannot replace %s: %v", path, err))
 	}
 	if t.FileStateCache != nil {
 		t.FileStateCache.Update(full)

@@ -12,21 +12,21 @@ import (
 
 type liveStream struct {
 	events <-chan agent.AgentEvent
-	ctx    context.Context // mirrors the ctx passed to Agent.Run; nil Err means still running
+	ctx    context.Context
 	cancel context.CancelFunc
 	text   strings.Builder
 	start  time.Time
+
+	permissionWait  time.Duration
+	permissionSince time.Time
 }
 
-// streamBatchMsg carries events drained in one frame. waitStream blocks for
-// the first event, then non-blockingly drains whatever else has already
-// arrived so a burst of deltas becomes a single Update. While the stream is
-// live the spinner's own tick chain keeps frames arriving.
+func (ls *liveStream) ran() time.Duration {
+	return timeSince(ls.start) - ls.permissionWait
+}
+
 type streamBatchMsg []agent.AgentEvent
 
-// waitStream bridges the agent goroutine into the Elm loop with coalescing:
-// one blocking read, then a non-blocking drain of the backlog. A closed
-// channel yields nil (no message).
 func waitStream(ch <-chan agent.AgentEvent) tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-ch

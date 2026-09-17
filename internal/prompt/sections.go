@@ -1,9 +1,3 @@
-// Section bodies and priorities, one function per module.
-//
-// Priorities are spaced by 10 so a module can be inserted between two existing
-// ones without renumbering. 80 and 90 are reserved for the activated-Skill and
-// long-term-memory slots; they have no functions yet — an empty slot is simply
-// absent, which is what Builder.Build already does with blank content.
 package prompt
 
 import "strings"
@@ -91,17 +85,17 @@ func usingToolsSection() Section {
 		Priority: 40,
 		Content: "## 使用你的工具\n" +
 			"- 有专用工具时，不要用 bash 代替。用专用工具能让用户更好地理解和审查你的工作：\n" +
-			"  - 读文件用 read_file，而不是 cat、head、tail 或 sed\n" +
-			"  - 改文件用 edit_file，而不是 sed 或 awk\n" +
-			"  - 新建文件或整体重写用 write_file，而不是 echo 或 heredoc\n" +
-			"  - 找文件用 glob，而不是 find 或 ls\n" +
-			"  - 搜文件内容用 grep，而不是 grep、rg 或 ag 命令\n" +
-			"  - bash 只用于系统命令和确实需要 shell 的操作\n" +
-			"- 编辑或覆盖一个文件之前，必须先用 read_file 读过它；" +
+			"  - 读文件用 Read，而不是 cat、head、tail 或 sed\n" +
+			"  - 改文件用 Edit，而不是 sed 或 awk\n" +
+			"  - 新建文件或整体重写用 Write，而不是 echo 或 heredoc\n" +
+			"  - 找文件用 Glob，而不是 find 或 ls\n" +
+			"  - 搜文件内容用 Grep，而不是 grep、rg 或 ag 命令\n" +
+			"  - Bash 只用于系统命令和确实需要 shell 的操作\n" +
+			"- 编辑或覆盖一个文件之前，必须先用 Read 读过它；" +
 			"没读过就改会被工具直接拒绝。\n" +
 			"- 一次回复里可以发起多个工具调用：彼此独立的调用一起发，" +
 			"有依赖的等结果回来再发。\n" +
-			"- 需要跑多条互不依赖的 bash 命令时，拆成多次工具调用，而不是用 && 串起来。",
+			"- 需要跑多条互不依赖的 Bash 命令时，拆成多次工具调用，而不是用 && 串起来。",
 	}
 }
 

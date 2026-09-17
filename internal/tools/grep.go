@@ -11,17 +11,13 @@ import (
 	"strings"
 )
 
-// GrepMatchLimit caps reported matches so a hot pattern can't flood the
-// result; the marker tells the model to narrow the pattern instead.
 const GrepMatchLimit = 200
 
-// GrepTool searches file contents line by line with a regular expression,
-// optionally restricted to a directory and/or an include glob on base names.
 type GrepTool struct {
 	WorkDir string
 }
 
-func (t *GrepTool) Name() string { return "grep" }
+func (t *GrepTool) Name() string { return "Grep" }
 func (t *GrepTool) Description() string {
 	return GrepDescription
 }
@@ -52,7 +48,6 @@ func (t *GrepTool) Schema() ToolSchema {
 	}
 }
 
-// Title summarizes the call for the UI: "Grep: TODO".
 func (t *GrepTool) Title(args map[string]any) string {
 	if pattern, _ := args["pattern"].(string); pattern != "" {
 		return "Grep(" + pattern + ")"
@@ -63,24 +58,24 @@ func (t *GrepTool) Title(args map[string]any) string {
 func (t *GrepTool) Execute(_ context.Context, args map[string]any) ToolResult {
 	pattern, ok := argString(args, "pattern")
 	if !ok {
-		return errResult("grep: missing required string argument \"pattern\"")
+		return errResult("Grep: missing required string argument \"pattern\"")
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return errResult(fmt.Sprintf("grep: invalid regular expression %q: %v", pattern, err))
+		return errResult(fmt.Sprintf("Grep: invalid regular expression %q: %v", pattern, err))
 	}
 
 	root := t.WorkDir
 	if p, ok := args["path"].(string); ok && p != "" {
 		root = ResolveWorkPath(t.WorkDir, p)
 	} else if _, present := args["path"]; present {
-		return errResult("grep: argument \"path\" must be a string")
+		return errResult("Grep: argument \"path\" must be a string")
 	}
 	include, hasInclude := "", false
 	if p, ok := args["include"].(string); ok && p != "" {
 		include, hasInclude = p, true
 	} else if _, present := args["include"]; present {
-		return errResult("grep: argument \"include\" must be a string")
+		return errResult("Grep: argument \"include\" must be a string")
 	}
 
 	var out strings.Builder
@@ -125,10 +120,10 @@ func (t *GrepTool) Execute(_ context.Context, args map[string]any) ToolResult {
 	info, statErr := os.Stat(root)
 	switch {
 	case statErr != nil:
-		return errResult(fmt.Sprintf("grep: cannot access %s: %v", root, statErr))
+		return errResult(fmt.Sprintf("Grep: cannot access %s: %v", root, statErr))
 	case !info.IsDir():
 		if err := searchFile(root); err != nil {
-			return errResult(fmt.Sprintf("grep: %v", err))
+			return errResult(fmt.Sprintf("Grep: %v", err))
 		}
 	default:
 		walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -149,7 +144,7 @@ func (t *GrepTool) Execute(_ context.Context, args map[string]any) ToolResult {
 			return searchFile(path)
 		})
 		if walkErr != nil {
-			return errResult(fmt.Sprintf("grep: walk failed: %v", walkErr))
+			return errResult(fmt.Sprintf("Grep: walk failed: %v", walkErr))
 		}
 	}
 

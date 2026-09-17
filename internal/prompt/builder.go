@@ -1,10 +1,3 @@
-// Package prompt owns the model-facing instruction text: the modular system
-// prompt assembled at startup, and the bodies of the reminders injected into
-// the conversation at runtime.
-//
-// This is a content layer. It decides what the model reads, not how the text
-// reaches it — delivery (system block vs. message), caching breakpoints and
-// wire translation all belong to the llm adapters.
 package prompt
 
 import (
@@ -61,19 +54,6 @@ func (b *Builder) Build() string {
 	return strings.Join(parts, "\n\n")
 }
 
-func BuildSystemPrompt(env EnvironmentContext) string {
-	return NewBuilder().
-		Add(identitySection()).
-		Add(systemSection()).
-		Add(doingTasksSection()).
-		Add(executingActionsSection()).
-		Add(usingToolsSection()).
-		Add(toneStyleSection()).
-		Add(textOutputSection()).
-		Add(environmentSection(env)).
-		Build()
-}
-
 func DetectEnvironment(workDir string) EnvironmentContext {
 	env := EnvironmentContext{
 		WorkDir: workDir,
@@ -97,4 +77,17 @@ func DetectEnvironment(workDir string) EnvironmentContext {
 		env.GitBranch = strings.TrimSpace(string(branch))
 	}
 	return env
+}
+
+func BuildSystemPrompt(env EnvironmentContext) string {
+	return NewBuilder().
+		Add(identitySection()).
+		Add(systemSection()).
+		Add(doingTasksSection()).
+		Add(executingActionsSection()).
+		Add(usingToolsSection()).
+		Add(toneStyleSection()).
+		Add(textOutputSection()).
+		Add(environmentSection(env)).
+		Build()
 }

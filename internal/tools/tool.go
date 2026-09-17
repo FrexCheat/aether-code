@@ -1,22 +1,3 @@
-// Package tools defines the unified tool abstraction consumed by the agent
-// layer: the Tool interface every implementation satisfies, the structured
-// ToolResult fed back to the model, and the Registry that owns lookup and
-// schema generation for both wire protocols.
-//
-// Layout (flat, one file per tool):
-//
-//	tool.go       — Tool, ToolResult, Category, Registry, shared helpers
-//	read_file.go  — read file contents (offset/limit paging)
-//	write_file.go — atomic file write (temp file + rename)
-//	edit_file.go  — unique-match replacement with diff output
-//	bash.go       — shell command execution with timeout
-//	glob.go       — pattern-based file search
-//	grep.go       — regex content search
-//
-// Support files:
-//
-//	descriptions.go      — model-facing prompt text, one const per tool
-//	file_state_cache.go  — read-before-edit gate shared by read/write/edit
 package tools
 
 import (

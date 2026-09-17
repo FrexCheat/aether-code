@@ -1,8 +1,3 @@
-# AetherCode configuration example.
-# Copy this file to `aethercode.yaml` in the directory where you run AetherCode
-# and replace the placeholder API keys.
-
-# Name of the provider entry to use on startup. Must match one of providers[].name.
 default: claude
 
 providers:

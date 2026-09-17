@@ -10,9 +10,11 @@ package agent
 import (
 	"context"
 	"strings"
+	"sync"
 
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
+	"github.com/FrexCheat/aether-code/internal/permissions"
 	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
@@ -21,16 +23,26 @@ import (
 const defaultMaxTurns = 50
 
 // Agent drives the agent loop over a conversation. It holds no session state:
-// the conversation belongs to the caller and is passed to Run, so Agent is
-// immutable after New.
+// the conversation belongs to the caller and is passed to Run. The
+// conversation and the checker belong to the caller too, so a mode switch made
+// in the UI reaches a loop that is already running.
 type Agent struct {
 	client   llm.Client
 	registry *tools.Registry
+	checker  *permissions.Checker // nil disables permission checks entirely
+
+	askMu sync.Mutex // one confirmation dialog at a time
 }
 
-func New(client llm.Client, registry *tools.Registry) *Agent {
-	return &Agent{client: client, registry: registry}
+// New builds an agent. A nil checker means tool calls run unchecked.
+func New(client llm.Client, registry *tools.Registry, checker *permissions.Checker) *Agent {
+	return &Agent{client: client, registry: registry, checker: checker}
 }
+
+// Checker returns the shared permission checker, or nil when checks are off.
+// The UI reads and reconfigures the session's mode through this instance, so
+// what it shows and what the loop enforces are the same thing.
+func (a *Agent) Checker() *permissions.Checker { return a.checker }
 
 // Run drives conv until the model stops requesting tools. The caller seeds
 // conv with the user message beforehand; Run owns the loop from that point on
@@ -146,7 +158,7 @@ func (a *Agent) Run(ctx context.Context, conv *conversation.Manager) <-chan Agen
 				return
 			}
 
-			callResults := executeToolCalls(ctx, toolUses, a.registry, func(i int, res callResult) {
+			callResults := a.executeToolCalls(ctx, toolUses, send, func(i int, res callResult) {
 				send(ToolCallEnd{
 					ToolID:   toolUses[i].ID,
 					ToolName: toolUses[i].Name,

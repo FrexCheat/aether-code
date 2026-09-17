@@ -9,18 +9,12 @@ import (
 	"strings"
 )
 
-// ReadFileTool returns the contents of one file, optionally paged by line
-// offset and limit so large files can be read in chunks. Every successful
-// read is recorded in the shared FileStateCache, which is what later lets
-// edit_file and write_file verify the model has seen what it's changing.
 type ReadFileTool struct {
-	// WorkDir resolves relative path arguments (N3).
-	WorkDir string
-	// FileStateCache records read state for the edit gate; nil disables it.
+	WorkDir        string
 	FileStateCache *FileStateCache
 }
 
-func (t *ReadFileTool) Name() string { return "read_file" }
+func (t *ReadFileTool) Name() string { return "Read" }
 func (t *ReadFileTool) Description() string {
 	return ReadFileDescription
 }
@@ -51,7 +45,6 @@ func (t *ReadFileTool) Schema() ToolSchema {
 	}
 }
 
-// Title summarizes the call for the UI: "Read note.txt".
 func (t *ReadFileTool) Title(args map[string]any) string {
 	if p, _ := args["file_path"].(string); p != "" {
 		return "Read " + filepath.Base(p)
@@ -62,20 +55,20 @@ func (t *ReadFileTool) Title(args map[string]any) string {
 func (t *ReadFileTool) Execute(_ context.Context, args map[string]any) ToolResult {
 	path, ok := argString(args, "file_path")
 	if !ok {
-		return errResult("read_file: missing required string argument \"file_path\"")
+		return errResult("Read: missing required string argument \"file_path\"")
 	}
 	offset, err := argInt(args, "offset")
 	if err != nil {
-		return errResult("read_file: " + err.Error())
+		return errResult("Read: " + err.Error())
 	}
 	limit, err := argInt(args, "limit")
 	if err != nil {
-		return errResult("read_file: " + err.Error())
+		return errResult("Read: " + err.Error())
 	}
 
 	data, err := os.ReadFile(ResolveWorkPath(t.WorkDir, path))
 	if err != nil {
-		return errResult(fmt.Sprintf("read_file: cannot read %s: %v", path, err))
+		return errResult(fmt.Sprintf("Read: cannot read %s: %v", path, err))
 	}
 
 	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
@@ -85,7 +78,7 @@ func (t *ReadFileTool) Execute(_ context.Context, args map[string]any) ToolResul
 	start := 0
 	if offset > 0 {
 		if offset > len(lines) {
-			return errResult(fmt.Sprintf("read_file: offset %d beyond end of file (%d lines)", offset, len(lines)))
+			return errResult(fmt.Sprintf("Read: offset %d beyond end of file (%d lines)", offset, len(lines)))
 		}
 		start = offset - 1
 	}
@@ -142,7 +135,6 @@ func argInt(args map[string]any, key string) (int, error) {
 	}
 }
 
-// errResult is the shared constructor for structured failures.
 func errResult(msg string) ToolResult {
 	return ToolResult{Output: msg, IsError: true}
 }

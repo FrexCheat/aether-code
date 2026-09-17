@@ -10,14 +10,11 @@ import (
 	"strings"
 )
 
-// GlobTool matches file paths against a glob pattern, never descending into
-// dependency/VCS directories. `**` spans directory levels; the pattern is
-// matched against paths relative to the search root.
 type GlobTool struct {
 	WorkDir string
 }
 
-func (t *GlobTool) Name() string { return "glob" }
+func (t *GlobTool) Name() string { return "Glob" }
 func (t *GlobTool) Description() string {
 	return GlobDescription
 }
@@ -44,7 +41,6 @@ func (t *GlobTool) Schema() ToolSchema {
 	}
 }
 
-// Title summarizes the call for the UI: "Glob: **/*.go".
 func (t *GlobTool) Title(args map[string]any) string {
 	if pattern, _ := args["pattern"].(string); pattern != "" {
 		return "Glob(" + pattern + ")"
@@ -55,13 +51,13 @@ func (t *GlobTool) Title(args map[string]any) string {
 func (t *GlobTool) Execute(_ context.Context, args map[string]any) ToolResult {
 	pattern, ok := argString(args, "pattern")
 	if !ok {
-		return errResult("glob: missing required string argument \"pattern\"")
+		return errResult("Glob: missing required string argument \"pattern\"")
 	}
 	root := t.WorkDir
 	if p, ok := args["path"].(string); ok && p != "" {
 		root = ResolveWorkPath(t.WorkDir, p)
 	} else if _, present := args["path"]; present {
-		return errResult("glob: argument \"path\" must be a string")
+		return errResult("Glob: argument \"path\" must be a string")
 	}
 
 	// filepath.Match has no **; expand the first ** into a zero-or-more-levels
@@ -90,7 +86,7 @@ func (t *GlobTool) Execute(_ context.Context, args map[string]any) ToolResult {
 		return nil
 	})
 	if err != nil {
-		return errResult(fmt.Sprintf("glob: walk failed: %v", err))
+		return errResult(fmt.Sprintf("Glob: walk failed: %v", err))
 	}
 	sort.Strings(matches)
 
@@ -100,9 +96,6 @@ func (t *GlobTool) Execute(_ context.Context, args map[string]any) ToolResult {
 	return ToolResult{Output: TruncateOutput(strings.Join(matches, "\n"), MaxOutputChars)}
 }
 
-// matchGlob matches rel against pattern where ** spans directory levels.
-// Each ** segment consumes zero or more leading path segments, so
-// **/*.go matches a.go and also a/b/c.go.
 func matchGlob(pattern, rel string) bool {
 	if !strings.Contains(pattern, "**") {
 		ok, err := filepath.Match(pattern, rel)

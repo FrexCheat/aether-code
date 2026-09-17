@@ -8,6 +8,7 @@ import (
 	"github.com/FrexCheat/aether-code/internal/config"
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
+	"github.com/FrexCheat/aether-code/internal/permissions"
 	"github.com/FrexCheat/aether-code/internal/prompt"
 	"github.com/FrexCheat/aether-code/internal/tools"
 	"github.com/FrexCheat/aether-code/internal/tui"
@@ -30,7 +31,7 @@ func main() {
 		fail(err)
 	}
 
-	// One shared read-state cache: read_file records, write/edit gate on it.
+	// One shared read-state cache: Read records, Write/Edit gate on it.
 	fsc := tools.NewFileStateCache()
 	registry := tools.NewRegistry()
 	registry.Register(&tools.ReadFileTool{WorkDir: cwd, FileStateCache: fsc})
@@ -40,8 +41,15 @@ func main() {
 	registry.Register(&tools.GlobTool{WorkDir: cwd})
 	registry.Register(&tools.GrepTool{WorkDir: cwd})
 
+	// One checker for the whole session: the agent decides with it and the UI
+	// switches its mode, so what the status bar shows is what gets enforced.
+	checker, err := permissions.NewChecker(cwd)
+	if err != nil {
+		fail(err)
+	}
+
 	conv := conversation.NewManager()
-	ag := agent.New(client, registry)
+	ag := agent.New(client, registry, checker)
 
 	if err := tui.Run(tui.Options{
 		Agent:        ag,

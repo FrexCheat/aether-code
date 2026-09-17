@@ -10,7 +10,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Protocol identifies which provider API dialect an entry uses.
 type Protocol string
 
 const (
@@ -18,10 +17,8 @@ const (
 	ProtocolOpenAI    Protocol = "openai"
 )
 
-// FileName is the configuration file name looked up in the working directory.
 const FileName = "aethercode.yaml"
 
-// Provider is one LLM backend entry.
 type Provider struct {
 	Name     string   `yaml:"name"`
 	Protocol Protocol `yaml:"protocol"`
@@ -31,14 +28,11 @@ type Provider struct {
 	Thinking bool     `yaml:"thinking"`
 }
 
-// Config is the top-level configuration document.
 type Config struct {
 	Default   string     `yaml:"default"`
 	Providers []Provider `yaml:"providers"`
 }
 
-// Load reads and validates dir/aethercode.yaml. Returned errors include the
-// file path and, where applicable, the offending field.
 func Load(dir string) (*Config, error) {
 	path := filepath.Join(dir, FileName)
 	data, err := os.ReadFile(path)
@@ -55,7 +49,6 @@ func Load(dir string) (*Config, error) {
 	return &cfg, nil
 }
 
-// Active returns the provider entry selected by Default. Load guarantees it exists.
 func (c *Config) Active() Provider {
 	for _, p := range c.Providers {
 		if p.Name == c.Default {

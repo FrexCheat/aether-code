@@ -1,19 +1,16 @@
-// Tool descriptions shown to the model in the tool schema. They live apart
-// from the implementations so prompt wording can be reviewed and tuned
-// without touching execution logic.
 package tools
 
 const BashDescription = `Execute a shell command and return stdout and stderr.
 
-IMPORTANT: Avoid using this tool for file work that a dedicated tool covers. Do not run cat, head, tail, sed, awk, echo, find, grep, or rg commands. Instead use read_file, write_file, edit_file, glob, or grep — they give the user a better view of what you are doing.
+IMPORTANT: Avoid using this tool for file work that a dedicated tool covers. Do not run cat, head, tail, sed, awk, echo, find, grep, or rg commands. Instead use Read, Write, Edit, Glob, or Grep — they give the user a better view of what you are doing.
 
 Which tool replaces which command:
-- reading files → read_file, not cat, head, tail, or sed
-- writing or rewriting files → write_file, not echo or a heredoc
-- editing files in place → edit_file, not sed or awk
-- finding files → glob, not find or ls
-- searching file contents → grep, not grep, rg, or ag
-Use bash for system commands and for work that genuinely needs a shell.
+- reading files → Read, not cat, head, tail, or sed
+- writing or rewriting files → Write, not echo or a heredoc
+- editing files in place → Edit, not sed or awk
+- finding files → Glob, not find or ls
+- searching file contents → Grep, not grep, rg, or ag
+Use Bash for system commands and for work that genuinely needs a shell.
 
 Usage notes:
 - The working directory persists between commands, but shell state does not.
@@ -36,20 +33,20 @@ When using find, search from "." or a specific path, not "/" — scanning the fu
 const ReadFileDescription = `Read a file and return its contents with line numbers.
 
 Usage notes:
-- Use this instead of cat, head, tail, or sed commands via bash.
+- Use this instead of cat, head, tail, or sed commands via Bash.
 - The file_path parameter should be an absolute path when possible.
 - By default reads up to 2000 lines from the beginning of the file.
 - Use offset and limit to read specific parts of large files. Only read what you need.
 - Results are returned with line numbers (1-based) for easy reference.
-- This tool can only read files, not directories. Use glob to list directory contents.
-- Do NOT re-read a file you just edited to verify — edit_file would have errored if the change failed.`
+- This tool can only read files, not directories. Use Glob to list directory contents.
+- Do NOT re-read a file you just edited to verify — Edit would have errored if the change failed.`
 
 const EditFileDescription = `Replace an exact string in a file. The old_string must appear exactly once in the file.
 
 Usage notes:
-- Use this instead of sed or awk commands via bash.
-- You MUST read the file with read_file before editing it. This tool will fail otherwise.
-- When editing text from read_file output, preserve the exact indentation (tabs/spaces) as shown.
+- Use this instead of sed or awk commands via Bash.
+- You MUST read the file with Read before editing it. This tool will fail otherwise.
+- When editing text from Read output, preserve the exact indentation (tabs/spaces) as shown.
 - ALWAYS prefer editing existing files over creating new ones.
 - The edit will FAIL if old_string is not unique in the file. Provide more surrounding context to make it unique.
 - Use the smallest old_string that is clearly unique — 2-4 adjacent lines is usually sufficient.
@@ -58,10 +55,10 @@ Usage notes:
 const WriteFileDescription = `Write content to a file, creating parent directories if needed. Overwrites existing files.
 
 Usage notes:
-- Use this instead of echo or a cat heredoc via bash.
-- If modifying an existing file, prefer edit_file over write_file — it only sends the diff.
+- Use this instead of echo or a cat heredoc via Bash.
+- If modifying an existing file, prefer Edit over Write — it only sends the diff.
 - Use this tool only to create new files or for complete rewrites.
-- You MUST read existing files with read_file before overwriting them. This tool will fail otherwise.
+- You MUST read existing files with Read before overwriting them. This tool will fail otherwise.
 - NEVER create documentation files (*.md) or README files unless explicitly requested.`
 
 const GlobDescription = `Find files matching a glob pattern, returning relative paths sorted alphabetically.
@@ -70,7 +67,7 @@ Usage notes:
 - Supports patterns like "**/*.py", "src/**/*.ts", "*.go".
 - Search from "." or a specific path, never from "/".
 - Automatically skips .git, node_modules, __pycache__, and similar directories.
-- Use this instead of find or ls commands via bash.`
+- Use this instead of find or ls commands via Bash.`
 
 const GrepDescription = `Search file contents using a regex pattern, returning file:line:content matches.
 
@@ -78,5 +75,5 @@ Usage notes:
 - Supports full regex syntax (e.g., "log.*Error", "func\s+\w+").
 - Filter files with the include parameter (e.g., "*.py", "*.go").
 - Search from "." or a specific path, never from "/".
-- Use this instead of grep or rg commands via bash.
+- Use this instead of grep or rg commands via Bash.
 - Automatically skips .git, node_modules, __pycache__, and similar directories.`

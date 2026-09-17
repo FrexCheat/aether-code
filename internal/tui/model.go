@@ -12,9 +12,11 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
 	"charm.land/glamour/v2/styles"
+	"charm.land/lipgloss/v2"
 
 	"github.com/FrexCheat/aether-code/internal/agent"
 	"github.com/FrexCheat/aether-code/internal/conversation"
+	"github.com/FrexCheat/aether-code/internal/permissions"
 	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
@@ -44,6 +46,8 @@ type Model struct {
 	renderer   *glamour.TermRenderer
 	print      func(string) tea.Cmd
 	bannerDone bool
+	perm       *agent.PermissionRequest // non-nil while the confirmation dialog is open
+	permCursor int
 }
 
 type toolCall struct {
@@ -97,7 +101,7 @@ func (m *Model) flushText() []string {
 	}
 	if text := m.live.text.String(); text != "" {
 		m.live.text.Reset()
-		return []string{renderAssistantBlock(m, text)}
+		return []string{m.components().assistant(text)}
 	}
 	return nil
 }
@@ -143,14 +147,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reLayout()
 		if !m.bannerDone {
 			m.bannerDone = true
-			return m, m.println(renderStartup(m.opts.Version, m.opts.WorkDir, m.width))
+			return m, m.println(m.components().banner(m.opts.Version, m.opts.WorkDir))
 		}
 		return m, nil
 
 	case tea.KeyPressMsg:
+		if m.perm != nil {
+			return m.handlePermKey(msg)
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			return m.quit()
+		case "shift+tab":
+			return m.cyclePermissionMode()
 		case "esc":
 			if m.live != nil {
 				m.live.cancel()
@@ -177,11 +186,88 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m Model) View() tea.View {
+	c := m.components()
+	var parts []string
+	if m.perm != nil {
+		parts = append(parts, c.permDialog(m.perm, m.permCursor))
+	} else {
+		for _, tc := range m.running {
+			parts = append(parts, c.toolRunning(tc.title))
+		}
+		if m.live != nil {
+			parts = append(parts, c.live(int(m.live.ran().Seconds())))
+		}
+	}
+	mode := ""
+	if checker := m.checker(); checker != nil {
+		mode = string(checker.Mode())
+	}
+	parts = append(parts, c.input(m.input.View()), c.status(m.opts.ProviderName, mode, m.opts.ModelName))
+
+	v := tea.NewView(lipgloss.JoinVertical(lipgloss.Left, parts...))
+	v.AltScreen = false
+	v.MouseMode = tea.MouseModeNone
+	return v
+}
+
 func (m Model) quit() (Model, tea.Cmd) {
 	if m.live != nil {
 		m.live.cancel()
 	}
 	return m, tea.Quit
+}
+
+func (m *Model) checker() *permissions.Checker {
+	if m.opts.Agent == nil {
+		return nil
+	}
+	return m.opts.Agent.Checker()
+}
+
+func (m Model) cyclePermissionMode() (tea.Model, tea.Cmd) {
+	checker := m.checker()
+	if checker == nil {
+		return m, nil
+	}
+	checker.SetMode(permissions.NextMode(checker.Mode()))
+	return m, nil
+}
+
+func (m Model) handlePermKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		m.answerPerm(agent.PermReject)
+		return m.quit()
+	case "up":
+		m.permCursor = (m.permCursor + len(permOptions) - 1) % len(permOptions)
+	case "down":
+		m.permCursor = (m.permCursor + 1) % len(permOptions)
+	case "enter":
+		m.answerPerm(permOptions[m.permCursor].response)
+		return m, nil
+	case "esc":
+		m.answerPerm(agent.PermReject)
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m *Model) answerPerm(response agent.PermissionResponse) {
+	req := m.perm
+	if req == nil {
+		return
+	}
+	m.perm = nil
+	m.permCursor = 0
+	if m.live != nil && !m.live.permissionSince.IsZero() {
+		m.live.permissionWait += timeSince(m.live.permissionSince)
+		m.live.permissionSince = time.Time{}
+	}
+	select {
+	case req.Response <- response:
+	default:
+	}
 }
 
 func (m Model) handleEnter() (Model, tea.Cmd) {
@@ -203,17 +289,17 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 	case cmdClear:
 		m.conv.Clear()
 		m.input.Reset()
-		return m, m.println(renderClearedBlock())
+		return m, m.println(m.components().cleared())
 	case cmdUnknown:
 		m.input.Reset()
-		return m, m.println(renderNoticeBlock(hint, noticeError))
+		return m, m.println(m.components().notice(hint, noticeError))
 	}
 	return m, m.startStream(text)
 }
 
 func (m *Model) startStream(text string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
-	block := renderUserBlock(m, text)
+	block := m.components().user(text)
 	m.conv.AddUserMessage(text)
 	m.live = &liveStream{
 		events: m.opts.Agent.Run(ctx, m.conv),
@@ -263,7 +349,13 @@ func (m *Model) foldEvent(ev agent.AgentEvent) []string {
 			}
 			tc := m.running[i]
 			m.running = slices.Delete(m.running, i, i+1)
-			return []string{renderToolDoneBlock(tc.title, e.Result.IsError, e.Elapsed, diffText(e.Result))}
+			return []string{m.components().toolDone(tc.title, e.Result.IsError, e.Elapsed, diffText(e.Result))}
+		}
+	case agent.PermissionRequestEvent:
+		m.perm = &e.Request
+		m.permCursor = 0
+		if m.live != nil {
+			m.live.permissionSince = timeNow()
 		}
 	case agent.LoopError, agent.LoopComplete:
 		return m.closeLive(ev)
@@ -279,26 +371,28 @@ func (m *Model) closeLive(ev agent.AgentEvent) []string {
 		return nil
 	}
 	defer func() {
+		m.answerPerm(agent.PermReject)
 		ls.cancel()
 		m.live = nil
 		m.running = nil
 	}()
 	out := m.flushText()
+	c := m.components()
 	switch ev := ev.(type) {
 	case agent.LoopComplete:
 		usage := ev.Usage
 		switch ev.Reason {
 		case agent.StoppedByModel:
-			out = append(out, renderTurnBlock(timeSince(ls.start), timeNow(), usage))
+			out = append(out, c.turn(ls.ran(), timeNow(), usage))
 		case agent.StoppedByLimit:
-			out = append(out, renderNoticeBlock(
+			out = append(out, c.notice(
 				fmt.Sprintf("Turn limit reached after %d turn(s) — the loop stopped before running out of control.", ev.TotalTurns), noticeWarn))
-			out = append(out, renderTurnBlock(timeSince(ls.start), timeNow(), usage))
+			out = append(out, c.turn(ls.ran(), timeNow(), usage))
 		case agent.StoppedByUser:
-			out = append(out, renderNoticeBlock("Cancelled.", noticeInfo))
+			out = append(out, c.notice("Cancelled.", noticeInfo))
 		}
 	case agent.LoopError:
-		out = append(out, renderNoticeBlock("Error: "+ev.Err.Error(), noticeError))
+		out = append(out, c.notice("Error: "+ev.Err.Error(), noticeError))
 	}
 	return out
 }

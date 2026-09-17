@@ -13,3 +13,8 @@ docs/
 
 # Local Claude Code skills
 .claude/
+
+.aethercode/
+
+skills-lock.json
+.agents
