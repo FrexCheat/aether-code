@@ -64,8 +64,8 @@ func (t *WriteFileTool) Execute(_ context.Context, args map[string]any) ToolResu
 	if t.FileStateCache != nil {
 		// New files are exempt; existing files must have been read first.
 		if _, err := os.Stat(full); err == nil {
-			if ok, msg := t.FileStateCache.Check(full); !ok {
-				return errResult("Write: " + msg)
+			if reason := t.FileStateCache.Verify(full); reason != "" {
+				return errResult("Write: " + reason)
 			}
 		}
 	}
@@ -92,7 +92,7 @@ func (t *WriteFileTool) Execute(_ context.Context, args map[string]any) ToolResu
 		return errResult(fmt.Sprintf("Write: cannot replace %s: %v", path, err))
 	}
 	if t.FileStateCache != nil {
-		t.FileStateCache.Update(full)
+		t.FileStateCache.Record(full)
 	}
 	return ToolResult{Output: fmt.Sprintf("wrote %d bytes to %s", len(content), path)}
 }

@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-const BashDefaultTimeout = 120 * time.Second
-const BashMaxTimeout = 10 * time.Minute
+const bashDefaultTimeout = 120 * time.Second
+const bashMaxTimeout = 10 * time.Minute
 
 // commandErrorThresholds gives special commands the exit code at or above
 // which a non-zero exit really means failure. grep exiting 1 means "no
@@ -40,8 +40,6 @@ func interpretExitCode(command string, exitCode int) bool {
 	return true
 }
 
-// extractLastCommand returns the base name of the final command in a
-// pipeline: "cat file | grep foo" → "grep".
 func extractLastCommand(command string) string {
 	parts := strings.Split(command, "|")
 	fields := strings.Fields(strings.TrimSpace(parts[len(parts)-1]))
@@ -78,10 +76,8 @@ func exitCodeHint(command string, exitCode int) string {
 // BashTool runs one shell command via sh -c in the session working directory.
 // stdout and stderr are captured combined so interleaved output reaches the
 // model in order. A non-zero exit is NOT a tool failure — the command's own
-// diagnostics are the result the model needs to decide what to do next; only
-// infrastructure problems (spawn failure, timeout) are marked IsError, and
-// commands whose exit 1 carries ordinary meaning (grep, diff, find, test)
-// get that meaning spelled out instead of a bare failure line.
+// diagnostics are what the model needs to decide what to do next, so only
+// infrastructure problems (spawn failure, timeout) are marked IsError.
 type BashTool struct {
 	WorkDir string
 }
@@ -113,11 +109,8 @@ func (t *BashTool) Schema() ToolSchema {
 	}
 }
 
-// titleCmdLimit caps the command shown in a tool entry's one-line title.
 const titleCmdLimit = 50
 
-// Title summarizes the call for the UI: "Bash: go test ./...". Long commands
-// are cut at titleCmdLimit runes.
 func (t *BashTool) Title(args map[string]any) string {
 	cmd, _ := args["command"].(string)
 	if cmd == "" {
@@ -135,9 +128,9 @@ func (t *BashTool) Execute(ctx context.Context, args map[string]any) ToolResult 
 	if err != nil {
 		return errResult("Bash: " + err.Error())
 	}
-	timeout := BashDefaultTimeout
+	timeout := bashDefaultTimeout
 	if seconds > 0 {
-		timeout = min(time.Duration(seconds)*time.Second, BashMaxTimeout)
+		timeout = min(time.Duration(seconds)*time.Second, bashMaxTimeout)
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -180,7 +173,7 @@ func (t *BashTool) Execute(ctx context.Context, args map[string]any) ToolResult 
 			fmt.Fprintf(&sb, " (%s)", exitCodeHint(command, exitCode))
 		}
 	}
-	out := TruncateOutput(sb.String(), MaxOutputChars)
+	out := truncateOutput(sb.String())
 
 	if runCtx.Err() == context.DeadlineExceeded {
 		return errResult(fmt.Sprintf(

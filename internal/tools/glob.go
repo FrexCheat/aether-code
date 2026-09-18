@@ -53,17 +53,19 @@ func (t *GlobTool) Execute(_ context.Context, args map[string]any) ToolResult {
 	if !ok {
 		return errResult("Glob: missing required string argument \"pattern\"")
 	}
+	path, err := optionalStringArg(args, "path")
+	if err != nil {
+		return errResult("Glob: " + err.Error())
+	}
 	root := t.WorkDir
-	if p, ok := args["path"].(string); ok && p != "" {
-		root = ResolveWorkPath(t.WorkDir, p)
-	} else if _, present := args["path"]; present {
-		return errResult("Glob: argument \"path\" must be a string")
+	if path != "" {
+		root = ResolveWorkPath(t.WorkDir, path)
 	}
 
 	// filepath.Match has no **; expand the first ** into a zero-or-more-levels
 	// match by walking every directory and matching the remainder.
 	var matches []string
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil // vanished between listing and walk: skip, not fail
@@ -71,7 +73,7 @@ func (t *GlobTool) Execute(_ context.Context, args map[string]any) ToolResult {
 			return err
 		}
 		if d.IsDir() {
-			if SkipDirs[d.Name()] {
+			if skipDirs[d.Name()] {
 				return filepath.SkipDir
 			}
 			return nil
@@ -93,7 +95,7 @@ func (t *GlobTool) Execute(_ context.Context, args map[string]any) ToolResult {
 	if len(matches) == 0 {
 		return ToolResult{Output: fmt.Sprintf("no files match %q under %s", pattern, root)}
 	}
-	return ToolResult{Output: TruncateOutput(strings.Join(matches, "\n"), MaxOutputChars)}
+	return ToolResult{Output: truncateOutput(strings.Join(matches, "\n"))}
 }
 
 func matchGlob(pattern, rel string) bool {

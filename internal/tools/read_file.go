@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -85,17 +84,12 @@ func (t *ReadFileTool) Execute(_ context.Context, args map[string]any) ToolResul
 	if limit <= 0 {
 		limit = 2000
 	}
-	end := len(lines)
-	if start+limit < end {
-		end = start + limit
-	}
+	end := min(start+limit, len(lines))
 
 	// Record the read for the edit-before-write gate.
 	full := ResolveWorkPath(t.WorkDir, path)
 	if t.FileStateCache != nil {
-		if info, statErr := os.Stat(full); statErr == nil {
-			t.FileStateCache.Record(full, info.ModTime().UnixMilli())
-		}
+		t.FileStateCache.Record(full)
 	}
 
 	var sb strings.Builder
@@ -105,36 +99,5 @@ func (t *ReadFileTool) Execute(_ context.Context, args map[string]any) ToolResul
 	if end < len(lines) {
 		fmt.Fprintf(&sb, "... (%d more lines; use offset=%d to continue)\n", len(lines)-end, end+1)
 	}
-	return ToolResult{Output: TruncateOutput(strings.TrimSuffix(sb.String(), "\n"), MaxOutputChars)}
-}
-
-// argString fetches a required string argument (N2: validate before side effects).
-func argString(args map[string]any, key string) (string, bool) {
-	v, ok := args[key].(string)
-	return v, ok && v != ""
-}
-
-// argInt fetches an optional integer argument. Absent is not an error; a
-// present-but-non-integer value is.
-func argInt(args map[string]any, key string) (int, error) {
-	switch v := args[key].(type) {
-	case nil:
-		return 0, nil
-	case float64:
-		return int(v), nil
-	case int:
-		return v, nil
-	case string:
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return 0, fmt.Errorf("argument %q must be an integer, got %q", key, v)
-		}
-		return n, nil
-	default:
-		return 0, fmt.Errorf("argument %q must be an integer", key)
-	}
-}
-
-func errResult(msg string) ToolResult {
-	return ToolResult{Output: msg, IsError: true}
+	return ToolResult{Output: truncateOutput(strings.TrimSuffix(sb.String(), "\n"))}
 }

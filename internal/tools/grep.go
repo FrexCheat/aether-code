@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io/fs"
@@ -11,7 +12,7 @@ import (
 	"strings"
 )
 
-const GrepMatchLimit = 200
+const grepMatchLimit = 200
 
 type GrepTool struct {
 	WorkDir string
@@ -65,17 +66,17 @@ func (t *GrepTool) Execute(_ context.Context, args map[string]any) ToolResult {
 		return errResult(fmt.Sprintf("Grep: invalid regular expression %q: %v", pattern, err))
 	}
 
-	root := t.WorkDir
-	if p, ok := args["path"].(string); ok && p != "" {
-		root = ResolveWorkPath(t.WorkDir, p)
-	} else if _, present := args["path"]; present {
-		return errResult("Grep: argument \"path\" must be a string")
+	path, err := optionalStringArg(args, "path")
+	if err != nil {
+		return errResult("Grep: " + err.Error())
 	}
-	include, hasInclude := "", false
-	if p, ok := args["include"].(string); ok && p != "" {
-		include, hasInclude = p, true
-	} else if _, present := args["include"]; present {
-		return errResult("Grep: argument \"include\" must be a string")
+	root := t.WorkDir
+	if path != "" {
+		root = ResolveWorkPath(t.WorkDir, path)
+	}
+	include, err := optionalStringArg(args, "include")
+	if err != nil {
+		return errResult("Grep: " + err.Error())
 	}
 
 	var out strings.Builder
@@ -83,7 +84,7 @@ func (t *GrepTool) Execute(_ context.Context, args map[string]any) ToolResult {
 	truncated := false
 
 	searchFile := func(path string) error {
-		if matches >= GrepMatchLimit {
+		if matches >= grepMatchLimit {
 			truncated = true
 			return nil
 		}
@@ -105,7 +106,7 @@ func (t *GrepTool) Execute(_ context.Context, args map[string]any) ToolResult {
 			if re.MatchString(line) {
 				fmt.Fprintf(&out, "%s:%d: %s\n", path, lineNo, line)
 				matches++
-				if matches >= GrepMatchLimit {
+				if matches >= grepMatchLimit {
 					truncated = true
 					break
 				}
@@ -131,12 +132,12 @@ func (t *GrepTool) Execute(_ context.Context, args map[string]any) ToolResult {
 				return nil // unreadable entries are skipped
 			}
 			if d.IsDir() {
-				if SkipDirs[d.Name()] {
+				if skipDirs[d.Name()] {
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			if hasInclude {
+			if include != "" {
 				if ok, err := filepath.Match(include, d.Name()); err != nil || !ok {
 					return nil
 				}
@@ -153,7 +154,20 @@ func (t *GrepTool) Execute(_ context.Context, args map[string]any) ToolResult {
 	}
 	result := strings.TrimSuffix(out.String(), "\n")
 	if truncated {
-		result += fmt.Sprintf("\n... (stopped at %d matches; narrow the pattern or path to see more)", GrepMatchLimit)
+		result += fmt.Sprintf("\n... (stopped at %d matches; narrow the pattern or path to see more)", grepMatchLimit)
 	}
-	return ToolResult{Output: TruncateOutput(result, MaxOutputChars)}
+	return ToolResult{Output: truncateOutput(result)}
+}
+
+// isTextFile reports whether a file looks like text: a NUL byte in its first
+// chunk is the usual tell that it does not.
+func isTextFile(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	chunk := make([]byte, 8192)
+	n, _ := f.Read(chunk)
+	return bytes.IndexByte(chunk[:n], 0) < 0
 }

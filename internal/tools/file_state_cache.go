@@ -15,34 +15,9 @@ func NewFileStateCache() *FileStateCache {
 	return &FileStateCache{entries: make(map[string]int64)}
 }
 
-func (c *FileStateCache) Record(filePath string, mtime int64) {
-	abs := normalizePath(filePath)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.entries[abs] = mtime
-}
-
-func (c *FileStateCache) Check(filePath string) (bool, string) {
-	abs := normalizePath(filePath)
-	c.mu.Lock()
-	cachedMtime, exists := c.entries[abs]
-	c.mu.Unlock()
-
-	if !exists {
-		return false, "file has not been read yet; read it with Read first"
-	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		// Deleted since the read — let the caller's own IO error speak.
-		return true, ""
-	}
-	if info.ModTime().UnixMilli() > cachedMtime {
-		return false, "file has been modified since it was last read; read it again before editing"
-	}
-	return true, ""
-}
-
-func (c *FileStateCache) Update(filePath string) {
+// Record notes a file's current modification time, whether it was just read or
+// just written.
+func (c *FileStateCache) Record(filePath string) {
 	abs := normalizePath(filePath)
 	info, err := os.Stat(abs)
 	if err != nil {
@@ -51,6 +26,28 @@ func (c *FileStateCache) Update(filePath string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries[abs] = info.ModTime().UnixMilli()
+}
+
+// Verify reports whether a write to the file may proceed — it must have been
+// read and left unchanged since. An empty reason means it may.
+func (c *FileStateCache) Verify(filePath string) string {
+	abs := normalizePath(filePath)
+	c.mu.Lock()
+	cachedMtime, exists := c.entries[abs]
+	c.mu.Unlock()
+
+	if !exists {
+		return "file has not been read yet; read it with Read first"
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		// Deleted since the read — let the caller's own IO error speak.
+		return ""
+	}
+	if info.ModTime().UnixMilli() > cachedMtime {
+		return "file has been modified since it was last read; read it again before editing"
+	}
+	return ""
 }
 
 func normalizePath(p string) string {

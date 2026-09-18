@@ -5,27 +5,9 @@ import (
 	"strings"
 )
 
-var compoundSplitter = regexp.MustCompile(`&&|\|\||;|\|`)
-
 type pattern struct {
 	re     *regexp.Regexp
 	reason string
-}
-
-func SplitCompound(command string) []string {
-	parts := compoundSplitter.Split(command, -1)
-	subs := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if s := strings.TrimSpace(p); s != "" {
-			subs = append(subs, s)
-		}
-	}
-	if len(subs) == 0 {
-		if s := strings.TrimSpace(command); s != "" {
-			return []string{s}
-		}
-	}
-	return subs
 }
 
 var dangerousPatterns = []pattern{

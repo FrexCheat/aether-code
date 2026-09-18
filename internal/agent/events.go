@@ -8,7 +8,11 @@ import (
 	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
-type AgentEvent interface{ agentEvent() }
+// eventSink hands one event to the UI. False means the event was not delivered
+// because the turn was cancelled first.
+type eventSink func(Event) bool
+
+type Event interface{ event() }
 
 type TextDelta struct{ Text string }
 
@@ -44,36 +48,22 @@ const (
 
 type LoopComplete struct {
 	Reason     LoopStopReason
-	TotalTurns int
-	Usage      llm.UsageInfo
+	ToolRounds int
+	Usage      llm.Usage
 }
 
 type LoopError struct{ Err error }
 
-type PermissionRequest struct {
-	ToolName string             // the tool the call would use
-	Action   string             // what the call would do: the command line or the path
-	Rules    []permissions.Rule // what "session" and "permanent" would record
-	Response chan<- PermissionResponse
-}
+// PermissionRequestEvent carries a question the loop is blocked on; the call
+// proceeds only once the answer is sent on Request.Reply.
+type PermissionRequestEvent struct{ Request permissions.Request }
 
-type PermissionRequestEvent struct{ Request PermissionRequest }
-
-type PermissionResponse int
-
-const (
-	PermAllowOnce      PermissionResponse = iota // run this call; ask again next time
-	PermAllowSession                             // record a grant until the process exits
-	PermAllowPermanent                           // write the grant to the local rule file
-	PermReject                                   // do not run this call
-)
-
-func (TextDelta) agentEvent()              {}
-func (TextComplete) agentEvent()           {}
-func (ThinkingDelta) agentEvent()          {}
-func (ThinkingComplete) agentEvent()       {}
-func (ToolCallBegin) agentEvent()          {}
-func (ToolCallEnd) agentEvent()            {}
-func (LoopComplete) agentEvent()           {}
-func (LoopError) agentEvent()              {}
-func (PermissionRequestEvent) agentEvent() {}
+func (TextDelta) event()              {}
+func (TextComplete) event()           {}
+func (ThinkingDelta) event()          {}
+func (ThinkingComplete) event()       {}
+func (ToolCallBegin) event()          {}
+func (ToolCallEnd) event()            {}
+func (LoopComplete) event()           {}
+func (LoopError) event()              {}
+func (PermissionRequestEvent) event() {}

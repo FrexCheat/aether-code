@@ -20,13 +20,33 @@ type Rule struct {
 	Effect  Effect
 }
 
+type cachedFile struct {
+	modTime time.Time
+	size    int64
+	rules   []Rule
+}
+
+type RuleEngine struct {
+	userPath    string
+	projectPath string
+	localPath   string
+
+	mu    sync.Mutex
+	cache map[string]cachedFile
+}
+
+type ruleEntry struct {
+	Rule   string `yaml:"rule"`
+	Effect string `yaml:"effect"`
+}
+
+type rulesFile struct {
+	Rules []ruleEntry `yaml:"rules,omitempty"`
+}
+
 func (r Rule) String() string {
 	return r.Tool + "(" + r.Pattern + ")"
 }
-
-// toolNames are the tool names a rule may use — the same ones the tools
-// report, so a rule and a tool call are compared without translation.
-var toolNames = []string{"Bash", "Read", "Write", "Edit", "Glob", "Grep"}
 
 func ParseRule(raw string, eff Effect) (Rule, error) {
 	trimmed := strings.TrimSpace(raw)
@@ -46,48 +66,37 @@ func ParseRule(raw string, eff Effect) (Rule, error) {
 	return Rule{Tool: tool, Pattern: pattern, Effect: eff}, nil
 }
 
-func (r Rule) Matches(toolName, content string) bool {
-	if r.Tool != toolName {
-		return false
-	}
-	if !strings.ContainsAny(r.Pattern, "*?") {
-		return r.Pattern == content
-	}
-	var b strings.Builder
-	b.WriteString(`(?s)\A`)
-	for _, ch := range r.Pattern {
-		switch ch {
-		case '*':
-			b.WriteString(`.*`)
-		case '?':
-			b.WriteString(`.`)
+// 将模型返回的 Pattern 转换为 Rule 里的 Pattern，主要是对 * 和 \ 进行转义
+func escapeRulePattern(text string) string {
+	return strings.NewReplacer(`\`, `\\`, `*`, `\*`).Replace(text)
+}
+
+func patternMatches(pattern, value string) bool {
+	runes := []rune(pattern)
+	var source strings.Builder
+	source.WriteString(`\A`)
+	for i := 0; i < len(runes); {
+		switch {
+		case runes[i] == '\\' && i+1 < len(runes):
+			source.WriteString(regexp.QuoteMeta(string(runes[i+1])))
+			i += 2
+		case runes[i] == '*':
+			source.WriteString(`.*`)
+			i++
 		default:
-			b.WriteString(regexp.QuoteMeta(string(ch)))
+			source.WriteString(regexp.QuoteMeta(string(runes[i])))
+			i++
 		}
 	}
-	b.WriteString(`\z`)
-	re, err := regexp.Compile(b.String())
-	return err == nil && re.MatchString(content)
+	source.WriteString(`\z`)
+	re, err := regexp.Compile(source.String())
+	return err == nil && re.MatchString(value)
 }
 
-func ExtractContent(toolName string, args map[string]any) string {
-	var field string
-	switch toolName {
-	case "Bash":
-		field = "command"
-	case "Read", "Write", "Edit":
-		field = "file_path"
-	case "Glob", "Grep":
-		field = "pattern"
-	default:
-		return ""
-	}
-	v, _ := args[field].(string)
-	return v
+func (r Rule) Matches(toolName, value string) bool {
+	return r.Tool == toolName && patternMatches(r.Pattern, value)
 }
 
-// EvaluateRules decides a call against a rule set. deny outranks ask outranks
-// allow, regardless of file or line order; nil means no rule matched.
 func EvaluateRules(rules []Rule, toolName, content string) *Decision {
 	var hit *Decision
 	for _, r := range rules {
@@ -96,7 +105,6 @@ func EvaluateRules(rules []Rule, toolName, content string) *Decision {
 		}
 		switch r.Effect {
 		case Deny:
-			// Nothing outranks deny, so this is already the answer.
 			return &Decision{Effect: Deny, Reason: "Permission denied by rule " + r.String()}
 		case Ask:
 			if hit == nil || hit.Effect == Allow {
@@ -111,29 +119,6 @@ func EvaluateRules(rules []Rule, toolName, content string) *Decision {
 	return hit
 }
 
-// cachedFile is one rule file's parse result. modTime and size together decide
-// whether a re-read is needed: mtime alone is not enough, since a rewrite
-// within the same timestamp granularity can leave it unchanged.
-type cachedFile struct {
-	modTime time.Time
-	size    int64
-	rules   []Rule
-}
-
-// RuleEngine reads the three rule files (user, project, local) and merges them
-// into one rule set. Files are parsed once and re-read only after they change,
-// so a decision costs a few stat calls and edits take effect without a restart.
-type RuleEngine struct {
-	userPath    string
-	projectPath string
-	localPath   string
-
-	mu    sync.Mutex
-	cache map[string]cachedFile
-}
-
-// NewRuleEngine locates the three rule files under workDir and, when
-// resolvable, the user's home directory. Missing files are simply empty rules.
 func NewRuleEngine(workDir string) *RuleEngine {
 	e := &RuleEngine{
 		projectPath: filepath.Join(workDir, ".aethercode", "permissions.yaml"),
@@ -146,7 +131,6 @@ func NewRuleEngine(workDir string) *RuleEngine {
 	return e
 }
 
-// Snapshot returns the merged rules of all three files.
 func (e *RuleEngine) Snapshot() []Rule {
 	var all []Rule
 	for _, path := range e.paths() {
@@ -159,9 +143,6 @@ func (e *RuleEngine) paths() []string {
 	return []string{e.userPath, e.projectPath, e.localPath}
 }
 
-// load returns a file's cached parse result, re-reading it when its modTime or
-// size changed. A file that cannot be stat'ed or read is treated as empty and
-// its stale cache entry is dropped, so a deleted file stops contributing.
 func (e *RuleEngine) load(path string) cachedFile {
 	if path == "" {
 		return cachedFile{}
@@ -176,28 +157,16 @@ func (e *RuleEngine) load(path string) cachedFile {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if c, ok := e.cache[path]; ok && c.modTime.Equal(info.ModTime()) && c.size == info.Size() {
-		return c
+	if cached, ok := e.cache[path]; ok && cached.modTime.Equal(info.ModTime()) && cached.size == info.Size() {
+		return cached
 	}
-	c := parseRulesFile(path)
-	c.modTime = info.ModTime()
-	c.size = info.Size()
-	e.cache[path] = c
-	return c
+	cached := parseRulesFile(path)
+	cached.modTime = info.ModTime()
+	cached.size = info.Size()
+	e.cache[path] = cached
+	return cached
 }
 
-// rulesFile is the on-disk document shape shared by all three files.
-type rulesFile struct {
-	Rules []ruleEntry `yaml:"rules,omitempty"`
-}
-
-type ruleEntry struct {
-	Rule   string `yaml:"rule"`
-	Effect string `yaml:"effect"`
-}
-
-// parseRulesFile reads one file. Anything unreadable or unparsable degrades to
-// an empty file; a single bad entry is skipped and never sinks the others.
 func parseRulesFile(path string) cachedFile {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -207,7 +176,7 @@ func parseRulesFile(path string) cachedFile {
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return cachedFile{}
 	}
-	var cf cachedFile
+	var file cachedFile
 	for _, entry := range doc.Rules {
 		eff := Effect(strings.ToLower(strings.TrimSpace(entry.Effect)))
 		if eff != Allow && eff != Ask && eff != Deny {
@@ -217,15 +186,11 @@ func parseRulesFile(path string) cachedFile {
 		if err != nil {
 			continue
 		}
-		cf.rules = append(cf.rules, rule)
+		file.rules = append(file.rules, rule)
 	}
-	return cf
+	return file
 }
 
-// AppendLocalRule adds one rule to the local file. This is the process writing
-// its own configuration after the user granted a permanent permission — it
-// does not pass through the checker, so the blacklist's protection of the rule
-// files does not apply here.
 func (e *RuleEngine) AppendLocalRule(r Rule) error {
 	doc, err := e.readLocal()
 	if err != nil {

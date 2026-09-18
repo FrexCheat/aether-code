@@ -1,5 +1,3 @@
-// anthropic.go — Anthropic Messages API adapter. Delivery and arg-parsing
-// helpers are shared in stream.go; the API key never appears in error strings.
 package llm
 
 import (
@@ -7,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -62,7 +61,7 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 		defer stream.Close()
 
 		sawStop := false
-		var usage UsageInfo
+		var usage Usage
 
 		// Per-block accumulation. Anthropic streams blocks sequentially:
 		// start → deltas → stop before the next block starts.
@@ -138,7 +137,7 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 					toolArgsSeed = nil
 				}
 			case anthropic.MessageDeltaEvent:
-				usage = UsageInfo{
+				usage = Usage{
 					InputTokens:         int(ev.Usage.InputTokens),
 					OutputTokens:        int(ev.Usage.OutputTokens),
 					CacheReadTokens:     int(ev.Usage.CacheReadInputTokens),
@@ -191,7 +190,7 @@ func (c *anthropicClient) buildParams(req Request) anthropic.MessageNewParams {
 }
 
 func markMessageTailForCache(msgs []anthropic.MessageParam) {
-	for i := len(msgs) - 1; i >= 0; i-- {
+	for i := range slices.Backward(msgs) {
 		if msgs[i].Role != anthropic.MessageParamRoleUser || len(msgs[i].Content) == 0 {
 			continue
 		}
@@ -308,8 +307,7 @@ func mapAnthropicError(err error) error {
 }
 
 func extractAnthropicMeta(err error) (status int, apiType, message string) {
-	var ae *anthropic.Error
-	if errors.As(err, &ae) {
+	if ae, ok := errors.AsType[*anthropic.Error](err); ok {
 		status = ae.StatusCode
 	}
 	message = err.Error()

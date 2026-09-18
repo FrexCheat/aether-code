@@ -3,13 +3,12 @@ package tools
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 )
 
-const MaxOutputChars = 50000
+// maxOutputChars caps how much of a result reaches the model.
+const maxOutputChars = 50000
 
 type Category string
 
@@ -22,7 +21,7 @@ const (
 type ToolResult struct {
 	Output  string
 	IsError bool
-	Diff    bool
+	IsDiff  bool // Output is a rendered diff, to be colored line by line
 }
 
 type Tool interface {
@@ -63,7 +62,8 @@ func (r *Registry) Get(name string) Tool {
 	return r.tools[name]
 }
 
-// Schemas returns the schema of every registered tool, ordered by name.
+// Schemas returns every tool's schema, ordered by name so the request stays
+// byte-stable across rounds.
 func (r *Registry) Schemas() []ToolSchema {
 	names := make([]string, 0, len(r.tools))
 	for name := range r.tools {
@@ -86,11 +86,12 @@ func truncateTitle(s string, max int) string {
 	return string(runes[:max]) + "…"
 }
 
-func TruncateOutput(s string, max int) string {
-	if max <= 0 || len(s) <= max {
+func truncateOutput(s string) string {
+	if len(s) <= maxOutputChars {
 		return s
 	}
-	return s[:max] + fmt.Sprintf("\n\n[output truncated: showing first %d of %d characters]", max, len(s))
+	return s[:maxOutputChars] +
+		fmt.Sprintf("\n\n[output truncated: showing first %d of %d characters]", maxOutputChars, len(s))
 }
 
 func ResolveWorkPath(workDir, path string) string {
@@ -100,27 +101,10 @@ func ResolveWorkPath(workDir, path string) string {
 	return filepath.Clean(filepath.Join(workDir, path))
 }
 
-var SkipDirs = map[string]bool{
+// skipDirs are directories no search tool descends into.
+var skipDirs = map[string]bool{
 	".git": true, ".hg": true, ".svn": true,
 	"node_modules": true, ".venv": true, "venv": true,
 	"__pycache__": true, ".mypy_cache": true, ".tox": true,
 	"dist": true, "build": true, "target": true,
-}
-
-func looksBinary(chunk []byte) bool {
-	if len(chunk) > 8192 {
-		chunk = chunk[:8192]
-	}
-	return strings.IndexByte(string(chunk), 0) >= 0
-}
-
-func isTextFile(path string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	chunk := make([]byte, 8192)
-	n, _ := f.Read(chunk)
-	return !looksBinary(chunk[:n])
 }

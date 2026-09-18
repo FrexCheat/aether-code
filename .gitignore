@@ -1,20 +1,12 @@
-# Local config containing API keys
-aethercode.yaml
-
-# Build outputs
-/aethercode
-/bin/
-*.test
-
-logo.txt
-
-# Local spec documents
-docs/
-
-# Local Claude Code skills
+.agents/
 .claude/
 
-.aethercode/
-
+CLAUDE.md
 skills-lock.json
-.agents
+
+docs/
+
+/bin/
+*.test
+.aethercode/
+aethercode.yaml

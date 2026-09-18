@@ -10,13 +10,11 @@ import (
 	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/FrexCheat/aether-code/internal/agent"
 	"github.com/FrexCheat/aether-code/internal/llm"
+	"github.com/FrexCheat/aether-code/internal/permissions"
 )
 
 var (
-	// User messages render as a full-width gray bar (Width set per render)
-	// with no role header; assistant messages lead with a plain white dot.
 	styleUserBubble   = lipgloss.NewStyle().Background(lipgloss.Color("8")).Padding(0, 1)
 	styleAssistantDot = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
 	styleDim          = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
@@ -30,7 +28,6 @@ var (
 	styleTips         = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	styleSpinner      = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 
-	// Tool entries: settled status colors and edit diff line colors.
 	styleToolDone   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	styleToolFailed = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
 	styleDiffAdd    = lipgloss.NewStyle().Background(lipgloss.Color("2"))
@@ -86,14 +83,29 @@ const (
 	noticeError
 )
 
-var permOptions = []struct {
+type permissionOption struct {
 	label    string
-	response agent.PermissionResponse
-}{
-	{"Allow once", agent.PermAllowOnce},
-	{"Allow for this session", agent.PermAllowSession},
-	{"Always allow", agent.PermAllowPermanent},
-	{"Deny", agent.PermReject},
+	response permissions.Response
+}
+
+var permissionOptions = []permissionOption{
+	{label: "Allow once", response: permissions.AllowOnce},
+	{label: "Allow for this session", response: permissions.AllowSession},
+	{label: "Always allow", response: permissions.AllowPermanent},
+	{label: "Deny", response: permissions.Reject},
+}
+
+// permissionOptionsFor drops the two options that would record a rule when the
+// call has none to record. A rule cannot cover every command, and a grant that
+// silently records nothing would ask the same question again next time.
+func permissionOptionsFor(req *permissions.Request) []permissionOption {
+	if len(req.Rules) == 0 {
+		return []permissionOption{
+			{label: "Allow once", response: permissions.AllowOnce},
+			{label: "Deny", response: permissions.Reject},
+		}
+	}
+	return permissionOptions
 }
 
 type components struct {
@@ -171,7 +183,7 @@ func (c components) live(secs int) string {
 	return styleSpinner.Render(c.spinner + fmt.Sprintf(" Imagining… (%ds)", secs))
 }
 
-func (c components) turn(elapsed time.Duration, doneAt time.Time, usage llm.UsageInfo) string {
+func (c components) turn(elapsed time.Duration, doneAt time.Time, usage llm.Usage) string {
 	total := usage.InputTokens + usage.OutputTokens + usage.CacheReadTokens + usage.CacheCreationTokens
 	line := fmt.Sprintf("%ds · done %s · ↓ %s tokens",
 		int(elapsed.Seconds()), doneAt.Format("3:04 PM"), formatTokenCount(total))
@@ -191,10 +203,7 @@ func (c components) status(provider, mode, model string) string {
 		left += " · " + mode
 	}
 	right := model + " "
-	pad := c.width - lipgloss.Width(left) - lipgloss.Width(right)
-	if pad < 1 {
-		pad = 1
-	}
+	pad := max(1, c.width-lipgloss.Width(left)-lipgloss.Width(right))
 	return styleStatusBar.Width(c.width).Render(left + strings.Repeat(" ", pad) + right)
 }
 
@@ -215,7 +224,7 @@ func (c components) toolDone(title string, failed bool, elapsed time.Duration, d
 	body.WriteString(title)
 	body.WriteString(styleDim.Render(fmt.Sprintf(" (%.1fs)", elapsed.Seconds())))
 	if diff != "" {
-		for _, line := range strings.Split(diff, "\n") {
+		for line := range strings.SplitSeq(diff, "\n") {
 			body.WriteString("\n")
 			switch {
 			case strings.HasPrefix(line, "+"):
@@ -230,7 +239,7 @@ func (c components) toolDone(title string, failed bool, elapsed time.Duration, d
 	return lipgloss.JoinHorizontal(lipgloss.Top, toolIndent+dot+" ", body.String())
 }
 
-func (c components) permDialog(req *agent.PermissionRequest, cursor int) string {
+func (c components) permissionPrompt(req *permissions.Request, cursor int) string {
 	boxWidth := max(c.width-2, 20)
 	inner := max(boxWidth-2, 10) // box width minus its padding; the border sits outside
 
@@ -250,8 +259,9 @@ func (c components) permDialog(req *agent.PermissionRequest, cursor int) string 
 		parts = append(parts, strings.Join(lines, "\n"))
 	}
 
-	options := make([]string, 0, len(permOptions))
-	for i, opt := range permOptions {
+	choices := permissionOptionsFor(req)
+	options := make([]string, 0, len(choices))
+	for i, opt := range choices {
 		if i == cursor {
 			options = append(options, stylePermCursor.Render("› ")+stylePermSelected.Render(opt.label))
 			continue

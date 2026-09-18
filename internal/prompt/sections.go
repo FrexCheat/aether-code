@@ -2,11 +2,10 @@ package prompt
 
 import "strings"
 
-func identitySection() Section {
-	return Section{
-		Name:     "Identity",
-		Priority: 0,
-		Content: "你是 Aether Code，一个运行在终端里的 AI 编程助手。\n" +
+func identitySection() section {
+	return section{
+		priority: 0,
+		content: "你是 Aether Code，一个运行在终端里的 AI 编程助手。\n" +
 			"你帮助用户完成软件工程任务：写代码、调试、重构、解释代码、运行命令。\n" +
 			"\n" +
 			"重要：不要引入安全漏洞，例如命令注入、XSS、SQL 注入。" +
@@ -15,11 +14,10 @@ func identitySection() Section {
 	}
 }
 
-func systemSection() Section {
-	return Section{
-		Name:     "System",
-		Priority: 10,
-		Content: "## 系统约束\n" +
+func systemSection() section {
+	return section{
+		priority: 10,
+		content: "## 系统约束\n" +
 			"- 工具调用之外的所有文本都会展示给用户。用 Markdown 与用户沟通。\n" +
 			"- 工具结果和用户消息里可能出现 <system-reminder> 标签，" +
 			"其中是系统提供的信息，与它所在的那条消息或工具结果没有直接关系。" +
@@ -29,11 +27,10 @@ func systemSection() Section {
 	}
 }
 
-func doingTasksSection() Section {
-	return Section{
-		Name:     "DoingTasks",
-		Priority: 20,
-		Content: "## 任务模式\n" +
+func doingTasksSection() section {
+	return section{
+		priority: 20,
+		content: "## 任务模式\n" +
 			"- 用户主要让你做软件工程任务：修 bug、加功能、重构、解释代码。" +
 			"指令不清晰时，结合上下文与当前工作目录去理解。\n" +
 			"- 不要对没读过的代码提改动建议。用户问到某个文件、或要改它，先读它。" +
@@ -57,11 +54,10 @@ func doingTasksSection() Section {
 	}
 }
 
-func executingActionsSection() Section {
-	return Section{
-		Name:     "ExecutingActions",
-		Priority: 30,
-		Content: "## 谨慎执行操作\n" +
+func executingActionsSection() section {
+	return section{
+		priority: 30,
+		content: "## 谨慎执行操作\n" +
 			"\n" +
 			"仔细评估操作的可逆性和影响范围。" +
 			"本地可逆的操作（编辑文件、跑测试等）可以放心做；" +
@@ -79,11 +75,10 @@ func executingActionsSection() Section {
 	}
 }
 
-func usingToolsSection() Section {
-	return Section{
-		Name:     "UsingTools",
-		Priority: 40,
-		Content: "## 使用你的工具\n" +
+func usingToolsSection() section {
+	return section{
+		priority: 40,
+		content: "## 使用你的工具\n" +
 			"- 有专用工具时，不要用 bash 代替。用专用工具能让用户更好地理解和审查你的工作：\n" +
 			"  - 读文件用 Read，而不是 cat、head、tail 或 sed\n" +
 			"  - 改文件用 Edit，而不是 sed 或 awk\n" +
@@ -99,11 +94,10 @@ func usingToolsSection() Section {
 	}
 }
 
-func toneStyleSection() Section {
-	return Section{
-		Name:     "ToneStyle",
-		Priority: 50,
-		Content: "## 语气与风格\n" +
+func toneStyleSection() section {
+	return section{
+		priority: 50,
+		content: "## 语气与风格\n" +
 			"- 回复要简洁。\n" +
 			"- 除非用户明确要求，不要用 emoji。\n" +
 			"- 引用具体代码时用 file_path:line_number 的格式，方便用户跳转。\n" +
@@ -112,11 +106,10 @@ func toneStyleSection() Section {
 	}
 }
 
-func textOutputSection() Section {
-	return Section{
-		Name:     "TextOutput",
-		Priority: 60,
-		Content: "## 文本输出（不适用于工具调用）\n" +
+func textOutputSection() section {
+	return section{
+		priority: 60,
+		content: "## 文本输出（不适用于工具调用）\n" +
 			"\n" +
 			"用户看不到大部分工具调用和你的思考，只看到你的文本输出。\n" +
 			"- 第一次工具调用之前，用一句话说明你要做什么。\n" +
@@ -129,7 +122,7 @@ func textOutputSection() Section {
 	}
 }
 
-func environmentSection(env EnvironmentContext) Section {
+func environmentSection(env Environment) section {
 	lines := []string{
 		"## 环境",
 		"- 工作目录: " + env.WorkDir,
@@ -142,10 +135,9 @@ func environmentSection(env EnvironmentContext) Section {
 	}
 	lines = append(lines, "- 日期: "+env.Date)
 
-	return Section{
-		Name:     "Environment",
-		Priority: 70,
-		Content:  strings.Join(lines, "\n"),
+	return section{
+		priority: 70,
+		content:  strings.Join(lines, "\n"),
 	}
 }
 

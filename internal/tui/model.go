@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -20,11 +19,6 @@ import (
 	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
-var (
-	timeNow   = time.Now
-	timeSince = time.Since
-)
-
 type Options struct {
 	Agent        *agent.Agent
 	Conv         *conversation.Manager
@@ -36,23 +30,15 @@ type Options struct {
 }
 
 type Model struct {
-	opts       Options
-	conv       *conversation.Manager
-	live       *liveStream // nil when idle
-	running    []toolCall  // tool calls in flight, shown in the live frame
-	input      textarea.Model
-	spinner    spinner.Model
-	width      int
-	renderer   *glamour.TermRenderer
-	print      func(string) tea.Cmd
-	bannerDone bool
-	perm       *agent.PermissionRequest // non-nil while the confirmation dialog is open
-	permCursor int
-}
-
-type toolCall struct {
-	id    string
-	title string
+	opts             Options
+	live             *liveStream          // nil when idle
+	permission       *permissions.Request // non-nil while the confirmation prompt is open
+	permissionCursor int
+	input            textarea.Model
+	spinner          spinner.Model
+	width            int
+	renderer         *glamour.TermRenderer
+	isBannerPrinted  bool
 }
 
 func toolTitle(reg *tools.Registry, name string, args map[string]any) string {
@@ -82,17 +68,10 @@ func continueValue(value string) string {
 }
 
 func (m *Model) println(block string) tea.Cmd {
-	if m.print == nil || block == "" {
+	if block == "" {
 		return nil
 	}
-	return m.print(block + "\n")
-}
-
-func diffText(r tools.ToolResult) string {
-	if r.Diff {
-		return r.Output
-	}
-	return ""
+	return tea.Println(block + "\n")
 }
 
 func (m *Model) flushText() []string {
@@ -126,14 +105,11 @@ func newModel(opts Options) Model {
 	in.SetStyles(inputStyles())
 	in.Focus()
 
-	m := Model{
+	return Model{
 		opts:    opts,
-		conv:    opts.Conv,
 		input:   in,
 		spinner: spinner.New(spinner.WithSpinner(spinner.Dot)),
-		print:   func(s string) tea.Cmd { return tea.Println(s) },
 	}
-	return m
 }
 
 func (m Model) Init() tea.Cmd {
@@ -145,15 +121,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.reLayout()
-		if !m.bannerDone {
-			m.bannerDone = true
+		if !m.isBannerPrinted {
+			m.isBannerPrinted = true
 			return m, m.println(m.components().banner(m.opts.Version, m.opts.WorkDir))
 		}
 		return m, nil
 
 	case tea.KeyPressMsg:
-		if m.perm != nil {
-			return m.handlePermKey(msg)
+		if m.permission != nil {
+			return m.handlePermissionKey(msg)
 		}
 		switch msg.String() {
 		case "ctrl+c":
@@ -189,15 +165,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) View() tea.View {
 	c := m.components()
 	var parts []string
-	if m.perm != nil {
-		parts = append(parts, c.permDialog(m.perm, m.permCursor))
-	} else {
-		for _, tc := range m.running {
-			parts = append(parts, c.toolRunning(tc.title))
+	if m.permission != nil {
+		parts = append(parts, c.permissionPrompt(m.permission, m.permissionCursor))
+	} else if m.live != nil {
+		for _, call := range m.live.tools {
+			parts = append(parts, c.toolRunning(call.title))
 		}
-		if m.live != nil {
-			parts = append(parts, c.live(int(m.live.ran().Seconds())))
-		}
+		parts = append(parts, c.live(int(m.live.elapsed().Seconds())))
 	}
 	mode := ""
 	if checker := m.checker(); checker != nil {
@@ -234,38 +208,48 @@ func (m Model) cyclePermissionMode() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) handlePermKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (m Model) handlePermissionKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	choices := m.permissionChoices()
 	switch msg.String() {
 	case "ctrl+c":
-		m.answerPerm(agent.PermReject)
+		m.answerPermission(permissions.Reject)
 		return m.quit()
 	case "up":
-		m.permCursor = (m.permCursor + len(permOptions) - 1) % len(permOptions)
+		m.permissionCursor = (m.permissionCursor + len(choices) - 1) % len(choices)
 	case "down":
-		m.permCursor = (m.permCursor + 1) % len(permOptions)
+		m.permissionCursor = (m.permissionCursor + 1) % len(choices)
 	case "enter":
-		m.answerPerm(permOptions[m.permCursor].response)
+		m.answerPermission(choices[m.permissionCursor].response)
 		return m, nil
 	case "esc":
-		m.answerPerm(agent.PermReject)
+		m.answerPermission(permissions.Reject)
 		return m, nil
 	}
 	return m, nil
 }
 
-func (m *Model) answerPerm(response agent.PermissionResponse) {
-	req := m.perm
-	if req == nil {
+// permissionChoices is the option list for the question on screen, which is
+// shorter when the call offers no rule to record.
+func (m Model) permissionChoices() []permissionOption {
+	if m.permission == nil {
+		return permissionOptions
+	}
+	return permissionOptionsFor(m.permission)
+}
+
+func (m *Model) answerPermission(response permissions.Response) {
+	request := m.permission
+	if request == nil {
 		return
 	}
-	m.perm = nil
-	m.permCursor = 0
+	m.permission = nil
+	m.permissionCursor = 0
 	if m.live != nil && !m.live.permissionSince.IsZero() {
-		m.live.permissionWait += timeSince(m.live.permissionSince)
+		m.live.permissionWait += time.Since(m.live.permissionSince)
 		m.live.permissionSince = time.Time{}
 	}
 	select {
-	case req.Response <- response:
+	case request.Reply <- response:
 	default:
 	}
 }
@@ -287,7 +271,7 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 	case cmdQuit:
 		return m.quit()
 	case cmdClear:
-		m.conv.Clear()
+		m.opts.Conv.Clear()
 		m.input.Reset()
 		return m, m.println(m.components().cleared())
 	case cmdUnknown:
@@ -300,12 +284,11 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 func (m *Model) startStream(text string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	block := m.components().user(text)
-	m.conv.AddUserMessage(text)
+	m.opts.Conv.AddUserMessage(text)
 	m.live = &liveStream{
-		events: m.opts.Agent.Run(ctx, m.conv),
-		ctx:    ctx,
+		events: m.opts.Agent.Run(ctx, m.opts.Conv),
 		cancel: cancel,
-		start:  timeNow(),
+		start:  time.Now(),
 	}
 	m.input.Reset()
 	return tea.Sequence(m.println(block), tea.Batch(waitStream(m.live.events), m.spinner.Tick))
@@ -315,7 +298,7 @@ func (m *Model) handleStreamBatch(batch streamBatchMsg) (Model, tea.Cmd) {
 	var out []string
 	for _, ev := range batch {
 		out = append(out, m.foldEvent(ev)...)
-		if m.live == nil { // a terminal event consumed; drop remaining events
+		if m.live == nil { // a terminal event consumed; drop what follows it
 			break
 		}
 	}
@@ -329,7 +312,7 @@ func (m *Model) handleStreamBatch(batch streamBatchMsg) (Model, tea.Cmd) {
 	return *m, cmd
 }
 
-func (m *Model) foldEvent(ev agent.AgentEvent) []string {
+func (m *Model) foldEvent(ev agent.Event) []string {
 	switch e := ev.(type) {
 	case agent.TextDelta:
 		if m.live != nil {
@@ -338,24 +321,24 @@ func (m *Model) foldEvent(ev agent.AgentEvent) []string {
 	case agent.TextComplete:
 		return m.flushText()
 	case agent.ToolCallBegin:
-		m.running = append(m.running, toolCall{
-			id:    e.ToolID,
-			title: toolTitle(m.opts.Registry, e.ToolName, e.Args),
-		})
+		if m.live != nil {
+			m.live.beginTool(e.ToolID, toolTitle(m.opts.Registry, e.ToolName, e.Args))
+		}
 	case agent.ToolCallEnd:
-		for i := range m.running {
-			if m.running[i].id != e.ToolID {
-				continue
+		if m.live != nil {
+			if call, ok := m.live.endTool(e.ToolID); ok {
+				diff := ""
+				if e.Result.IsDiff {
+					diff = e.Result.Output
+				}
+				return []string{m.components().toolDone(call.title, e.Result.IsError, e.Elapsed, diff)}
 			}
-			tc := m.running[i]
-			m.running = slices.Delete(m.running, i, i+1)
-			return []string{m.components().toolDone(tc.title, e.Result.IsError, e.Elapsed, diffText(e.Result))}
 		}
 	case agent.PermissionRequestEvent:
-		m.perm = &e.Request
-		m.permCursor = 0
+		m.permission = &e.Request
+		m.permissionCursor = 0
 		if m.live != nil {
-			m.live.permissionSince = timeNow()
+			m.live.permissionSince = time.Now()
 		}
 	case agent.LoopError, agent.LoopComplete:
 		return m.closeLive(ev)
@@ -365,16 +348,15 @@ func (m *Model) foldEvent(ev agent.AgentEvent) []string {
 	return nil
 }
 
-func (m *Model) closeLive(ev agent.AgentEvent) []string {
+func (m *Model) closeLive(ev agent.Event) []string {
 	ls := m.live
 	if ls == nil {
 		return nil
 	}
 	defer func() {
-		m.answerPerm(agent.PermReject)
+		m.answerPermission(permissions.Reject)
 		ls.cancel()
 		m.live = nil
-		m.running = nil
 	}()
 	out := m.flushText()
 	c := m.components()
@@ -383,11 +365,13 @@ func (m *Model) closeLive(ev agent.AgentEvent) []string {
 		usage := ev.Usage
 		switch ev.Reason {
 		case agent.StoppedByModel:
-			out = append(out, c.turn(ls.ran(), timeNow(), usage))
+			out = append(out, c.turn(ls.elapsed(), time.Now(), usage))
 		case agent.StoppedByLimit:
-			out = append(out, c.notice(
-				fmt.Sprintf("Turn limit reached after %d turn(s) — the loop stopped before running out of control.", ev.TotalTurns), noticeWarn))
-			out = append(out, c.turn(ls.ran(), timeNow(), usage))
+			limit := fmt.Sprintf(
+				"Round limit reached after %d tool rounds — the loop stopped before running out of control.",
+				ev.ToolRounds)
+			out = append(out, c.notice(limit, noticeWarn))
+			out = append(out, c.turn(ls.elapsed(), time.Now(), usage))
 		case agent.StoppedByUser:
 			out = append(out, c.notice("Cancelled.", noticeInfo))
 		}

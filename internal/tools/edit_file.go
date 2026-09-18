@@ -8,10 +8,6 @@ import (
 	"strings"
 )
 
-// EditFileTool replaces exactly one occurrence of old_string with new_string.
-// Zero or multiple matches are refused without touching the file and the
-// error says so, letting the model widen the context and retry. The file
-// must have been read (and not changed on disk since) or the edit is refused.
 type EditFileTool struct {
 	WorkDir string
 	// FileStateCache gates the edit on a prior read; nil disables the gate.
@@ -76,8 +72,8 @@ func (t *EditFileTool) Execute(_ context.Context, args map[string]any) ToolResul
 
 	full := ResolveWorkPath(t.WorkDir, path)
 	if t.FileStateCache != nil {
-		if ok, msg := t.FileStateCache.Check(full); !ok {
-			return errResult("Edit: " + msg)
+		if reason := t.FileStateCache.Verify(full); reason != "" {
+			return errResult("Edit: " + reason)
 		}
 	}
 	data, err := os.ReadFile(full)
@@ -114,7 +110,7 @@ func (t *EditFileTool) Execute(_ context.Context, args map[string]any) ToolResul
 		return errResult(fmt.Sprintf("Edit: cannot replace %s: %v", path, err))
 	}
 	if t.FileStateCache != nil {
-		t.FileStateCache.Update(full)
+		t.FileStateCache.Record(full)
 	}
 	// Report the concrete diff rather than a bare "done": both the model and
 	// the TUI need to see which lines actually changed.
@@ -123,13 +119,11 @@ func (t *EditFileTool) Execute(_ context.Context, args map[string]any) ToolResul
 		"Updated %s with %d addition%s and %d removal%s",
 		path, diff.Additions, plural(diff.Additions), diff.Removals, plural(diff.Removals))
 	return ToolResult{
-		Output: TruncateOutput(summary+"\n"+diff.Text, MaxOutputChars),
-		Diff:   true,
+		Output: truncateOutput(summary + "\n" + diff.Text),
+		IsDiff: true,
 	}
 }
 
-// DiffResult is BuildDiff's return: the rendered diff text plus the number
-// of added and removed lines.
 type DiffResult struct {
 	Text      string
 	Additions int

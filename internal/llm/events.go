@@ -17,7 +17,7 @@ type ToolCallComplete struct {
 	Arguments map[string]any
 }
 
-type UsageInfo struct {
+type Usage struct {
 	InputTokens  int
 	OutputTokens int
 	// The two cache fields are NOT counted in InputTokens by Anthropic, so the
@@ -27,7 +27,7 @@ type UsageInfo struct {
 }
 
 type StreamEnd struct {
-	Usage UsageInfo
+	Usage Usage
 }
 
 type StreamError struct{ Err error }

@@ -1,5 +1,3 @@
-// stream.go — helpers shared by the protocol adapters: channel sizing, event
-// delivery against ctx, and tool-argument parsing.
 package llm
 
 import (

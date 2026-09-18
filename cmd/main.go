@@ -32,11 +32,11 @@ func main() {
 	}
 
 	// One shared read-state cache: Read records, Write/Edit gate on it.
-	fsc := tools.NewFileStateCache()
+	fileStates := tools.NewFileStateCache()
 	registry := tools.NewRegistry()
-	registry.Register(&tools.ReadFileTool{WorkDir: cwd, FileStateCache: fsc})
-	registry.Register(&tools.WriteFileTool{WorkDir: cwd, FileStateCache: fsc})
-	registry.Register(&tools.EditFileTool{WorkDir: cwd, FileStateCache: fsc})
+	registry.Register(&tools.ReadFileTool{WorkDir: cwd, FileStateCache: fileStates})
+	registry.Register(&tools.WriteFileTool{WorkDir: cwd, FileStateCache: fileStates})
+	registry.Register(&tools.EditFileTool{WorkDir: cwd, FileStateCache: fileStates})
 	registry.Register(&tools.BashTool{WorkDir: cwd})
 	registry.Register(&tools.GlobTool{WorkDir: cwd})
 	registry.Register(&tools.GrepTool{WorkDir: cwd})

@@ -1,10 +1,13 @@
 // Package conversation is the provider-agnostic conversation model: the flat
-// Message record plus the in-memory history manager and the
-// tool-use/tool-result pairing invariant. Protocol-level concerns (wire roles,
-// role merging, block construction) belong to the llm adapters.
+// Message record, the in-memory history, and the tool-use/tool-result pairing
+// invariant. Protocol-level concerns (wire roles, block construction) belong to
+// the llm adapters.
 package conversation
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 const (
 	reminderTag    = "system-reminder"
@@ -55,7 +58,7 @@ func (m *Manager) AddUserMessage(content string) {
 	m.history = append(m.history, Message{Role: RoleUser, Content: content})
 }
 
-func (m *Manager) AddAssistantFull(content string, thinking []ThinkingBlock, toolUses []ToolUseBlock) {
+func (m *Manager) AddAssistantMessage(content string, thinking []ThinkingBlock, toolUses []ToolUseBlock) {
 	m.history = append(m.history, Message{
 		Role:           RoleAssistant,
 		Content:        content,
@@ -80,28 +83,17 @@ func (m *Manager) AddSystemReminder(content string) {
 	})
 }
 
-func (m *Manager) GetMessages() []Message {
+// Messages returns the history. The copy is load-bearing: the pairing repair
+// rewrites the messages it is handed, and that must not reach the history.
+func (m *Manager) Messages() []Message {
 	result := make([]Message, len(m.history))
 	for i, msg := range m.history {
 		result[i] = msg
-		result[i].ThinkingBlocks = copySlice(msg.ThinkingBlocks)
-		result[i].ToolUses = copySlice(msg.ToolUses)
-		result[i].ToolResults = copySlice(msg.ToolResults)
+		result[i].ThinkingBlocks = slices.Clone(msg.ThinkingBlocks)
+		result[i].ToolUses = slices.Clone(msg.ToolUses)
+		result[i].ToolResults = slices.Clone(msg.ToolResults)
 	}
 	return result
-}
-
-func copySlice[T any](s []T) []T {
-	if s == nil {
-		return nil
-	}
-	out := make([]T, len(s))
-	copy(out, s)
-	return out
-}
-
-func (m *Manager) Len() int {
-	return len(m.history)
 }
 
 func (m *Manager) Clear() {

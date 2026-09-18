@@ -1,6 +1,3 @@
-// openai.go — OpenAI Responses API adapter. Message translation is
-// straight-through (the Responses API accepts arbitrary role sequences);
-// delivery and arg-parsing helpers are shared in stream.go.
 package llm
 
 import (
@@ -61,7 +58,7 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 
 		sawCompleted := false
 		var failErr error
-		var usage UsageInfo
+		var usage Usage
 
 		// Function calls stream their name (output_item.added) then their
 		// arguments (arguments.delta → done), tracked by output_index to
@@ -203,13 +200,10 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 	return ch
 }
 
-func openAIUsage(u responses.ResponseUsage) UsageInfo {
+func openAIUsage(u responses.ResponseUsage) Usage {
 	cached := int(u.InputTokensDetails.CachedTokens)
-	input := int(u.InputTokens) - cached
-	if input < 0 {
-		input = 0
-	}
-	return UsageInfo{
+	input := max(0, int(u.InputTokens)-cached)
+	return Usage{
 		InputTokens:     input,
 		OutputTokens:    int(u.OutputTokens),
 		CacheReadTokens: cached,
@@ -233,6 +227,8 @@ func (c *openAIClient) buildParams(req Request) responses.ResponseNewParams {
 	return params
 }
 
+// The Responses API tolerates arbitrary role sequences, so each message maps to
+// its items without merging; only thinking blocks and tool calls are re-encoded.
 func buildOpenAIMessages(messages []conversation.Message) responses.ResponseInputParam {
 	items := make(responses.ResponseInputParam, 0, len(messages))
 	for _, m := range messages {
@@ -313,8 +309,7 @@ func mapOpenAIError(err error) error {
 }
 
 func extractOpenAIMeta(err error) (status int, code, message string) {
-	var ae *openai.Error
-	if errors.As(err, &ae) {
+	if ae, ok := errors.AsType[*openai.Error](err); ok {
 		status = ae.StatusCode
 		code = ae.Code
 	}
