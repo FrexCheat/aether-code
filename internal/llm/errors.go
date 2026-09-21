@@ -1,5 +1,5 @@
 // Package llm — errors: every adapter maps its HTTP/API error shapes onto these
-// five kinds so callers have a single errors.As path. Error() never embeds the
+// six kinds so callers have a single errors.As path. Error() never embeds the
 // provider API key.
 package llm
 
@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 )
 
 // AuthenticationError indicates invalid or revoked credentials (HTTP 401/403).
@@ -77,6 +78,26 @@ func (e *NetworkError) Error() string {
 }
 func (e *NetworkError) Unwrap() error { return e.Cause }
 
+// ContextTooLongError indicates the request exceeded the model's context
+// window. Providers report it as 413 or as 400 + invalid_request_error with a
+// "prompt is too long" message, which is why it must classify before the 400
+// fallback.
+type ContextTooLongError struct {
+	StatusCode int
+	Message    string
+	Cause      error
+}
+
+func (e *ContextTooLongError) Error() string {
+	return describeError("context too long", e.StatusCode, e.Message)
+}
+func (e *ContextTooLongError) Unwrap() error { return e.Cause }
+
+func IsContextTooLong(err error) bool {
+	_, ok := errors.AsType[*ContextTooLongError](err)
+	return ok
+}
+
 // describeError is the spelling the four status-carrying kinds share.
 func describeError(kind string, status int, message string) string {
 	switch {
@@ -90,7 +111,7 @@ func describeError(kind string, status int, message string) string {
 }
 
 // classify maps a status and API-reported type/code/message onto one of the
-// five kinds; specific matches are tried before the status-range fallbacks.
+// six kinds; specific matches are tried before the status-range fallbacks.
 func classify(status int, apiType, apiCode, message string, cause error) error {
 	switch {
 	case status == 401 || status == 403 || apiType == "authentication_error" || apiCode == "invalid_api_key":
@@ -99,6 +120,8 @@ func classify(status int, apiType, apiCode, message string, cause error) error {
 		return &RateLimitError{StatusCode: status, Message: message, Cause: cause}
 	case status >= 500 || apiType == "overloaded_error" || apiCode == "server_error":
 		return &ServerError{StatusCode: status, Message: message, Cause: cause}
+	case status == 413 || apiCode == "context_length_exceeded" || contextTooLongHint(message):
+		return &ContextTooLongError{StatusCode: status, Message: message, Cause: cause}
 	case status == 400 || status == 404 || status == 422 || apiType == "invalid_request_error":
 		return &InvalidRequestError{StatusCode: status, Message: message, Cause: cause}
 	case status == 0:
@@ -108,6 +131,15 @@ func classify(status int, apiType, apiCode, message string, cause error) error {
 	default:
 		return &ServerError{StatusCode: status, Message: message, Cause: cause}
 	}
+}
+
+// Streaming errors arrive with no status; the message is the only signal.
+func contextTooLongHint(message string) bool {
+	s := strings.ToLower(message)
+	return strings.Contains(s, "prompt is too long") ||
+		strings.Contains(s, "context_length_exceeded") ||
+		strings.Contains(s, "maximum context length") ||
+		strings.Contains(s, "context length is")
 }
 
 // isNetworkHint reports whether err is plausibly a transport-level failure that

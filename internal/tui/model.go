@@ -14,6 +14,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/FrexCheat/aether-code/internal/agent"
+	"github.com/FrexCheat/aether-code/internal/compaction"
 	"github.com/FrexCheat/aether-code/internal/config"
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/mcp"
@@ -26,6 +27,7 @@ type Options struct {
 	Conv         *conversation.Manager
 	Registry     *tools.Registry
 	MCP          *mcp.Manager
+	Compactor    *compaction.Manager
 	Provider     config.Provider
 	ProviderName string
 	ModelName    string
@@ -38,24 +40,37 @@ type Model struct {
 	live             *liveStream          // nil when idle
 	permission       *permissions.Request // non-nil while the confirmation prompt is open
 	permissionCursor int
+	compacting       bool // /compact in flight; no new turns while history is being rewritten
 	input            textarea.Model
 	spinner          spinner.Model
 	width            int
+	height           int
 	renderer         *glamour.TermRenderer
 	isBannerPrinted  bool
+	transcript       transcriptView
 }
 
+const titleClampChars = 160
+
+// toolTitle is the one place tool titles get trimmed for display: one line,
+// titleClampChars runes. Titles never reach the history or the model, so the
+// clamp is a pure display concern.
 func toolTitle(reg *tools.Registry, name string, args map[string]any) string {
+	title := name
 	if reg != nil {
 		if t := reg.Get(name); t != nil {
 			if tt, ok := t.(tools.TitledTool); ok {
-				if title := tt.Title(args); title != "" {
-					return title
+				if s := tt.Title(args); s != "" {
+					title = s
 				}
 			}
 		}
 	}
-	return name
+	title = strings.Join(strings.Fields(title), " ")
+	if runes := []rune(title); len(runes) > titleClampChars {
+		return string(runes[:titleClampChars]) + "…"
+	}
+	return title
 }
 
 func lineContinues(in textarea.Model) bool {
@@ -84,6 +99,7 @@ func (m *Model) flushText() []string {
 	}
 	if text := m.live.text.String(); text != "" {
 		m.live.text.Reset()
+		m.record(transcriptItem{kind: "assistant", body: text})
 		return []string{m.components().assistant(text)}
 	}
 	return nil
@@ -124,6 +140,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 		m.reLayout()
 		if !m.isBannerPrinted {
 			m.isBannerPrinted = true
@@ -132,6 +149,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyPressMsg:
+		if m.transcript.open {
+			return m.handleTranscriptKey(msg)
+		}
 		if m.permission != nil {
 			return m.handlePermissionKey(msg)
 		}
@@ -140,6 +160,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.quit()
 		case "shift+tab":
 			return m.cyclePermissionMode()
+		case "ctrl+o":
+			return m.toggleTranscript()
 		case "esc":
 			if m.live != nil {
 				m.live.cancel()
@@ -153,10 +175,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleStreamBatch(msg)
 
 	case mcpReadyMsg:
-		return m, m.println(mcpSummary(msg.result))
+		if text := mcpSummary(msg.result); text != "" {
+			m.record(transcriptItem{kind: "notice", body: text})
+			return m, m.println(text)
+		}
+		return m, nil
+
+	case compactDoneMsg:
+		return m.compactDone(msg)
 
 	case spinner.TickMsg:
-		if m.live == nil {
+		if m.live == nil && !m.compacting {
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -170,10 +199,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() tea.View {
+	if m.transcript.open {
+		v := tea.NewView(m.transcriptScreen())
+		v.AltScreen = true
+		v.MouseMode = tea.MouseModeNone
+		return v
+	}
 	c := m.components()
 	var parts []string
 	if m.permission != nil {
 		parts = append(parts, c.permissionPrompt(m.permission, m.permissionCursor))
+	} else if m.compacting {
+		parts = append(parts, c.compacting())
 	} else if m.live != nil {
 		for _, call := range m.live.tools {
 			parts = append(parts, c.toolRunning(call.title))
@@ -262,8 +299,8 @@ func (m *Model) answerPermission(response permissions.Response) {
 }
 
 func (m Model) handleEnter() (Model, tea.Cmd) {
-	if m.live != nil {
-		return m, nil // input is ignored while a turn is in flight
+	if m.live != nil || m.compacting {
+		return m, nil // input is ignored while a turn or a compaction is in flight
 	}
 	if lineContinues(m.input) {
 		m.input.SetValue(continueValue(m.input.Value()))
@@ -279,19 +316,69 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 		return m.quit()
 	case cmdClear:
 		m.opts.Conv.Clear()
+		if m.opts.Compactor != nil {
+			m.opts.Compactor.Reset()
+		}
 		m.input.Reset()
+		m.record(transcriptItem{kind: "notice", body: "— context cleared —"})
 		return m, m.println(m.components().cleared())
+	case cmdCompact:
+		m.input.Reset()
+		if m.opts.Compactor == nil {
+			m.record(transcriptItem{kind: "notice", body: "Compaction is not available for this session."})
+			return m, m.println(m.components().notice("Compaction is not available for this session.", noticeWarn))
+		}
+		if m.compacting {
+			return m, nil
+		}
+		m.compacting = true
+		m.record(transcriptItem{kind: "notice", body: "Compacting conversation…"})
+		notice := m.println(m.components().notice("Compacting conversation…", noticeInfo))
+		return m, tea.Sequence(notice, tea.Batch(runCompact(m.opts.Compactor), m.spinner.Tick))
 	case cmdUnknown:
 		m.input.Reset()
+		m.record(transcriptItem{kind: "notice", body: hint, isErr: true})
 		return m, m.println(m.components().notice(hint, noticeError))
 	}
 	return m, m.startStream(text)
+}
+
+type compactDoneMsg struct {
+	result compaction.Result
+	err    error
+}
+
+// runCompact is the only writer of the history outside a turn; it runs while
+// the input gate is closed.
+func runCompact(mgr *compaction.Manager) tea.Cmd {
+	return func() tea.Msg {
+		res, err := mgr.ForceCompact(context.Background(), nil)
+		return compactDoneMsg{result: res, err: err}
+	}
+}
+
+func (m Model) compactDone(msg compactDoneMsg) (Model, tea.Cmd) {
+	m.compacting = false
+	switch {
+	case msg.err != nil:
+		m.record(transcriptItem{kind: "notice", body: "Compaction failed: " + msg.err.Error(), isErr: true})
+		return m, m.println(m.components().notice("Compaction failed: "+msg.err.Error(), noticeError))
+	case !msg.result.Compacted:
+		m.record(transcriptItem{kind: "notice", body: "Nothing to compact."})
+		return m, m.println(m.components().notice("Nothing to compact.", noticeInfo))
+	default:
+		text := fmt.Sprintf("Context compacted: %s → %s tokens",
+			formatTokenCount(msg.result.FromTokens), formatTokenCount(msg.result.ToTokens))
+		m.record(transcriptItem{kind: "notice", body: text})
+		return m, m.println(m.components().notice(text, noticeInfo))
+	}
 }
 
 func (m *Model) startStream(text string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	block := m.components().user(text)
 	m.opts.Conv.AddUserMessage(text)
+	m.record(transcriptItem{kind: "user", body: text})
 	m.live = &liveStream{
 		events: m.opts.Agent.Run(ctx, m.opts.Conv),
 		cancel: cancel,
@@ -334,13 +421,23 @@ func (m *Model) foldEvent(ev agent.Event) []string {
 	case agent.ToolCallEnd:
 		if m.live != nil {
 			if call, ok := m.live.endTool(e.ToolID); ok {
-				diff := ""
-				if e.Result.IsDiff {
-					diff = e.Result.Output
-				}
-				return []string{m.components().toolDone(call.title, e.Result.IsError, e.Elapsed, diff)}
+				m.record(transcriptItem{
+					kind:   "tool",
+					title:  call.title,
+					body:   e.Result.Output,
+					isErr:  e.Result.IsError,
+					isDiff: e.Result.IsDiff,
+				})
+				return []string{m.components().toolDone(call.title, e.Result.IsError, e.Elapsed, e.Result)}
 			}
 		}
+	case agent.CompactionStart:
+		return m.noticeOut("Compacting conversation…", noticeInfo)
+	case agent.CompactionDone:
+		return m.noticeOut(fmt.Sprintf("Context compacted: %s → %s tokens",
+			formatTokenCount(e.FromTokens), formatTokenCount(e.ToTokens)), noticeInfo)
+	case agent.CompactionFailed:
+		return m.noticeOut("Compaction failed: "+e.Err.Error(), noticeWarn)
 	case agent.PermissionRequestEvent:
 		m.permission = &e.Request
 		m.permissionCursor = 0
@@ -372,20 +469,32 @@ func (m *Model) closeLive(ev agent.Event) []string {
 		usage := ev.Usage
 		switch ev.Reason {
 		case agent.StoppedByModel:
+			m.record(transcriptItem{kind: "notice", body: turnLine(ls.elapsed(), time.Now(), usage)})
 			out = append(out, c.turn(ls.elapsed(), time.Now(), usage))
 		case agent.StoppedByLimit:
 			limit := fmt.Sprintf(
 				"Round limit reached after %d tool rounds — the loop stopped before running out of control.",
 				ev.ToolRounds)
+			m.record(transcriptItem{kind: "notice", body: limit})
+			m.record(transcriptItem{kind: "notice", body: turnLine(ls.elapsed(), time.Now(), usage)})
 			out = append(out, c.notice(limit, noticeWarn))
 			out = append(out, c.turn(ls.elapsed(), time.Now(), usage))
 		case agent.StoppedByUser:
+			m.record(transcriptItem{kind: "notice", body: "Cancelled."})
 			out = append(out, c.notice("Cancelled.", noticeInfo))
 		}
 	case agent.LoopError:
+		m.record(transcriptItem{kind: "notice", body: "Error: " + ev.Err.Error(), isErr: true})
 		out = append(out, c.notice("Error: "+ev.Err.Error(), noticeError))
 	}
 	return out
+}
+
+// noticeOut folds an automatic-path notice into the batch being printed and
+// records it for the transcript.
+func (m *Model) noticeOut(text string, sev noticeSeverity) []string {
+	m.record(transcriptItem{kind: "notice", body: text, isErr: sev == noticeError})
+	return []string{m.components().notice(text, sev)}
 }
 
 func (m *Model) reLayout() {

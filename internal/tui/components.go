@@ -12,6 +12,7 @@ import (
 
 	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/FrexCheat/aether-code/internal/permissions"
+	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
 var (
@@ -183,14 +184,22 @@ func (c components) live(secs int) string {
 	return styleSpinner.Render(c.spinner + fmt.Sprintf(" Imagining… (%ds)", secs))
 }
 
+func (c components) compacting() string {
+	return styleSpinner.Render(c.spinner + " Compacting…")
+}
+
 func (c components) turn(elapsed time.Duration, doneAt time.Time, usage llm.Usage) string {
+	return styleDim.Render(turnLine(elapsed, doneAt, usage))
+}
+
+func turnLine(elapsed time.Duration, doneAt time.Time, usage llm.Usage) string {
 	total := usage.InputTokens + usage.OutputTokens + usage.CacheReadTokens + usage.CacheCreationTokens
 	line := fmt.Sprintf("%ds · done %s · ↓ %s tokens",
 		int(elapsed.Seconds()), doneAt.Format("3:04 PM"), formatTokenCount(total))
 	if usage.CacheReadTokens > 0 {
 		line += " · cache " + formatTokenCount(usage.CacheReadTokens)
 	}
-	return styleDim.Render(line)
+	return line
 }
 
 func (c components) input(view string) string {
@@ -215,7 +224,53 @@ func (c components) toolRunning(title string) string {
 	return toolIndent + styleSpinner.Render(c.spinner) + " " + title
 }
 
-func (c components) toolDone(title string, failed bool, elapsed time.Duration, diff string) string {
+func colorDiffLine(line string) string {
+	switch {
+	case strings.HasPrefix(line, "+"):
+		return styleDiffAdd.Render(line)
+	case strings.HasPrefix(line, "-"):
+		return styleDiffRemove.Render(line)
+	default:
+		return styleDim.Render(line)
+	}
+}
+
+// collapseBody trims an overlong tool body for the scrollback: after wrapping
+// to the terminal width, at most collapseLines lines show, with a dim hint
+// naming the rest. The full text lives in the ctrl+o transcript.
+const collapseLines = 3
+
+func (c components) collapseBody(s string, color func(string) string) string {
+	lines := wrapLines(s, max(c.width-6, 20))
+	hint := ""
+	if len(lines) > collapseLines+1 {
+		hint = styleDim.Render(fmt.Sprintf("… +%d lines (ctrl+o to expand)", len(lines)-collapseLines))
+		lines = lines[:collapseLines]
+	}
+	for i, line := range lines {
+		if color != nil {
+			lines[i] = color(line)
+		}
+	}
+	if hint != "" {
+		lines = append(lines, hint)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func wrapLines(s string, width int) []string {
+	var out []string
+	for line := range strings.SplitSeq(s, "\n") {
+		if line == "" || width <= 0 {
+			out = append(out, line)
+			continue
+		}
+		out = append(out, strings.Split(lipgloss.Wrap(line, width, ""), "\n")...)
+	}
+	return out
+}
+
+func (c components) toolDone(title string, failed bool, elapsed time.Duration, result tools.ToolResult) string {
 	dot := styleToolDone.Render("●")
 	if failed {
 		dot = styleToolFailed.Render("●")
@@ -223,17 +278,15 @@ func (c components) toolDone(title string, failed bool, elapsed time.Duration, d
 	var body strings.Builder
 	body.WriteString(title)
 	body.WriteString(styleDim.Render(fmt.Sprintf(" (%.1fs)", elapsed.Seconds())))
-	if diff != "" {
-		for line := range strings.SplitSeq(diff, "\n") {
-			body.WriteString("\n")
-			switch {
-			case strings.HasPrefix(line, "+"):
-				body.WriteString(styleDiffAdd.Render(line))
-			case strings.HasPrefix(line, "-"):
-				body.WriteString(styleDiffRemove.Render(line))
-			default:
-				body.WriteString(styleDim.Render(line))
-			}
+	if result.Output != "" {
+		body.WriteString("\n")
+		switch {
+		case result.IsDiff:
+			body.WriteString(c.collapseBody(result.Output, colorDiffLine))
+		case result.IsError:
+			body.WriteString(c.collapseBody(result.Output, func(line string) string { return styleError.Render(line) }))
+		default:
+			body.WriteString(c.collapseBody(result.Output, nil))
 		}
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, toolIndent+dot+" ", body.String())

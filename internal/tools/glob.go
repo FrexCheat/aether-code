@@ -95,7 +95,7 @@ func (t *GlobTool) Execute(_ context.Context, args map[string]any) ToolResult {
 	if len(matches) == 0 {
 		return ToolResult{Output: fmt.Sprintf("no files match %q under %s", pattern, root)}
 	}
-	return ToolResult{Output: TruncateOutput(strings.Join(matches, "\n"))}
+	return ToolResult{Output: strings.Join(matches, "\n")}
 }
 
 func matchGlob(pattern, rel string) bool {

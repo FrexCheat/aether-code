@@ -54,6 +54,18 @@ type LoopComplete struct {
 
 type LoopError struct{ Err error }
 
+type CompactionStart struct{ Auto bool }
+
+type CompactionDone struct {
+	Auto                 bool
+	FromTokens, ToTokens int
+}
+
+type CompactionFailed struct {
+	Auto bool
+	Err  error
+}
+
 // PermissionRequestEvent carries a question the loop is blocked on; the call
 // proceeds only once the answer is sent on Request.Reply.
 type PermissionRequestEvent struct{ Request permissions.Request }
@@ -67,3 +79,6 @@ func (ToolCallEnd) event()            {}
 func (LoopComplete) event()           {}
 func (LoopError) event()              {}
 func (PermissionRequestEvent) event() {}
+func (CompactionStart) event()        {}
+func (CompactionDone) event()         {}
+func (CompactionFailed) event()       {}

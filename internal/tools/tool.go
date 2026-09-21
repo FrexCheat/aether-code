@@ -2,13 +2,10 @@ package tools
 
 import (
 	"context"
-	"fmt"
 	"path/filepath"
 	"slices"
 	"sync"
 )
-
-const maxOutputChars = 50000
 
 type Category string
 
@@ -96,22 +93,6 @@ func (r *Registry) Schemas() []ToolSchema {
 		schemas = append(schemas, r.tools[name].Schema())
 	}
 	return schemas
-}
-
-func truncateTitle(s string, max int) string {
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	return string(runes[:max]) + "…"
-}
-
-func TruncateOutput(s string) string {
-	if len(s) <= maxOutputChars {
-		return s
-	}
-	return s[:maxOutputChars] +
-		fmt.Sprintf("\n\n[output truncated: showing first %d of %d characters]", maxOutputChars, len(s))
 }
 
 func ResolveWorkPath(workDir, path string) string {

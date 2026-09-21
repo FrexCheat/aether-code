@@ -59,7 +59,7 @@ func (t *Tool) Execute(ctx context.Context, args map[string]any) tools.ToolResul
 	if err != nil {
 		return tools.ToolResult{Output: fmt.Sprintf("Mcp: call failed: %v", err), IsError: true}
 	}
-	return tools.ToolResult{Output: tools.TruncateOutput(text), IsError: isError}
+	return tools.ToolResult{Output: text, IsError: isError}
 }
 
 func truncateDescription(s string) string {

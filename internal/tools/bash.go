@@ -109,14 +109,12 @@ func (t *BashTool) Schema() ToolSchema {
 	}
 }
 
-const titleCmdLimit = 50
-
 func (t *BashTool) Title(args map[string]any) string {
 	cmd, _ := args["command"].(string)
 	if cmd == "" {
 		return ""
 	}
-	return "Bash(" + truncateTitle(cmd, titleCmdLimit) + ")"
+	return "Bash(" + cmd + ")"
 }
 
 func (t *BashTool) Execute(ctx context.Context, args map[string]any) ToolResult {
@@ -173,7 +171,7 @@ func (t *BashTool) Execute(ctx context.Context, args map[string]any) ToolResult 
 			fmt.Fprintf(&sb, " (%s)", exitCodeHint(command, exitCode))
 		}
 	}
-	out := TruncateOutput(sb.String())
+	out := sb.String()
 
 	if runCtx.Err() == context.DeadlineExceeded {
 		return errResult(fmt.Sprintf(

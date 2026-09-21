@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/FrexCheat/aether-code/internal/compaction"
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/FrexCheat/aether-code/internal/permissions"
@@ -24,6 +25,7 @@ type Agent struct {
 	registry      *tools.Registry
 	checker       *permissions.Checker // nil disables permission checks entirely
 	deferredNames func() []string      // nil: every schema is already on the wire
+	compactor     *compaction.Manager  // nil disables context compaction
 	askMu         sync.Mutex           // one confirmation dialog at a time
 }
 
@@ -35,8 +37,8 @@ type roundResult struct {
 	err       error
 }
 
-func New(client llm.Client, registry *tools.Registry, checker *permissions.Checker, deferredNames func() []string) *Agent {
-	return &Agent{client: client, registry: registry, checker: checker, deferredNames: deferredNames}
+func New(client llm.Client, registry *tools.Registry, checker *permissions.Checker, deferredNames func() []string, compactor *compaction.Manager) *Agent {
+	return &Agent{client: client, registry: registry, checker: checker, deferredNames: deferredNames, compactor: compactor}
 }
 
 func (a *Agent) Checker() *permissions.Checker { return a.checker }
@@ -70,6 +72,9 @@ func (a *Agent) Run(ctx context.Context, conv *conversation.Manager) <-chan Even
 			if ctx.Err() != nil {
 				result.commitTo(conv)
 				result.commitInterrupted(conv, "cancelled before execution")
+				if a.compactor != nil && result.err == nil && result.usage != (llm.Usage{}) {
+					a.compactor.RecordUsage(result.usage)
+				}
 				terminal(LoopComplete{Reason: StoppedByUser, ToolRounds: round - 1, Usage: totalUsage})
 				return
 			}
@@ -79,6 +84,9 @@ func (a *Agent) Run(ctx context.Context, conv *conversation.Manager) <-chan Even
 			}
 
 			result.commitTo(conv)
+			if a.compactor != nil && result.usage != (llm.Usage{}) {
+				a.compactor.RecordUsage(result.usage)
+			}
 
 			if len(result.toolCalls) == 0 {
 				terminal(LoopComplete{Reason: StoppedByModel, ToolRounds: round - 1, Usage: totalUsage})
@@ -96,15 +104,35 @@ func (a *Agent) Run(ctx context.Context, conv *conversation.Manager) <-chan Even
 	return ch
 }
 
+// runRound is one request attempt, plus the reactive fallback: a
+// context-too-long rejection force-compacts and retries the round once, the
+// provider having refused before any content block arrived.
 func (a *Agent) runRound(ctx context.Context, conv *conversation.Manager, send eventSink) roundResult {
-	messages := conversation.EnsureToolPairing(conv.Messages())
-	// Deferred tools are announced on the request copy, never stored: the
-	// reminder rides every round without growing the history.
-	if a.deferredNames != nil {
-		if names := a.deferredNames(); len(names) > 0 {
-			messages = append(messages, conversation.NewReminderMessage(deferredReminder(names)))
+	for attempt := 1; ; attempt++ {
+		if a.compactor != nil {
+			// Prepare rewrites the stored history, so it must run before the
+			// request copy is taken.
+			a.compactor.Prepare(ctx, a.notifyCompaction(send))
 		}
+		messages := conversation.EnsureToolPairing(conv.Messages())
+		// Deferred tools are announced on the request copy, never stored: the
+		// reminder rides every round without growing the history.
+		if a.deferredNames != nil {
+			if names := a.deferredNames(); len(names) > 0 {
+				messages = append(messages, conversation.NewReminderMessage(deferredReminder(names)))
+			}
+		}
+		result := a.stream(ctx, messages, send)
+		if attempt == 1 && a.compactor != nil && llm.IsContextTooLong(result.err) {
+			if _, err := a.compactor.ForceCompact(ctx, a.notifyCompaction(send)); err == nil {
+				continue
+			}
+		}
+		return result
 	}
+}
+
+func (a *Agent) stream(ctx context.Context, messages []conversation.Message, send eventSink) roundResult {
 	events := a.client.Stream(ctx, llm.Request{
 		Messages: messages,
 		Tools:    a.registry.Schemas(),
@@ -160,6 +188,21 @@ func (a *Agent) runRound(ctx context.Context, conv *conversation.Manager, send e
 		}
 	}
 	return finish()
+}
+
+// notifyCompaction translates compaction events into agent events; a send on
+// a cancelled turn just drops them.
+func (a *Agent) notifyCompaction(send eventSink) func(compaction.Event) {
+	return func(e compaction.Event) {
+		switch e := e.(type) {
+		case compaction.StartEvent:
+			send(CompactionStart{Auto: e.Auto})
+		case compaction.DoneEvent:
+			send(CompactionDone{Auto: e.Auto, FromTokens: e.FromTokens, ToTokens: e.ToTokens})
+		case compaction.FailEvent:
+			send(CompactionFailed{Auto: e.Auto, Err: e.Err})
+		}
+	}
 }
 
 func (r roundResult) commitTo(conv *conversation.Manager) {

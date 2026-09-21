@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/FrexCheat/aether-code/internal/agent"
+	"github.com/FrexCheat/aether-code/internal/compaction"
 	"github.com/FrexCheat/aether-code/internal/config"
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
@@ -52,13 +53,16 @@ func main() {
 
 	conv := conversation.NewManager()
 
-	ag := agent.New(client, registry, checker, mcpMgr.DeferredNames)
+	compactor := compaction.NewManager(client, conv, registry.Schemas, active.ContextWindow, cwd)
+
+	ag := agent.New(client, registry, checker, mcpMgr.DeferredNames, compactor)
 
 	if err := tui.Run(tui.Options{
 		Agent:        ag,
 		Conv:         conv,
 		Registry:     registry,
 		MCP:          mcpMgr,
+		Compactor:    compactor,
 		Provider:     active,
 		ProviderName: active.Name,
 		ModelName:    active.Model,

@@ -99,6 +99,33 @@ func (m *Manager) Messages() []Message {
 	return result
 }
 
+func (m *Manager) Len() int {
+	return len(m.history)
+}
+
+// ReplaceToolResult rewrites one tool result in place, matched by tool-use ID.
+func (m *Manager) ReplaceToolResult(toolUseID, content string) bool {
+	for i := range m.history {
+		for j := range m.history[i].ToolResults {
+			if m.history[i].ToolResults[j].ToolUseID == toolUseID {
+				m.history[i].ToolResults[j].Content = content
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ReplacePrefix swaps history[:keepFrom] for summary and keeps the tail
+// verbatim; out-of-range keepFrom is a no-op so a bad boundary cannot corrupt
+// the history.
+func (m *Manager) ReplacePrefix(summary Message, keepFrom int) {
+	if keepFrom <= 0 || keepFrom > len(m.history) {
+		return
+	}
+	m.history = append([]Message{summary}, m.history[keepFrom:]...)
+}
+
 func (m *Manager) Clear() {
 	m.history = nil
 }
