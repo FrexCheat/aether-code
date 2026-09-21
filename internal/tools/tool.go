@@ -8,7 +8,6 @@ import (
 	"sync"
 )
 
-// maxOutputChars caps how much of a result reaches the model.
 const maxOutputChars = 50000
 
 type Category string
@@ -17,10 +16,7 @@ const (
 	CategoryRead    Category = "read"
 	CategoryWrite   Category = "write"
 	CategoryCommand Category = "command"
-	// CategoryMCP marks tools coming from an MCP server, including the
-	// McpCall dispatcher. Outside bypass mode the permission ladder asks
-	// for these calls; their execution stays serial.
-	CategoryMCP Category = "mcp"
+	CategoryMCP     Category = "mcp"
 )
 
 type ToolResult struct {
@@ -44,9 +40,7 @@ type ToolSchema struct {
 	Name        string
 	Description string
 	InputSchema map[string]any
-	// Deferred marks a tool sent with the provider's deferred-loading flag:
-	// on the wire every round, its schema hidden until ToolSearch surfaces it.
-	Deferred bool
+	Deferred    bool
 }
 
 type TitledTool interface {
@@ -88,8 +82,6 @@ func (r *Registry) Get(name string) Tool {
 	return r.tools[name]
 }
 
-// Schemas returns every tool's schema, ordered by name so the request stays
-// byte-stable across rounds.
 func (r *Registry) Schemas() []ToolSchema {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -114,8 +106,6 @@ func truncateTitle(s string, max int) string {
 	return string(runes[:max]) + "…"
 }
 
-// TruncateOutput caps a result so one call cannot blow up the context. MCP
-// results share the bound with the built-in tools.
 func TruncateOutput(s string) string {
 	if len(s) <= maxOutputChars {
 		return s

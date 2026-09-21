@@ -26,13 +26,14 @@ func main() {
 		fail(err)
 	}
 	active := cfg.Active()
+
 	systemPrompt := prompt.BuildSystemPrompt(prompt.DetectEnvironment(cwd))
+
 	client, err := llm.NewClient(active, nil, systemPrompt)
 	if err != nil {
 		fail(err)
 	}
 
-	// One shared read-state cache: Read records, Write/Edit gate on it.
 	fileStates := tools.NewFileStateCache()
 	registry := tools.NewRegistry()
 	registry.Register(&tools.ReadFileTool{WorkDir: cwd, FileStateCache: fileStates})
@@ -42,19 +43,15 @@ func main() {
 	registry.Register(&tools.GlobTool{WorkDir: cwd})
 	registry.Register(&tools.GrepTool{WorkDir: cwd})
 
-	// One MCP manager for the session: it connects the configured servers in
-	// the background once the TUI is up, and its wrappers land in this same
-	// registry, so agent and UI treat them like any other tool.
 	mcpMgr := mcp.NewManager(cfg.MCPServers, cfg.MCPServerWarnings)
 
-	// One checker for the whole session: the agent decides with it and the UI
-	// switches its mode, so what the status bar shows is what gets enforced.
 	checker, err := permissions.NewChecker(cwd)
 	if err != nil {
 		fail(err)
 	}
 
 	conv := conversation.NewManager()
+
 	ag := agent.New(client, registry, checker, mcpMgr.DeferredNames)
 
 	if err := tui.Run(tui.Options{

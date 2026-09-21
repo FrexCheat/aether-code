@@ -14,26 +14,20 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// connectTimeout bounds one server's handshake and tool listing.
 const connectTimeout = 30 * time.Second
 
-// ServerStatus reports one server's settle outcome for the UI.
 type ServerStatus struct {
 	Name  string
 	Tools int
 	Err   string
 }
 
-// Result is what Settle reports back once every server has settled.
 type Result struct {
 	Mode     LoadingMode
 	Servers  []ServerStatus
 	Warnings []string
 }
 
-// Manager owns the server connections and the tool wrappers built from them.
-// Settle runs once per session; afterwards the wrapper set is static, which
-// is what keeps the request's tool array byte-stable across rounds.
 type Manager struct {
 	mu       sync.Mutex
 	cfgs     map[string]config.MCPServerConfig
@@ -44,8 +38,6 @@ type Manager struct {
 	cancel   context.CancelFunc
 }
 
-// NewManager builds the manager from the merged config and the warnings the
-// config layer already collected about dropped entries.
 func NewManager(cfgs map[string]config.MCPServerConfig, warnings []string) *Manager {
 	return &Manager{
 		cfgs:     cfgs,
@@ -98,8 +90,6 @@ func (m *Manager) Settle(ctx context.Context, registry *tools.Registry, protocol
 	return m.admit(registry, results, protocol, baseURL)
 }
 
-// connectAndList runs the handshake and the tool listing so a server's whole
-// startup sits under one timeout.
 func connectAndList(ctx context.Context, conn *serverConn) ([]*mcp.Tool, error) {
 	if err := conn.connect(ctx); err != nil {
 		return nil, err
@@ -174,10 +164,6 @@ func (m *Manager) admit(registry *tools.Registry, results []settledServer, proto
 	return Result{Mode: mode, Servers: statuses, Warnings: warnings}
 }
 
-// DeferredNames lists the qualified names of the tools whose schemas the
-// model cannot see: every wrapper in the deferred modes, nothing in eager
-// mode. The agent builds its per-round reminder from it. Nil-safe, since the
-// reminder source may outlive interest in MCP.
 func (m *Manager) DeferredNames() []string {
 	if m == nil {
 		return nil
@@ -199,10 +185,6 @@ func (m *Manager) modeIs(mode LoadingMode) bool {
 	return m.mode == mode
 }
 
-// resolveTool maps a dispatcher call's server and tool arguments onto a
-// wrapper: the full qualified name first, then server plus tool, then a
-// unique suffix match for a bare name. On failure the error says what does
-// exist, so the model can correct itself.
 func (m *Manager) resolveTool(server, tool string) (*Tool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -234,9 +216,6 @@ func (m *Manager) resolveTool(server, tool string) (*Tool, error) {
 	}
 }
 
-// Shutdown cancels a settle still in flight and closes every live connection.
-// The SDK terminates stdio children (stdin closed, then SIGTERM, then
-// SIGKILL) and ends HTTP sessions when the session closes.
 func (m *Manager) Shutdown() {
 	if m == nil {
 		return

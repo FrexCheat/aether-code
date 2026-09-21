@@ -11,9 +11,6 @@ const (
 	maxToolName = 64
 )
 
-// Sanitize keeps the characters a provider accepts in tool names and replaces
-// everything else with '_'. Dashes are kept: the API allows them, and keeping
-// them makes server "a-b" and "a_b" produce distinct prefixes.
 func Sanitize(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch {
@@ -25,14 +22,10 @@ func Sanitize(s string) string {
 	}, s)
 }
 
-// Qualified builds the model-side name for one server tool.
 func Qualified(server, rawTool string) string {
 	return toolPrefix + Sanitize(server) + toolSeparator + Sanitize(rawTool)
 }
 
-// ParseQualifiedName splits a qualified name back into its server and tool
-// parts. The split lands on the first separator and the tail is kept whole,
-// so a tool name containing "__" survives the round trip.
 func ParseQualifiedName(name string) (server, tool string, ok bool) {
 	rest, ok := strings.CutPrefix(name, toolPrefix)
 	if !ok {

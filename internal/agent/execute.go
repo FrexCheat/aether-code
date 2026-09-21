@@ -12,10 +12,6 @@ import (
 	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
-// executeToolCalls runs the model's calls and returns one result block per call,
-// in the order the model issued them — a provider pairs the replies with the
-// calls by position. Consecutive calls to read-only tools run together; every
-// other call runs on its own.
 func (a *Agent) executeToolCalls(ctx context.Context, calls []conversation.ToolUseBlock, send eventSink) []conversation.ToolResultBlock {
 	results := make([]conversation.ToolResultBlock, len(calls))
 	for first := 0; first < len(calls); {
@@ -65,9 +61,6 @@ func (a *Agent) runCall(ctx context.Context, call conversation.ToolUseBlock, sen
 	}
 }
 
-// runTool turns one call into a result: the permission ladder gets its say, the
-// user gets asked when the ladder says so, and a panic is recovered into an
-// ordinary failed result so the loop survives it.
 func (a *Agent) runTool(ctx context.Context, call conversation.ToolUseBlock, send eventSink) (result tools.ToolResult, elapsed time.Duration) {
 	tool := a.registry.Get(call.Name)
 	if tool == nil {
@@ -124,9 +117,6 @@ func (a *Agent) runTool(ctx context.Context, call conversation.ToolUseBlock, sen
 	return tool.Execute(ctx, args), time.Since(start)
 }
 
-// askPermission puts the question to the UI and records what the answer grants.
-// askMu serializes the dialogs: two read-only calls can reach this at once, and
-// the UI shows one prompt at a time.
 func (a *Agent) askPermission(ctx context.Context, send eventSink, tool tools.Tool, args map[string]any) (allowed bool, note string) {
 	request := a.checker.Question(tool, args)
 	reply := make(chan permissions.Response, 1)

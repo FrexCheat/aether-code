@@ -9,18 +9,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// callTimeout bounds one tool call: a hung server must not wedge the loop
-// forever, but inherits the agent's context, so a cancelled turn still
-// cancels it immediately.
 const callTimeout = 120 * time.Second
 
-// maxDescriptionChars matches the API-side description budget; a longer
-// server-provided text would bloat every request.
 const maxDescriptionChars = 2048
 
-// Tool wraps one MCP server tool as an ordinary tools.Tool. Its Category is
-// always CategoryMCP: permission asks for every MCP call outside bypass
-// mode, and rules anchor on the qualified name.
 type Tool struct {
 	server      string
 	rawName     string
@@ -58,7 +50,6 @@ func (t *Tool) Schema() tools.ToolSchema {
 	}
 }
 
-// Title names the call in the UI after its origin, not its qualified name.
 func (t *Tool) Title(args map[string]any) string { return t.server + " · " + t.rawName }
 
 func (t *Tool) Execute(ctx context.Context, args map[string]any) tools.ToolResult {
@@ -66,8 +57,6 @@ func (t *Tool) Execute(ctx context.Context, args map[string]any) tools.ToolResul
 	defer cancel()
 	text, isError, err := t.conn.callTool(callCtx, t.rawName, args)
 	if err != nil {
-		// A dead server is a failed result, not a failed loop: the model can
-		// pick a different tool and the user can keep working.
 		return tools.ToolResult{Output: fmt.Sprintf("Mcp: call failed: %v", err), IsError: true}
 	}
 	return tools.ToolResult{Output: tools.TruncateOutput(text), IsError: isError}

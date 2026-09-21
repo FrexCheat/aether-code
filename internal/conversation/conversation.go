@@ -1,7 +1,3 @@
-// Package conversation is the provider-agnostic conversation model: the flat
-// Message record, the in-memory history, and the tool-use/tool-result pairing
-// invariant. Protocol-level concerns (wire roles, block construction) belong to
-// the llm adapters.
 package conversation
 
 import (
@@ -29,10 +25,7 @@ type ToolResultBlock struct {
 	ToolUseID string
 	Content   string
 	IsError   bool
-	// ToolRefs names the deferred MCP tools the result surfaced; the
-	// anthropic adapter renders them as tool_reference blocks after the
-	// text, and the other adapters ignore them.
-	ToolRefs []string
+	ToolRefs  []string
 }
 
 type Role string
@@ -83,10 +76,6 @@ func (m *Manager) AddSystemReminder(content string) {
 	m.history = append(m.history, NewReminderMessage(content))
 }
 
-// NewReminderMessage wraps out-of-band text in the system-reminder tags as a
-// user message. AddSystemReminder stores it in the history; callers with a
-// per-request notice that must not grow the history append the returned
-// message to their request copy instead.
 func NewReminderMessage(content string) Message {
 	content = strings.TrimSpace(content)
 	return Message{
@@ -96,8 +85,6 @@ func NewReminderMessage(content string) Message {
 	}
 }
 
-// Messages returns the history. The copy is load-bearing: the pairing repair
-// rewrites the messages it is handed, and that must not reach the history.
 func (m *Manager) Messages() []Message {
 	result := make([]Message, len(m.history))
 	for i, msg := range m.history {

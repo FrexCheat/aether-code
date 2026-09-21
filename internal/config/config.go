@@ -1,4 +1,3 @@
-// Package config loads and validates the AetherCode YAML configuration.
 package config
 
 import (
@@ -29,16 +28,10 @@ type Provider struct {
 }
 
 type Config struct {
-	Default   string     `yaml:"default"`
-	Providers []Provider `yaml:"providers"`
-
-	// MCPServers is the merged, expanded and validated server list; entries
-	// the user file or this file disabled, and entries that failed to
-	// validate, are absent.
-	MCPServers map[string]MCPServerConfig `yaml:"mcp_servers"`
-	// MCPServerWarnings records the user-layer problems and the dropped
-	// entries: the session starts without them, but it starts.
-	MCPServerWarnings []string `yaml:"-"`
+	Default           string                     `yaml:"default"`
+	Providers         []Provider                 `yaml:"providers"`
+	MCPServers        map[string]MCPServerConfig `yaml:"mcp_servers"`
+	MCPServerWarnings []string                   `yaml:"-"`
 }
 
 func Load(dir string) (*Config, error) {

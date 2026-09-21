@@ -1,7 +1,3 @@
-// Anthropic rejects any request where a tool_use has no paired tool_result.
-// Within one process the agent keeps the history pair-complete itself; this
-// repair is the fallback for history assembled any other way (e.g. restored
-// sessions).
 package conversation
 
 const (

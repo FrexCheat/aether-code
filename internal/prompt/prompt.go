@@ -1,6 +1,3 @@
-// Package prompt assembles the session's system prompt once at startup from
-// priority-ordered sections. The section texts are model-facing, so they are
-// written in Chinese.
 package prompt
 
 import (

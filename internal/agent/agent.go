@@ -14,9 +14,6 @@ import (
 
 const maxToolRounds = 50
 
-// deferredReminderTemplate is model-facing Chinese, like the prompt sections.
-// One static shape serves both deferred modes: which call path applies is
-// whatever the ToolSearch result says about the tool it surfaced.
 const deferredReminderTemplate = "以下 MCP 工具处于延迟加载状态，当前上下文中只有名字、没有参数定义：\n" +
 	"%s\n\n" +
 	"需要使用时，先用 ToolSearch 工具检索（支持 select:名字,名字 精确获取，或关键词搜索）获取完整定义；" +
@@ -30,8 +27,6 @@ type Agent struct {
 	askMu         sync.Mutex           // one confirmation dialog at a time
 }
 
-// roundResult is what one request to the provider produced: the assistant
-// message being assembled, the tool calls it asks for, and how it ended.
 type roundResult struct {
 	text      string
 	thinking  []conversation.ThinkingBlock
@@ -40,9 +35,6 @@ type roundResult struct {
 	err       error
 }
 
-// New builds an agent. A nil checker means tool calls run unchecked; a nil
-// deferredNames means no tool is deferred and the reminder stays out of every
-// request.
 func New(client llm.Client, registry *tools.Registry, checker *permissions.Checker, deferredNames func() []string) *Agent {
 	return &Agent{client: client, registry: registry, checker: checker, deferredNames: deferredNames}
 }
@@ -67,9 +59,7 @@ func (a *Agent) Run(ctx context.Context, conv *conversation.Manager) <-chan Even
 			ch <- ev
 		}
 
-		var totalUsage llm.Usage // accumulated over completed rounds
-		// round is the current iteration, 1-based: round-1 is the number of
-		// tool rounds executed so far.
+		var totalUsage llm.Usage
 		for round := 1; ; round++ {
 			result := a.runRound(ctx, conv, send)
 			totalUsage.InputTokens += result.usage.InputTokens
@@ -77,10 +67,6 @@ func (a *Agent) Run(ctx context.Context, conv *conversation.Manager) <-chan Even
 			totalUsage.CacheReadTokens += result.usage.CacheReadTokens
 			totalUsage.CacheCreationTokens += result.usage.CacheCreationTokens
 
-			// The context is the only source of truth for cancellation, and it
-			// is checked before the stream error: a round can end cleanly after
-			// the context died (a cancel during the permission dialog or during
-			// tool execution), and that is a cancelled turn, not a failure.
 			if ctx.Err() != nil {
 				result.commitTo(conv)
 				result.commitInterrupted(conv, "cancelled before execution")
@@ -110,10 +96,6 @@ func (a *Agent) Run(ctx context.Context, conv *conversation.Manager) <-chan Even
 	return ch
 }
 
-// runRound performs one request: it assembles the history, consumes the
-// provider's stream into a roundResult, and forwards every event to the UI. The
-// text is read off the builder on the way out, so an interrupted round still
-// reports what the model managed to say.
 func (a *Agent) runRound(ctx context.Context, conv *conversation.Manager, send eventSink) roundResult {
 	messages := conversation.EnsureToolPairing(conv.Messages())
 	// Deferred tools are announced on the request copy, never stored: the
@@ -180,8 +162,6 @@ func (a *Agent) runRound(ctx context.Context, conv *conversation.Manager, send e
 	return finish()
 }
 
-// commitTo appends the round's assistant message to the conversation. A round
-// that produced nothing before failing adds no message at all.
 func (r roundResult) commitTo(conv *conversation.Manager) {
 	if r.text == "" && len(r.thinking) == 0 && len(r.toolCalls) == 0 {
 		return
@@ -189,8 +169,6 @@ func (r roundResult) commitTo(conv *conversation.Manager) {
 	conv.AddAssistantMessage(r.text, r.thinking, r.toolCalls)
 }
 
-// commitInterrupted answers every tool call of the round with a failed result,
-// so the history stays pair-complete even though nothing will ever run them.
 func (r roundResult) commitInterrupted(conv *conversation.Manager, reason string) {
 	if len(r.toolCalls) == 0 {
 		return

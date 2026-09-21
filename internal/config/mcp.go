@@ -11,12 +11,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// UserConfigDir is the per-user AetherCode directory under the home directory,
-// where the user-level config file lives.
 const UserConfigDir = ".aethercode"
 
-// MCPServerConfig declares one MCP server. The transport is implied: Command
-// means a stdio subprocess, URL means a remote Streamable HTTP endpoint.
 type MCPServerConfig struct {
 	Command  string            `yaml:"command"`
 	Args     []string          `yaml:"args"`
@@ -26,10 +22,6 @@ type MCPServerConfig struct {
 	Disabled bool              `yaml:"disabled"`
 }
 
-// loadMCPServers merges the user-level mcp_servers under the project-level
-// ones, expands ${VAR} references, and drops disabled and invalid entries.
-// The user layer is tolerant: a missing or broken file costs a warning, never
-// an error — one bad server must never take the session down.
 func (c *Config) loadMCPServers() {
 	userServers, warnings := loadUserMCPServers()
 
@@ -57,8 +49,6 @@ func (c *Config) loadMCPServers() {
 	c.MCPServerWarnings = warnings
 }
 
-// loadUserMCPServers reads mcp_servers from the user-level config file.
-// Providers and everything else there are ignored: they are project-private.
 func loadUserMCPServers() (map[string]MCPServerConfig, []string) {
 	empty := map[string]MCPServerConfig{}
 	path, ok := userConfigPath()
@@ -82,8 +72,6 @@ func loadUserMCPServers() (map[string]MCPServerConfig, []string) {
 	return cfg.MCPServers, nil
 }
 
-// userConfigPath is the user-level config file, or false when the home
-// directory cannot be resolved.
 func userConfigPath() (string, bool) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
