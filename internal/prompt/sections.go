@@ -94,6 +94,19 @@ func usingToolsSection() section {
 	}
 }
 
+func externalToolsSection() section {
+	return section{
+		priority: 45,
+		content: "## 外部 MCP 工具\n" +
+			"- 名称形如 mcp__<server>__<tool> 的工具来自外部 MCP 服务器，能力不归本程序所有，" +
+			"调用结果由外部服务返回。\n" +
+			"- 系统提醒中列出的延迟加载 MCP 工具，当前只有名字、没有参数定义。" +
+			"需要使用时，先用 ToolSearch 工具检索（select:名字,名字 精确获取，或关键词搜索）获取完整定义，" +
+			"再按定义与调用说明使用：通常按原名直接调用，定义以文本返回时经 McpCall（server/tool/arguments）调用。\n" +
+			"- 不要臆测或编造未出现在工具列表或系统提醒中的 MCP 工具名。",
+	}
+}
+
 func toneStyleSection() section {
 	return section{
 		priority: 50,

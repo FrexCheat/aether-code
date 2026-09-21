@@ -61,6 +61,7 @@ func BuildSystemPrompt(env Environment) string {
 		doingTasksSection(),
 		executingActionsSection(),
 		usingToolsSection(),
+		externalToolsSection(),
 		toneStyleSection(),
 		textOutputSection(),
 		environmentSection(env),
