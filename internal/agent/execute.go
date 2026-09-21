@@ -61,6 +61,7 @@ func (a *Agent) runCall(ctx context.Context, call conversation.ToolUseBlock, sen
 		ToolUseID: call.ID,
 		Content:   result.Output,
 		IsError:   result.IsError,
+		ToolRefs:  result.ToolRefs,
 	}
 }
 

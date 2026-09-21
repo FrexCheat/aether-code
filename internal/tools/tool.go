@@ -27,6 +27,9 @@ type ToolResult struct {
 	Output  string
 	IsError bool
 	IsDiff  bool // Output is a rendered diff, to be colored line by line
+	// ToolRefs names the deferred MCP tools a result surfaced; adapters may
+	// render them as tool_reference blocks instead of plain text.
+	ToolRefs []string
 }
 
 type Tool interface {

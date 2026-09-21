@@ -1,0 +1,253 @@
+package mcp
+
+import (
+	"context"
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/FrexCheat/aether-code/internal/config"
+	"github.com/FrexCheat/aether-code/internal/tools"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+// connectTimeout bounds one server's handshake and tool listing.
+const connectTimeout = 30 * time.Second
+
+// ServerStatus reports one server's settle outcome for the UI.
+type ServerStatus struct {
+	Name  string
+	Tools int
+	Err   string
+}
+
+// Result is what Settle reports back once every server has settled.
+type Result struct {
+	Mode     LoadingMode
+	Servers  []ServerStatus
+	Warnings []string
+}
+
+// Manager owns the server connections and the tool wrappers built from them.
+// Settle runs once per session; afterwards the wrapper set is static, which
+// is what keeps the request's tool array byte-stable across rounds.
+type Manager struct {
+	mu       sync.Mutex
+	cfgs     map[string]config.MCPServerConfig
+	warnings []string
+	conns    map[string]*serverConn
+	wrappers map[string]*Tool
+	mode     LoadingMode
+	cancel   context.CancelFunc
+}
+
+// NewManager builds the manager from the merged config and the warnings the
+// config layer already collected about dropped entries.
+func NewManager(cfgs map[string]config.MCPServerConfig, warnings []string) *Manager {
+	return &Manager{
+		cfgs:     cfgs,
+		warnings: warnings,
+		conns:    map[string]*serverConn{},
+		wrappers: map[string]*Tool{},
+	}
+}
+
+// settledServer is one server's outcome before it becomes a status line.
+type settledServer struct {
+	name  string
+	conn  *serverConn
+	tools []*mcp.Tool
+	err   error
+}
+
+// Settle connects every configured server in parallel, then admits the
+// results: wrappers built in server-name order, a loading mode, one batch of
+// registrations. It runs once; a server that fails costs a warning and zero
+// tools, never the session.
+func (m *Manager) Settle(ctx context.Context, registry *tools.Registry, protocol config.Protocol, baseURL string) Result {
+	m.mu.Lock()
+	if m.cancel != nil {
+		m.mu.Unlock()
+		return Result{Mode: m.mode, Warnings: m.warnings}
+	}
+	settleCtx, cancel := context.WithCancel(ctx)
+	m.cancel = cancel
+	cfgs := maps.Clone(m.cfgs)
+	m.mu.Unlock()
+
+	names := slices.Sorted(maps.Keys(cfgs))
+	results := make([]settledServer, len(names))
+	var wg sync.WaitGroup
+	for i, name := range names {
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			connCtx, stop := context.WithTimeout(settleCtx, connectTimeout)
+			defer stop()
+
+			conn := &serverConn{cfg: cfgs[name]}
+			list, err := connectAndList(connCtx, conn)
+			results[i] = settledServer{name: name, conn: conn, tools: list, err: err}
+		}(i, name)
+	}
+	wg.Wait()
+
+	return m.admit(registry, results, protocol, baseURL)
+}
+
+// connectAndList runs the handshake and the tool listing so a server's whole
+// startup sits under one timeout.
+func connectAndList(ctx context.Context, conn *serverConn) ([]*mcp.Tool, error) {
+	if err := conn.connect(ctx); err != nil {
+		return nil, err
+	}
+	return conn.listTools(ctx)
+}
+
+// admit turns the settle results into registrations. Everything here happens
+// once: duplicate and oversized names are skipped with a warning, the mode is
+// decided on the surviving tool count, and the whole batch lands under one
+// registry write so no request sees a half-settled tool list.
+func (m *Manager) admit(registry *tools.Registry, results []settledServer, protocol config.Protocol, baseURL string) Result {
+	warnings := slices.Clone(m.warnings)
+	var statuses []ServerStatus
+	live := map[string]*serverConn{}
+	var all []*Tool
+	taken := map[string]bool{}
+
+	for _, s := range results {
+		status := ServerStatus{Name: s.name}
+		if s.err != nil {
+			status.Err = s.err.Error()
+			warnings = append(warnings, fmt.Sprintf("mcp server %q: %v", s.name, s.err))
+		} else {
+			status.Tools = len(s.tools)
+			live[s.name] = s.conn
+			for _, def := range s.tools {
+				w := newTool(s.name, def, s.conn)
+				switch {
+				case len(w.qualified) > maxToolName:
+					warnings = append(warnings, fmt.Sprintf("mcp server %q: tool %q skipped: name exceeds %d characters",
+						s.name, def.Name, maxToolName))
+				case taken[w.qualified] || registry.Get(w.qualified) != nil:
+					warnings = append(warnings, fmt.Sprintf("mcp server %q: tool %q skipped: name collides with another tool",
+						s.name, def.Name))
+				default:
+					taken[w.qualified] = true
+					all = append(all, w)
+				}
+			}
+		}
+		statuses = append(statuses, status)
+	}
+
+	mode := decideMode(protocol, baseURL, len(all))
+
+	m.mu.Lock()
+	switch mode {
+	case LoadingEager:
+		for _, w := range all {
+			registry.Register(w)
+			m.wrappers[w.qualified] = w
+		}
+	case LoadingNative:
+		for _, w := range all {
+			w.deferred = true
+			registry.Register(w)
+			m.wrappers[w.qualified] = w
+		}
+		registry.Register(&ToolSearchTool{mgr: m})
+	default: // LoadingDispatch: only the discovery tools reach the registry
+		registry.Register(&ToolSearchTool{mgr: m})
+		registry.Register(&McpCallTool{mgr: m})
+		for _, w := range all {
+			m.wrappers[w.qualified] = w
+		}
+	}
+	m.conns = live
+	m.mode = mode
+	m.mu.Unlock()
+
+	return Result{Mode: mode, Servers: statuses, Warnings: warnings}
+}
+
+// DeferredNames lists the qualified names of the tools whose schemas the
+// model cannot see: every wrapper in the deferred modes, nothing in eager
+// mode. The agent builds its per-round reminder from it. Nil-safe, since the
+// reminder source may outlive interest in MCP.
+func (m *Manager) DeferredNames() []string {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch m.mode {
+	case LoadingNative, LoadingDispatch:
+		return slices.Sorted(maps.Keys(m.wrappers))
+	default:
+		return nil
+	}
+}
+
+// modeIs reports whether the session settled into the given mode.
+func (m *Manager) modeIs(mode LoadingMode) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.mode == mode
+}
+
+// resolveTool maps a dispatcher call's server and tool arguments onto a
+// wrapper: the full qualified name first, then server plus tool, then a
+// unique suffix match for a bare name. On failure the error says what does
+// exist, so the model can correct itself.
+func (m *Manager) resolveTool(server, tool string) (*Tool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if w, ok := m.wrappers[tool]; ok {
+		return w, nil
+	}
+	if server != "" {
+		if w, ok := m.wrappers[Qualified(server, tool)]; ok {
+			return w, nil
+		}
+	}
+	name := toolSeparator + Sanitize(tool)
+	var matches []*Tool
+	for _, qualified := range slices.Sorted(maps.Keys(m.wrappers)) {
+		if strings.HasSuffix(qualified, name) {
+			matches = append(matches, m.wrappers[qualified])
+		}
+	}
+	available := strings.Join(slices.Sorted(maps.Keys(m.wrappers)), ", ")
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		return nil, fmt.Errorf("Mcp: unknown tool %q; available tools: %s", tool, available)
+	default:
+		return nil, fmt.Errorf("Mcp: %q matches %d tools; name it fully; available tools: %s",
+			tool, len(matches), available)
+	}
+}
+
+// Shutdown cancels a settle still in flight and closes every live connection.
+// The SDK terminates stdio children (stdin closed, then SIGTERM, then
+// SIGKILL) and ends HTTP sessions when the session closes.
+func (m *Manager) Shutdown() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.cancel != nil {
+		m.cancel()
+	}
+	conns := slices.Collect(maps.Values(m.conns))
+	m.mu.Unlock()
+	for _, conn := range conns {
+		_ = conn.session.Close()
+	}
+}

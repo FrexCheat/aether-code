@@ -29,6 +29,10 @@ type ToolResultBlock struct {
 	ToolUseID string
 	Content   string
 	IsError   bool
+	// ToolRefs names the deferred MCP tools the result surfaced; the
+	// anthropic adapter renders them as tool_reference blocks after the
+	// text, and the other adapters ignore them.
+	ToolRefs []string
 }
 
 type Role string
@@ -92,6 +96,9 @@ func (m *Manager) Messages() []Message {
 		result[i].ThinkingBlocks = slices.Clone(msg.ThinkingBlocks)
 		result[i].ToolUses = slices.Clone(msg.ToolUses)
 		result[i].ToolResults = slices.Clone(msg.ToolResults)
+		for j, tr := range result[i].ToolResults {
+			result[i].ToolResults[j].ToolRefs = slices.Clone(tr.ToolRefs)
+		}
 	}
 	return result
 }
