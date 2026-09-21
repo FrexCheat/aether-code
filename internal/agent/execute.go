@@ -76,6 +76,18 @@ func (a *Agent) runTool(ctx context.Context, call conversation.ToolUseBlock, sen
 			IsError: true,
 		}, 0
 	}
+	// A dispatcher tool runs another registered tool picked from its
+	// arguments. Resolving before the ladder makes the target the permission
+	// subject: rules, the dialog and the grant anchor on the target tool's
+	// name, however the model addressed the call.
+	args := call.Args
+	if d, ok := tool.(tools.Dispatcher); ok {
+		target, targetArgs, err := d.Target(args)
+		if err != nil {
+			return tools.ToolResult{Output: err.Error(), IsError: true}, 0
+		}
+		tool, args = target, targetArgs
+	}
 
 	start := time.Now()
 	defer func() {
@@ -92,31 +104,31 @@ func (a *Agent) runTool(ctx context.Context, call conversation.ToolUseBlock, sen
 	}
 
 	if a.checker != nil {
-		switch decision := a.checker.Check(tool, call.Args); decision.Effect {
+		switch decision := a.checker.Check(tool, args); decision.Effect {
 		case permissions.Deny:
 			return fail(decision.Reason)
 		case permissions.Ask:
-			allowed, note := a.askPermission(ctx, send, tool, call)
+			allowed, note := a.askPermission(ctx, send, tool, args)
 			if !allowed {
 				return fail("The user rejected this call (" + decision.Reason + ").")
 			}
 			// Waiting for the answer was the user's time, not the tool's.
 			start = time.Now()
-			result = tool.Execute(ctx, call.Args)
+			result = tool.Execute(ctx, args)
 			if note != "" {
 				result.Output = strings.TrimSpace(result.Output + "\n\n" + note)
 			}
 			return result, time.Since(start)
 		}
 	}
-	return tool.Execute(ctx, call.Args), time.Since(start)
+	return tool.Execute(ctx, args), time.Since(start)
 }
 
 // askPermission puts the question to the UI and records what the answer grants.
 // askMu serializes the dialogs: two read-only calls can reach this at once, and
 // the UI shows one prompt at a time.
-func (a *Agent) askPermission(ctx context.Context, send eventSink, tool tools.Tool, call conversation.ToolUseBlock) (allowed bool, note string) {
-	request := a.checker.Question(tool, call.Args)
+func (a *Agent) askPermission(ctx context.Context, send eventSink, tool tools.Tool, args map[string]any) (allowed bool, note string) {
+	request := a.checker.Question(tool, args)
 	reply := make(chan permissions.Response, 1)
 	request.Reply = reply
 

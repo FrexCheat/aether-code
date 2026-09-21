@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -13,11 +14,20 @@ import (
 
 const maxToolRounds = 50
 
+// deferredReminderTemplate is model-facing Chinese, like the prompt sections.
+// One static shape serves both deferred modes: which call path applies is
+// whatever the ToolSearch result says about the tool it surfaced.
+const deferredReminderTemplate = "以下 MCP 工具处于延迟加载状态，当前上下文中只有名字、没有参数定义：\n" +
+	"%s\n\n" +
+	"需要使用时，先用 ToolSearch 工具检索（支持 select:名字,名字 精确获取，或关键词搜索）获取完整定义；" +
+	"拿到定义后按其说明调用：通常按原名直接调用，定义以文本返回时经 McpCall（server/tool/arguments）调用。"
+
 type Agent struct {
-	client   llm.Client
-	registry *tools.Registry
-	checker  *permissions.Checker // nil disables permission checks entirely
-	askMu    sync.Mutex           // one confirmation dialog at a time
+	client        llm.Client
+	registry      *tools.Registry
+	checker       *permissions.Checker // nil disables permission checks entirely
+	deferredNames func() []string      // nil: every schema is already on the wire
+	askMu         sync.Mutex           // one confirmation dialog at a time
 }
 
 // roundResult is what one request to the provider produced: the assistant
@@ -30,9 +40,11 @@ type roundResult struct {
 	err       error
 }
 
-// New builds an agent. A nil checker means tool calls run unchecked.
-func New(client llm.Client, registry *tools.Registry, checker *permissions.Checker) *Agent {
-	return &Agent{client: client, registry: registry, checker: checker}
+// New builds an agent. A nil checker means tool calls run unchecked; a nil
+// deferredNames means no tool is deferred and the reminder stays out of every
+// request.
+func New(client llm.Client, registry *tools.Registry, checker *permissions.Checker, deferredNames func() []string) *Agent {
+	return &Agent{client: client, registry: registry, checker: checker, deferredNames: deferredNames}
 }
 
 func (a *Agent) Checker() *permissions.Checker { return a.checker }
@@ -103,8 +115,16 @@ func (a *Agent) Run(ctx context.Context, conv *conversation.Manager) <-chan Even
 // text is read off the builder on the way out, so an interrupted round still
 // reports what the model managed to say.
 func (a *Agent) runRound(ctx context.Context, conv *conversation.Manager, send eventSink) roundResult {
+	messages := conversation.EnsureToolPairing(conv.Messages())
+	// Deferred tools are announced on the request copy, never stored: the
+	// reminder rides every round without growing the history.
+	if a.deferredNames != nil {
+		if names := a.deferredNames(); len(names) > 0 {
+			messages = append(messages, conversation.NewReminderMessage(deferredReminder(names)))
+		}
+	}
 	events := a.client.Stream(ctx, llm.Request{
-		Messages: conversation.EnsureToolPairing(conv.Messages()),
+		Messages: messages,
 		Tools:    a.registry.Schemas(),
 	})
 
@@ -184,4 +204,8 @@ func (r roundResult) commitInterrupted(conv *conversation.Manager, reason string
 		})
 	}
 	conv.AddToolResults(results...)
+}
+
+func deferredReminder(names []string) string {
+	return fmt.Sprintf(deferredReminderTemplate, strings.Join(names, "\n"))
 }

@@ -49,7 +49,7 @@ func main() {
 	}
 
 	conv := conversation.NewManager()
-	ag := agent.New(client, registry, checker)
+	ag := agent.New(client, registry, checker, nil)
 
 	if err := tui.Run(tui.Options{
 		Agent:        ag,
