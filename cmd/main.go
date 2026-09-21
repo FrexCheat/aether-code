@@ -8,6 +8,7 @@ import (
 	"github.com/FrexCheat/aether-code/internal/config"
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
+	"github.com/FrexCheat/aether-code/internal/mcp"
 	"github.com/FrexCheat/aether-code/internal/permissions"
 	"github.com/FrexCheat/aether-code/internal/prompt"
 	"github.com/FrexCheat/aether-code/internal/tools"
@@ -41,6 +42,11 @@ func main() {
 	registry.Register(&tools.GlobTool{WorkDir: cwd})
 	registry.Register(&tools.GrepTool{WorkDir: cwd})
 
+	// One MCP manager for the session: it connects the configured servers in
+	// the background once the TUI is up, and its wrappers land in this same
+	// registry, so agent and UI treat them like any other tool.
+	mcpMgr := mcp.NewManager(cfg.MCPServers, cfg.MCPServerWarnings)
+
 	// One checker for the whole session: the agent decides with it and the UI
 	// switches its mode, so what the status bar shows is what gets enforced.
 	checker, err := permissions.NewChecker(cwd)
@@ -49,12 +55,14 @@ func main() {
 	}
 
 	conv := conversation.NewManager()
-	ag := agent.New(client, registry, checker, nil)
+	ag := agent.New(client, registry, checker, mcpMgr.DeferredNames)
 
 	if err := tui.Run(tui.Options{
 		Agent:        ag,
 		Conv:         conv,
 		Registry:     registry,
+		MCP:          mcpMgr,
+		Provider:     active,
 		ProviderName: active.Name,
 		ModelName:    active.Model,
 		Version:      version.Version,
