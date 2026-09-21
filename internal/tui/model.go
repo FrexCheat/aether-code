@@ -14,7 +14,9 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/FrexCheat/aether-code/internal/agent"
+	"github.com/FrexCheat/aether-code/internal/config"
 	"github.com/FrexCheat/aether-code/internal/conversation"
+	"github.com/FrexCheat/aether-code/internal/mcp"
 	"github.com/FrexCheat/aether-code/internal/permissions"
 	"github.com/FrexCheat/aether-code/internal/tools"
 )
@@ -23,6 +25,8 @@ type Options struct {
 	Agent        *agent.Agent
 	Conv         *conversation.Manager
 	Registry     *tools.Registry
+	MCP          *mcp.Manager
+	Provider     config.Provider
 	ProviderName string
 	ModelName    string
 	Version      string
@@ -113,7 +117,7 @@ func newModel(opts Options) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return m.input.Focus()
+	return tea.Batch(m.input.Focus(), m.connectMCP())
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -147,6 +151,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case streamBatchMsg:
 		return m.handleStreamBatch(msg)
+
+	case mcpReadyMsg:
+		return m, m.println(mcpSummary(msg.result))
 
 	case spinner.TickMsg:
 		if m.live == nil {
@@ -189,7 +196,7 @@ func (m Model) quit() (Model, tea.Cmd) {
 	if m.live != nil {
 		m.live.cancel()
 	}
-	return m, tea.Quit
+	return m, tea.Sequence(m.shutdownMCP(), tea.Quit)
 }
 
 func (m *Model) checker() *permissions.Checker {
