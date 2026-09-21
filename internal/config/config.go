@@ -25,6 +25,8 @@ type Provider struct {
 	BaseURL  string   `yaml:"base_url"`
 	APIKey   string   `yaml:"api_key"`
 	Thinking bool     `yaml:"thinking"`
+	// Zero means "not configured" and resolves to the protocol default.
+	ContextWindow int `yaml:"context_window"`
 }
 
 type Config struct {
@@ -47,8 +49,22 @@ func Load(dir string) (*Config, error) {
 	if err := cfg.validate(path); err != nil {
 		return nil, err
 	}
+	cfg.applyDefaults()
 	cfg.loadMCPServers()
 	return &cfg, nil
+}
+
+func (c *Config) applyDefaults() {
+	for i := range c.Providers {
+		if c.Providers[i].ContextWindow != 0 {
+			continue
+		}
+		if c.Providers[i].Protocol == ProtocolOpenAI {
+			c.Providers[i].ContextWindow = 128000
+		} else {
+			c.Providers[i].ContextWindow = 200000
+		}
+	}
 }
 
 func (c *Config) Active() Provider {
@@ -85,6 +101,9 @@ func (c *Config) validate(path string) error {
 		}
 		if p.APIKey == "" {
 			return fmt.Errorf("%s: providers[%d].api_key is required", path, i)
+		}
+		if p.ContextWindow < 0 {
+			return fmt.Errorf("%s: providers[%d].context_window must not be negative", path, i)
 		}
 		if j, dup := seen[p.Name]; dup {
 			return fmt.Errorf("%s: providers[%d].name %q duplicates providers[%d]", path, i, p.Name, j)
