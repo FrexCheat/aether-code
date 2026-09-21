@@ -156,7 +156,7 @@ func (t *GrepTool) Execute(_ context.Context, args map[string]any) ToolResult {
 	if truncated {
 		result += fmt.Sprintf("\n... (stopped at %d matches; narrow the pattern or path to see more)", grepMatchLimit)
 	}
-	return ToolResult{Output: truncateOutput(result)}
+	return ToolResult{Output: TruncateOutput(result)}
 }
 
 // isTextFile reports whether a file looks like text: a NUL byte in its first

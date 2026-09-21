@@ -119,7 +119,7 @@ func (t *EditFileTool) Execute(_ context.Context, args map[string]any) ToolResul
 		"Updated %s with %d addition%s and %d removal%s",
 		path, diff.Additions, plural(diff.Additions), diff.Removals, plural(diff.Removals))
 	return ToolResult{
-		Output: truncateOutput(summary + "\n" + diff.Text),
+		Output: TruncateOutput(summary + "\n" + diff.Text),
 		IsDiff: true,
 	}
 }

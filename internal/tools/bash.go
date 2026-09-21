@@ -173,7 +173,7 @@ func (t *BashTool) Execute(ctx context.Context, args map[string]any) ToolResult 
 			fmt.Fprintf(&sb, " (%s)", exitCodeHint(command, exitCode))
 		}
 	}
-	out := truncateOutput(sb.String())
+	out := TruncateOutput(sb.String())
 
 	if runCtx.Err() == context.DeadlineExceeded {
 		return errResult(fmt.Sprintf(

@@ -99,5 +99,5 @@ func (t *ReadFileTool) Execute(_ context.Context, args map[string]any) ToolResul
 	if end < len(lines) {
 		fmt.Fprintf(&sb, "... (%d more lines; use offset=%d to continue)\n", len(lines)-end, end+1)
 	}
-	return ToolResult{Output: truncateOutput(strings.TrimSuffix(sb.String(), "\n"))}
+	return ToolResult{Output: TruncateOutput(strings.TrimSuffix(sb.String(), "\n"))}
 }
