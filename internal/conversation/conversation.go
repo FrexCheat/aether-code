@@ -80,11 +80,20 @@ func (m *Manager) AddSystemReminder(content string) {
 	if content == "" {
 		return
 	}
-	m.history = append(m.history, Message{
+	m.history = append(m.history, NewReminderMessage(content))
+}
+
+// NewReminderMessage wraps out-of-band text in the system-reminder tags as a
+// user message. AddSystemReminder stores it in the history; callers with a
+// per-request notice that must not grow the history append the returned
+// message to their request copy instead.
+func NewReminderMessage(content string) Message {
+	content = strings.TrimSpace(content)
+	return Message{
 		Role: RoleUser,
 		Content: "<" + reminderTag + ">\n" + content +
 			"\n\n" + reminderNotice + "\n</" + reminderTag + ">",
-	})
+	}
 }
 
 // Messages returns the history. The copy is load-bearing: the pairing repair

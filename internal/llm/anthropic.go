@@ -19,6 +19,10 @@ import (
 const (
 	anthropicMaxTokens      = 16384
 	anthropicThinkingBudget = 8192
+	// nativeToolSearchBeta is the beta that honors defer_loading on tools and
+	// tool_reference blocks in tool results. The SDK knows neither; requests
+	// carrying deferred tools pin it here.
+	nativeToolSearchBeta = "advanced-tool-use-2025-11-20"
 )
 
 // anthropicClient is the llm.Client backed by the Anthropic Messages API.
@@ -57,7 +61,11 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 		finish := func(ev StreamEvent) { finishEvent(ctx, ch, ev) }
 
 		params := c.buildParams(req)
-		stream := c.sdk.Messages.NewStreaming(ctx, params)
+		var opts []option.RequestOption
+		if slices.ContainsFunc(req.Tools, func(t tools.ToolSchema) bool { return t.Deferred }) {
+			opts = append(opts, option.WithHeader("anthropic-beta", nativeToolSearchBeta))
+		}
+		stream := c.sdk.Messages.NewStreaming(ctx, params, opts...)
 		defer stream.Close()
 
 		sawStop := false
@@ -227,7 +235,27 @@ func buildAnthropicMessages(messages []conversation.Message) []anthropic.Message
 		} else {
 			role = anthropic.MessageParamRoleUser
 			for _, tr := range m.ToolResults {
-				blocks = append(blocks, anthropic.NewToolResultBlock(tr.ToolUseID, tr.Content, tr.IsError))
+				if len(tr.ToolRefs) == 0 {
+					blocks = append(blocks, anthropic.NewToolResultBlock(tr.ToolUseID, tr.Content, tr.IsError))
+					continue
+				}
+				// A ToolSearch result: the text plus one tool_reference per
+				// surfaced tool, which the API expands into full definitions.
+				content := []anthropic.ToolResultBlockParamContentUnion{
+					{OfText: &anthropic.TextBlockParam{Text: tr.Content}},
+				}
+				for _, name := range tr.ToolRefs {
+					content = append(content, anthropic.ToolResultBlockParamContentUnion{
+						OfToolReference: &anthropic.ToolReferenceBlockParam{ToolName: name},
+					})
+				}
+				blocks = append(blocks, anthropic.ContentBlockParamUnion{
+					OfToolResult: &anthropic.ToolResultBlockParam{
+						ToolUseID: tr.ToolUseID,
+						Content:   content,
+						IsError:   anthropic.Bool(tr.IsError),
+					},
+				})
 			}
 			if m.Content != "" {
 				blocks = append(blocks, anthropic.NewTextBlock(m.Content))
@@ -246,6 +274,9 @@ func translateAnthropicTools(schemas []tools.ToolSchema) []anthropic.ToolUnionPa
 	result := make([]anthropic.ToolUnionParam, 0, len(schemas))
 	for _, s := range schemas {
 		tool := anthropic.ToolParam{Name: s.Name}
+		if s.Deferred {
+			tool.DeferLoading = anthropic.Bool(true)
+		}
 		if s.Description != "" {
 			tool.Description = anthropic.String(s.Description)
 		}

@@ -256,6 +256,8 @@ func buildOpenAIMessages(messages []conversation.Message) responses.ResponseInpu
 			continue
 		}
 		for _, tr := range m.ToolResults {
+			// ToolRefs is ignored: the Output text already carries what the
+			// result surfaced, which is all the Responses API can accept.
 			item := responses.ResponseInputItemParamOfFunctionCallOutput(tr.Content)
 			item.OfFunctionCallOutput.CallID = openai.String(tr.ToolUseID)
 			items = append(items, item)
@@ -269,6 +271,9 @@ func buildOpenAIMessages(messages []conversation.Message) responses.ResponseInpu
 }
 
 func translateOpenAITools(schemas []tools.ToolSchema) []responses.ToolUnionParam {
+	// Schema.Deferred is deliberately unread: the Responses API has no
+	// deferred-loading notion, and deferred modes never activate on this
+	// protocol.
 	result := make([]responses.ToolUnionParam, 0, len(schemas))
 	for _, s := range schemas {
 		schema := s.InputSchema
