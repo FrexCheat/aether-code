@@ -59,6 +59,11 @@ var toolSpecs = map[string]toolSpec{
 	"Edit":  {arg: "file_path", isPath: true},
 	"Glob":  {arg: "pattern"},
 	"Grep":  {arg: "pattern"},
+	// ToolSearch is rule-addressable even though it never asks by itself.
+	// McpCall is absent on purpose: the agent resolves it to the target MCP
+	// tool before the ladder runs, so MCP rules anchor on the tool's own
+	// name and no second vocabulary exists.
+	"ToolSearch": {arg: "query"},
 }
 
 var toolNames = slices.Sorted(maps.Keys(toolSpecs))
@@ -199,8 +204,13 @@ func checkRules(name, argument string, isCommand bool, subcommands []subcommand,
 	return matched
 }
 
-// modeDecision is L4, deciding only what nothing else covered.
+// modeDecision is L4, deciding only what nothing else covered. Bypass
+// decides first: it means every call runs, whatever its category — including
+// the unknown categories (mcp) the conservative branch below would ask about.
 func modeDecision(mode Mode, category tools.Category) Effect {
+	if mode == ModeBypass {
+		return Allow
+	}
 	switch category {
 	case tools.CategoryRead, tools.CategoryWrite, tools.CategoryCommand:
 	default:
@@ -208,8 +218,6 @@ func modeDecision(mode Mode, category tools.Category) Effect {
 		return Ask
 	}
 	switch mode {
-	case ModeBypass:
-		return Allow
 	case ModeAcceptEdits:
 		if category == tools.CategoryCommand {
 			return Ask

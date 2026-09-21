@@ -59,7 +59,7 @@ func ParseRule(raw string, eff Effect) (Rule, error) {
 	if pattern == "" {
 		return Rule{}, fmt.Errorf("invalid rule %q: pattern is empty", raw)
 	}
-	if !slices.Contains(toolNames, tool) {
+	if !knownToolName(tool) {
 		return Rule{}, fmt.Errorf("invalid rule %q: unknown tool %q, expected one of %s",
 			raw, tool, strings.Join(toolNames, ", "))
 	}
@@ -93,8 +93,22 @@ func patternMatches(pattern, value string) bool {
 	return err == nil && re.MatchString(value)
 }
 
+// knownToolName accepts the built-in vocabulary plus any mcp__-qualified
+// name: the dialog records grants for MCP tools by their own name, and a
+// rule the dialog wrote must survive a reload.
+func knownToolName(tool string) bool {
+	if slices.Contains(toolNames, tool) {
+		return true
+	}
+	rest, ok := strings.CutPrefix(tool, "mcp__")
+	return ok && rest != ""
+}
+
 func (r Rule) Matches(toolName, value string) bool {
-	return r.Tool == toolName && patternMatches(r.Pattern, value)
+	// The tool name goes through the same matcher as the argument: builtin
+	// names hold no pattern characters, so this equals equality for them,
+	// while mcp__server__* covers every tool of one server.
+	return patternMatches(r.Tool, toolName) && patternMatches(r.Pattern, value)
 }
 
 func EvaluateRules(rules []Rule, toolName, content string) *Decision {
