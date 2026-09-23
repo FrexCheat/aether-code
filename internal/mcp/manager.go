@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -15,6 +17,75 @@ import (
 )
 
 const connectTimeout = 30 * time.Second
+
+const (
+	toolPrefix    = "mcp__"
+	toolSeparator = "__"
+	// maxToolName is the API-side limit on tool names; a longer name would be
+	// rejected by the provider and poison every request, not just this tool's
+	// calls.
+	maxToolName = 64
+)
+
+const (
+	deferredToolThreshold = 20
+	officialAnthropicHost = "api.anthropic.com"
+	envLoadingOverride    = "AETHERCODE_MCP_LOADING"
+)
+
+type LoadingMode string
+
+const (
+	LoadingEager    LoadingMode = "eager"
+	LoadingNative   LoadingMode = "native"
+	LoadingDispatch LoadingMode = "dispatch"
+)
+
+func Sanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			return r
+		default:
+			return '_'
+		}
+	}, s)
+}
+
+func Qualified(server, rawTool string) string {
+	return toolPrefix + Sanitize(server) + toolSeparator + Sanitize(rawTool)
+}
+
+func ParseQualifiedName(name string) (server, tool string, ok bool) {
+	rest, ok := strings.CutPrefix(name, toolPrefix)
+	if !ok {
+		return "", "", false
+	}
+	head, tail, found := strings.Cut(rest, toolSeparator)
+	if !found || head == "" || tail == "" {
+		return "", "", false
+	}
+	return head, tail, true
+}
+
+func decideMode(protocol config.Protocol, baseURL string, toolCount int) LoadingMode {
+	switch LoadingMode(os.Getenv(envLoadingOverride)) {
+	case LoadingEager, LoadingNative, LoadingDispatch:
+		return LoadingMode(os.Getenv(envLoadingOverride))
+	}
+	if toolCount < deferredToolThreshold {
+		return LoadingEager
+	}
+	if protocol == config.ProtocolAnthropic && officialAnthropicEndpoint(baseURL) {
+		return LoadingNative
+	}
+	return LoadingDispatch
+}
+
+func officialAnthropicEndpoint(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	return err == nil && strings.EqualFold(u.Hostname(), officialAnthropicHost)
+}
 
 type ServerStatus struct {
 	Name  string

@@ -43,6 +43,8 @@ func New(client llm.Client, registry *tools.Registry, checker *permissions.Check
 
 func (a *Agent) Checker() *permissions.Checker { return a.checker }
 
+func (a *Agent) Registry() *tools.Registry { return a.registry }
+
 func (a *Agent) Run(ctx context.Context, conv *conversation.Manager) <-chan Event {
 	ch := make(chan Event, 64)
 	go func() {
@@ -61,13 +63,8 @@ func (a *Agent) Run(ctx context.Context, conv *conversation.Manager) <-chan Even
 			ch <- ev
 		}
 
-		var totalUsage llm.Usage
 		for round := 1; ; round++ {
 			result := a.runRound(ctx, conv, send)
-			totalUsage.InputTokens += result.usage.InputTokens
-			totalUsage.OutputTokens += result.usage.OutputTokens
-			totalUsage.CacheReadTokens += result.usage.CacheReadTokens
-			totalUsage.CacheCreationTokens += result.usage.CacheCreationTokens
 
 			if ctx.Err() != nil {
 				result.commitTo(conv)
@@ -75,7 +72,7 @@ func (a *Agent) Run(ctx context.Context, conv *conversation.Manager) <-chan Even
 				if a.compactor != nil && result.err == nil && result.usage != (llm.Usage{}) {
 					a.compactor.RecordUsage(result.usage)
 				}
-				terminal(LoopComplete{Reason: StoppedByUser, ToolRounds: round - 1, Usage: totalUsage})
+				terminal(LoopComplete{Reason: StoppedByUser, ToolRounds: round - 1, Usage: result.usage})
 				return
 			}
 			if result.err != nil {
@@ -89,12 +86,12 @@ func (a *Agent) Run(ctx context.Context, conv *conversation.Manager) <-chan Even
 			}
 
 			if len(result.toolCalls) == 0 {
-				terminal(LoopComplete{Reason: StoppedByModel, ToolRounds: round - 1, Usage: totalUsage})
+				terminal(LoopComplete{Reason: StoppedByModel, ToolRounds: round - 1, Usage: result.usage})
 				return
 			}
 			if round > maxToolRounds {
 				result.commitInterrupted(conv, "iteration limit reached before this call could run")
-				terminal(LoopComplete{Reason: StoppedByLimit, ToolRounds: round - 1, Usage: totalUsage})
+				terminal(LoopComplete{Reason: StoppedByLimit, ToolRounds: round - 1, Usage: result.usage})
 				return
 			}
 

@@ -49,7 +49,7 @@ const (
 type LoopComplete struct {
 	Reason     LoopStopReason
 	ToolRounds int
-	Usage      llm.Usage
+	Usage      llm.Usage // the turn's last request, not a sum over its rounds
 }
 
 type LoopError struct{ Err error }

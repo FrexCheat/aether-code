@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
@@ -55,6 +56,10 @@ type Manager struct {
 	spillDir      string
 	anchor        UsageAnchor
 	failures      int
+	// used publishes usedTokens for lock-free readers: Prepare and ForceCompact
+	// hold mu across the summarize call, so the TUI cannot read the estimate
+	// under the lock.
+	used atomic.Int64
 }
 
 func NewManager(client llm.Client, conv *conversation.Manager, schemas func() []tools.ToolSchema, contextWindow int, workDir string) *Manager {
@@ -66,6 +71,15 @@ func NewManager(client llm.Client, conv *conversation.Manager, schemas func() []
 		spillDir:      filepath.Join(workDir, ".aethercode", "tool-results", strconv.Itoa(os.Getpid())),
 	}
 }
+
+// UsedTokens is the last published context estimate; safe to call at any time.
+func (m *Manager) UsedTokens() int { return int(m.used.Load()) }
+
+// ContextWindow is the provider's window the estimate is measured against.
+func (m *Manager) ContextWindow() int { return m.contextWindow }
+
+// publish refreshes the snapshot. The caller holds mu.
+func (m *Manager) publish() { m.used.Store(int64(m.usedTokens())) }
 
 // RecordUsage re-anchors on a completed request. Call it right after the
 // assistant message is committed and before the round's tool results are
@@ -80,6 +94,7 @@ func (m *Manager) RecordUsage(u llm.Usage) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.anchor = UsageAnchor{BaselineTokens: total, AnchorCount: m.conv.Len()}
+	m.publish()
 }
 
 // Reset drops the anchor and the failure count; called by /clear.
@@ -88,6 +103,7 @@ func (m *Manager) Reset() {
 	defer m.mu.Unlock()
 	m.anchor = UsageAnchor{}
 	m.failures = 0
+	m.publish()
 }
 
 // usedTokens is baseline-plus-increments while the anchor is valid, and a
@@ -107,6 +123,7 @@ func (m *Manager) Prepare(ctx context.Context, notify func(Event)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.spillOversized()
+	m.publish()
 	used := m.usedTokens()
 	effective := m.contextWindow - outputReserveTokens
 	atAuto := used >= effective-autoCompactMargin
@@ -126,5 +143,6 @@ func (m *Manager) ForceCompact(ctx context.Context, notify func(Event)) (Result,
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.spillOversized()
+	m.publish()
 	return m.compact(ctx, notify, false)
 }

@@ -58,16 +58,13 @@ func main() {
 	ag := agent.New(client, registry, checker, mcpMgr.DeferredNames, compactor)
 
 	if err := tui.Run(tui.Options{
-		Agent:        ag,
-		Conv:         conv,
-		Registry:     registry,
-		MCP:          mcpMgr,
-		Compactor:    compactor,
-		Provider:     active,
-		ProviderName: active.Name,
-		ModelName:    active.Model,
-		Version:      version.Version,
-		WorkDir:      cwd,
+		Agent:     ag,
+		Conv:      conv,
+		MCP:       mcpMgr,
+		Compactor: compactor,
+		Provider:  active,
+		Version:   version.Version,
+		WorkDir:   cwd,
 	}); err != nil {
 		fail(err)
 	}
