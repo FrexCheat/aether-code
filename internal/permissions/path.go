@@ -18,9 +18,24 @@ func (c *Checker) resolveInWorkspace(path string) (resolved string, inside bool)
 	if err != nil {
 		return path, false
 	}
-	inWorkspace := within(resolved, c.workspace)
-	inTempDir := c.tempDir != "" && within(resolved, c.tempDir)
-	return resolved, inWorkspace || inTempDir
+	if within(resolved, c.workspace) {
+		return resolved, true
+	}
+	if c.tempDir != "" && within(resolved, c.tempDir) {
+		return resolved, true
+	}
+	return resolved, c.withinExtraRoot(resolved)
+}
+
+func (c *Checker) withinExtraRoot(path string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, root := range c.extraRoots {
+		if within(path, root) {
+			return true
+		}
+	}
+	return false
 }
 
 func within(path, root string) bool {

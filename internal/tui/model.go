@@ -13,7 +13,9 @@ import (
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/FrexCheat/aether-code/internal/mcp"
+	"github.com/FrexCheat/aether-code/internal/memory"
 	"github.com/FrexCheat/aether-code/internal/permissions"
+	"github.com/FrexCheat/aether-code/internal/session"
 	"github.com/FrexCheat/aether-code/internal/tui/components"
 )
 
@@ -30,6 +32,11 @@ type Options struct {
 	Provider  config.Provider
 	Version   string
 	WorkDir   string
+	Session   *session.Session
+	Memory    *memory.Manager
+	// StartupNotice is shown as a status block on first render: a resume
+	// notice, a fallback when --continue found nothing, a cwd warning.
+	StartupNotice string
 }
 
 type Model struct {
@@ -49,6 +56,10 @@ type Model struct {
 	scroll            scrollState
 	transcript        *transcriptView
 	lastUsage         llm.Usage
+	session           *session.Session
+	extracting        bool
+	extractCursor     int
+	sessionWarned     bool
 }
 
 type command int
@@ -89,14 +100,27 @@ func Run(opts Options) error {
 }
 
 func newModel(opts Options) Model {
-	return Model{
+	m := Model{
 		opts:              opts,
 		input:             components.NewInputBox(),
 		live:              components.NewLiveRegion(components.Points, components.Dots),
 		compactionSpinner: components.Dots,
 		scroll:            scrollState{follow: true},
 		transcript:        &transcriptView{},
+		session:           opts.Session,
 	}
+	if opts.Conv.Len() > 0 {
+		m.blocks = historyBlocks(opts.Conv.Messages(), opts.Session, opts.Agent.Registry())
+	}
+	if opts.StartupNotice != "" {
+		m.blocks = append(m.blocks, block{kind: blockStatus, body: opts.StartupNotice})
+	}
+	if opts.Session != nil {
+		// Rewind the extraction window so a crashed tail still gets one pass;
+		// the duplicate window is cheap and the extractor's dedup handles it.
+		m.extractCursor = max(opts.Session.Count()-extractTail, 0)
+	}
+	return m
 }
 
 func (m Model) Init() tea.Cmd {
@@ -152,6 +176,9 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 
 	case compactDoneMsg:
 		return m.compactDone(msg)
+
+	case extractDoneMsg:
+		return m.extractDone(msg)
 	}
 
 	var cmd tea.Cmd
@@ -273,11 +300,34 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 	case cmdQuit:
 		return m.quit()
 	case cmdClear:
+		m.input.Reset()
+		// /clear is a new session, not an edit of the current one: the old
+		// archive keeps its file and stays resumable, the new one starts its
+		// own lock and spill directory, and the window starts over.
+		if m.session != nil {
+			next, err := session.New(m.opts.Conv, m.opts.WorkDir)
+			if err != nil {
+				m.emit(block{kind: blockNotice, body: "Cannot start a new session: " + err.Error(), severity: noticeError})
+				return m, nil
+			}
+			previous := m.session
+			m.session = next
+			if m.opts.Compactor != nil {
+				m.opts.Compactor.SetSpillDir(next.SpillDir())
+			}
+			previous.Close()
+		}
 		m.opts.Conv.Clear()
+		if m.opts.Memory != nil {
+			_, _ = m.opts.Memory.Inject(m.opts.Conv)
+		}
 		if m.opts.Compactor != nil {
 			m.opts.Compactor.Reset()
 		}
-		m.input.Reset()
+		m.lastUsage = llm.Usage{}
+		m.extracting = false
+		m.extractCursor = 0
+		m.sessionWarned = false
 		m.blocks = nil
 		m.scroll = scrollState{follow: true}
 		m.rebuildHistory()

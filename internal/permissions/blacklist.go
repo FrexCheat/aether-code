@@ -70,12 +70,12 @@ var dangerousPatterns = []pattern{
 }
 
 var protectedPatterns = []pattern{
-	// Full path with the .aethercode directory in it.
+	// Full path with the .aether directory in it.
 	{
-		regexp.MustCompile(`(?i)\.aethercode[/\\][^\s"']*permissions[^\s"']*\.ya?ml`),
+		regexp.MustCompile(`(?i)\.aether[/\\][^\s"']*permissions[^\s"']*\.ya?ml`),
 		"the permission rule files are protected",
 	},
-	// Bare file name, for the `cd .aethercode && … permissions.yaml` spelling.
+	// Bare file name, for the `cd .aether && … permissions.yaml` spelling.
 	{
 		regexp.MustCompile(`(?i)(?:^|[\s"'=>/])permissions(?:\.local)?\.ya?ml`),
 		"the permission rule files are protected",

@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/FrexCheat/aether-code/internal/config"
 )
 
 type Rule struct {
@@ -27,9 +29,8 @@ type cachedFile struct {
 }
 
 type RuleEngine struct {
-	userPath    string
-	projectPath string
-	localPath   string
+	userPath  string
+	localPath string
 
 	mu    sync.Mutex
 	cache map[string]cachedFile
@@ -135,12 +136,11 @@ func EvaluateRules(rules []Rule, toolName, content string) *Decision {
 
 func NewRuleEngine(workDir string) *RuleEngine {
 	e := &RuleEngine{
-		projectPath: filepath.Join(workDir, ".aethercode", "permissions.yaml"),
-		localPath:   filepath.Join(workDir, ".aethercode", "permissions.local.yaml"),
-		cache:       map[string]cachedFile{},
+		localPath: filepath.Join(workDir, config.ProjectDir, "permissions.local.yaml"),
+		cache:     map[string]cachedFile{},
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		e.userPath = filepath.Join(home, ".aethercode", "permissions.yaml")
+	if root := config.DataRoot(); root != "" {
+		e.userPath = filepath.Join(root, "permissions.yaml")
 	}
 	return e
 }
@@ -154,7 +154,7 @@ func (e *RuleEngine) Snapshot() []Rule {
 }
 
 func (e *RuleEngine) paths() []string {
-	return []string{e.userPath, e.projectPath, e.localPath}
+	return []string{e.userPath, e.localPath}
 }
 
 func (e *RuleEngine) load(path string) cachedFile {

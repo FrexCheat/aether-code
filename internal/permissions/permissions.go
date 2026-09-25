@@ -47,7 +47,8 @@ type Checker struct {
 
 	mu           sync.RWMutex
 	mode         Mode
-	sessionRules []Rule // "allow for this session" rules, process-local
+	sessionRules []Rule   // "allow for this session" rules, process-local
+	extraRoots   []string // resolved roots beyond the workspace the boundary admits
 }
 
 var switchableModes = []Mode{ModeDefault, ModeAcceptEdits, ModeBypass}
@@ -99,6 +100,19 @@ func (c *Checker) SetMode(m Mode) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.mode = m
+}
+
+// AddAllowedRoot marks a directory as inside the workspace scope: paths under
+// it no longer ask at the boundary. The blacklist and the rules still apply —
+// this only extends L3, it never grants on its own.
+func (c *Checker) AddAllowedRoot(root string) {
+	resolved, err := resolvePath(root)
+	if err != nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.extraRoots = append(c.extraRoots, resolved)
 }
 
 func (c *Checker) snapshot() ([]Rule, Mode) {

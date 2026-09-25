@@ -2,7 +2,6 @@ package compaction
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -110,42 +109,42 @@ func spillExempt(tr conversation.ToolResultBlock) bool {
 
 // spill writes the full original to disk and rewrites the history entry. Any
 // failure keeps the original in the history — losing the model's tool result
-// is worse than losing the tokens.
+// is worse than losing the tokens, so a refused journal write is fail-open
+// here the same way.
 func (m *Manager) spill(tr conversation.ToolResultBlock) string {
 	path, err := m.writeSpillFile(tr.ToolUseID, tr.Content)
 	if err != nil {
 		return ""
 	}
 	preview := truncatePreview(tr.Content, spillPreviewChars)
-	m.conv.ReplaceToolResult(tr.ToolUseID, persistedReplacement(len(tr.Content), path, preview))
+	if _, err := m.conv.ReplaceToolResult(tr.ToolUseID, persistedReplacement(len(tr.Content), path, preview)); err != nil {
+		return ""
+	}
 	return path
 }
 
+// writeSpillFile persists the full result under the session's spill
+// directory. The content for one tool-use ID is deterministic, so an existing
+// file is either the same spill or a truncated leftover from a crash: it is
+// rewritten in place instead of versioned, which also keeps a resume
+// re-spill byte-identical.
 func (m *Manager) writeSpillFile(toolUseID, content string) (string, error) {
-	if err := os.MkdirAll(m.spillDir, 0o755); err != nil {
+	if err := os.MkdirAll(m.spillDir, 0o700); err != nil {
 		return "", err
 	}
-	// toolUseID is unique per session only; the numbered suffixes absorb the
-	// rare collision after a pid reuse.
-	for _, suffix := range []string{"", "-2", "-3", "-4", "-5"} {
-		path := filepath.Join(m.spillDir, toolUseID+suffix+".txt")
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-		if errors.Is(err, os.ErrExist) {
-			continue
-		}
-		if err != nil {
-			return "", err
-		}
-		if _, err := f.WriteString(spillFileHeader(toolUseID, len(content)) + content); err != nil {
-			f.Close()
-			return "", err
-		}
-		if err := f.Close(); err != nil {
-			return "", err
-		}
-		return path, nil
+	path := filepath.Join(m.spillDir, toolUseID+".txt")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return "", err
 	}
-	return "", errors.New("compaction: spill file name exhausted")
+	if _, err := f.WriteString(spillFileHeader(toolUseID, len(content)) + content); err != nil {
+		f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func truncatePreview(s string, max int) string {

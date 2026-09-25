@@ -16,7 +16,13 @@ const (
 	ProtocolOpenAI    Protocol = "openai"
 )
 
-const FileName = "aethercode.yaml"
+// ProjectDir is the per-project runtime directory (settings and permission
+// rules); its user-level counterpart is DataRoot.
+const (
+	ProjectDir    = ".aether"
+	projectConfig = "settings.local.yaml"
+	userConfig    = "settings.yaml"
+)
 
 type Provider struct {
 	Name     string   `yaml:"name"`
@@ -37,7 +43,7 @@ type Config struct {
 }
 
 func Load(dir string) (*Config, error) {
-	path := filepath.Join(dir, FileName)
+	path := filepath.Join(dir, ProjectDir, projectConfig)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -52,6 +58,20 @@ func Load(dir string) (*Config, error) {
 	cfg.applyDefaults()
 	cfg.loadMCPServers()
 	return &cfg, nil
+}
+
+// DataRoot is the user-level aether directory: $AETHER_HOME when set,
+// otherwise ~/.aether. User settings, permission rules, sessions and memory
+// all live under it. Empty when no home directory can be resolved.
+func DataRoot() string {
+	if home := os.Getenv("AETHER_HOME"); home != "" {
+		return home
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".aether")
 }
 
 func (c *Config) applyDefaults() {

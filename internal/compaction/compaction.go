@@ -7,9 +7,6 @@ package compaction
 
 import (
 	"context"
-	"os"
-	"path/filepath"
-	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -62,13 +59,13 @@ type Manager struct {
 	used atomic.Int64
 }
 
-func NewManager(client llm.Client, conv *conversation.Manager, schemas func() []tools.ToolSchema, contextWindow int, workDir string) *Manager {
+func NewManager(client llm.Client, conv *conversation.Manager, schemas func() []tools.ToolSchema, contextWindow int, spillDir string) *Manager {
 	return &Manager{
 		client:        client,
 		conv:          conv,
 		schemas:       schemas,
 		contextWindow: contextWindow,
-		spillDir:      filepath.Join(workDir, ".aethercode", "tool-results", strconv.Itoa(os.Getpid())),
+		spillDir:      spillDir,
 	}
 }
 
@@ -104,6 +101,14 @@ func (m *Manager) Reset() {
 	m.anchor = UsageAnchor{}
 	m.failures = 0
 	m.publish()
+}
+
+// SetSpillDir points Layer 1 at another directory; /clear calls it when it
+// rotates to a new session, since each session owns its spill files.
+func (m *Manager) SetSpillDir(dir string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.spillDir = dir
 }
 
 // usedTokens is baseline-plus-increments while the anchor is valid, and a

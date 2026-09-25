@@ -10,7 +10,9 @@ import (
 	"charm.land/glamour/v2/styles"
 	"charm.land/lipgloss/v2"
 
+	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
+	"github.com/FrexCheat/aether-code/internal/session"
 	"github.com/FrexCheat/aether-code/internal/tools"
 	"github.com/FrexCheat/aether-code/internal/tui/components"
 )
@@ -122,7 +124,10 @@ func (r blockRenderer) tool(b block, expanded bool) string {
 	if b.isErr {
 		dot = components.ErrorText.Render("●")
 	}
-	head := b.title + components.Dim.Render(fmt.Sprintf(" (%.1fs)", b.elapsed.Seconds()))
+	head := b.title
+	if b.elapsed > 0 {
+		head += components.Dim.Render(fmt.Sprintf(" (%.1fs)", b.elapsed.Seconds()))
+	}
 	if b.body != "" {
 		head += "\n" + r.toolBody(b, expanded)
 	}
@@ -162,6 +167,46 @@ func (r blockRenderer) Banner(version, workDir, model string) string {
 		return text
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Center, logo, "   ", text)
+}
+
+// historyBlocks rebuilds the scrollback from a restored history: user and
+// assistant text verbatim, tool calls paired with their results in record
+// order, compaction boundaries as notices. Reminders and thinking never reach
+// the archive, so there is nothing to skip, and per-turn timing is not
+// recorded — elapsed stays zero, which the renderer drops.
+func historyBlocks(msgs []conversation.Message, sess *session.Session, reg *tools.Registry) []block {
+	results := make(map[string]conversation.ToolResultBlock)
+	for _, m := range msgs {
+		for _, tr := range m.ToolResults {
+			results[tr.ToolUseID] = tr
+		}
+	}
+	var blocks []block
+	for _, m := range msgs {
+		if sess != nil && sess.IsBoundary(m.Content) {
+			blocks = append(blocks, block{kind: blockNotice, body: "Context compacted — earlier conversation summarized."})
+			continue
+		}
+		switch m.Role {
+		case conversation.RoleUser:
+			if m.Content != "" {
+				blocks = append(blocks, block{kind: blockUser, body: m.Content})
+			}
+		case conversation.RoleAssistant:
+			if m.Content != "" {
+				blocks = append(blocks, block{kind: blockAssistant, body: m.Content})
+			}
+			for _, tu := range m.ToolUses {
+				b := block{kind: blockTool, title: toolTitle(reg, tu.Name, tu.Args)}
+				if tr, ok := results[tu.ID]; ok {
+					b.body = tr.Content
+					b.isErr = tr.IsError
+				}
+				blocks = append(blocks, b)
+			}
+		}
+	}
+	return blocks
 }
 
 // toolTitle is the one place tool titles get trimmed for display: one line,

@@ -1,12 +1,10 @@
 .agents/
 .claude/
+.aether/
 
 CLAUDE.md
 skills-lock.json
 
 docs/
-
-/bin/
+bin/
 *.test
-.aethercode/
-aethercode.yaml

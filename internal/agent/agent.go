@@ -20,13 +20,19 @@ const deferredReminderTemplate = "以下 MCP 工具处于延迟加载状态，�
 	"需要使用时，先用 ToolSearch 工具检索（支持 select:名字,名字 精确获取，或关键词搜索）获取完整定义；" +
 	"拿到定义后按其说明调用：通常按原名直接调用，定义以文本返回时经 McpCall（server/tool/arguments）调用。"
 
+// deferredMarker is the reminder's stable first line; the presence probe keys
+// on it so the text is injected once per session and re-injected after
+// compaction drops it.
+const deferredMarker = "以下 MCP 工具处于延迟加载状态"
+
 type Agent struct {
-	client        llm.Client
-	registry      *tools.Registry
-	checker       *permissions.Checker // nil disables permission checks entirely
-	deferredNames func() []string      // nil: every schema is already on the wire
-	compactor     *compaction.Manager  // nil disables context compaction
-	askMu         sync.Mutex           // one confirmation dialog at a time
+	client         llm.Client
+	registry       *tools.Registry
+	checker        *permissions.Checker         // nil disables permission checks entirely
+	deferredNames  func() []string              // nil: every schema is already on the wire
+	compactor      *compaction.Manager          // nil disables context compaction
+	sessionContext func() (marker, text string) // nil: nothing to inject
+	askMu          sync.Mutex                   // one confirmation dialog at a time
 }
 
 type roundResult struct {
@@ -37,8 +43,15 @@ type roundResult struct {
 	err       error
 }
 
-func New(client llm.Client, registry *tools.Registry, checker *permissions.Checker, deferredNames func() []string, compactor *compaction.Manager) *Agent {
-	return &Agent{client: client, registry: registry, checker: checker, deferredNames: deferredNames, compactor: compactor}
+func New(client llm.Client, registry *tools.Registry, checker *permissions.Checker, deferredNames func() []string, compactor *compaction.Manager, sessionContext func() (marker, text string)) *Agent {
+	return &Agent{
+		client:         client,
+		registry:       registry,
+		checker:        checker,
+		deferredNames:  deferredNames,
+		compactor:      compactor,
+		sessionContext: sessionContext,
+	}
 }
 
 func (a *Agent) Checker() *permissions.Checker { return a.checker }
@@ -67,9 +80,15 @@ func (a *Agent) Run(ctx context.Context, conv *conversation.Manager) <-chan Even
 			result := a.runRound(ctx, conv, send)
 
 			if ctx.Err() != nil {
-				result.commitTo(conv)
-				result.commitInterrupted(conv, "cancelled before execution")
-				if a.compactor != nil && result.err == nil && result.usage != (llm.Usage{}) {
+				// The stop reason is already decided by the context: a refused
+				// commit keeps StoppedByUser rather than adding a second
+				// terminal event (the TUI stops folding after the first), and
+				// the session surfaces the write failure once on its own.
+				err := result.commitTo(conv)
+				if err == nil {
+					err = result.commitInterrupted(conv, "cancelled before execution")
+				}
+				if err == nil && result.err == nil && a.compactor != nil && result.usage != (llm.Usage{}) {
 					a.compactor.RecordUsage(result.usage)
 				}
 				terminal(LoopComplete{Reason: StoppedByUser, ToolRounds: round - 1, Usage: result.usage})
@@ -80,7 +99,10 @@ func (a *Agent) Run(ctx context.Context, conv *conversation.Manager) <-chan Even
 				return
 			}
 
-			result.commitTo(conv)
+			if err := result.commitTo(conv); err != nil {
+				terminal(LoopError{Err: err})
+				return
+			}
 			if a.compactor != nil && result.usage != (llm.Usage{}) {
 				a.compactor.RecordUsage(result.usage)
 			}
@@ -90,12 +112,17 @@ func (a *Agent) Run(ctx context.Context, conv *conversation.Manager) <-chan Even
 				return
 			}
 			if round > maxToolRounds {
-				result.commitInterrupted(conv, "iteration limit reached before this call could run")
+				// Like the cancel path, the limit already ended the turn, so a
+				// refused commit keeps StoppedByLimit.
+				_ = result.commitInterrupted(conv, "iteration limit reached before this call could run")
 				terminal(LoopComplete{Reason: StoppedByLimit, ToolRounds: round - 1, Usage: result.usage})
 				return
 			}
 
-			conv.AddToolResults(a.executeToolCalls(ctx, result.toolCalls, send)...)
+			if err := conv.AddToolResults(a.executeToolCalls(ctx, result.toolCalls, send)...); err != nil {
+				terminal(LoopError{Err: err})
+				return
+			}
 		}
 	}()
 	return ch
@@ -111,14 +138,15 @@ func (a *Agent) runRound(ctx context.Context, conv *conversation.Manager, send e
 			// request copy is taken.
 			a.compactor.Prepare(ctx, a.notifyCompaction(send))
 		}
-		messages := conversation.EnsureToolPairing(conv.Messages())
-		// Deferred tools are announced on the request copy, never stored: the
-		// reminder rides every round without growing the history.
-		if a.deferredNames != nil {
-			if names := a.deferredNames(); len(names) > 0 {
-				messages = append(messages, conversation.NewReminderMessage(deferredReminder(names)))
-			}
+		// The reminders ride the stored history: one stable copy per session,
+		// put back whenever compaction dropped it. They never reach the
+		// archive (the session's journal skips reminders), so a resume
+		// rebuilds them from the current world instead of replaying them.
+		if err := a.injectReminders(conv); err != nil {
+			return roundResult{err: err}
 		}
+		messages := conversation.EnsureToolPairing(conv.Messages())
+		messages = a.repairToolRefs(messages)
 		result := a.stream(ctx, messages, send)
 		if attempt == 1 && a.compactor != nil && llm.IsContextTooLong(result.err) {
 			if _, err := a.compactor.ForceCompact(ctx, a.notifyCompaction(send)); err == nil {
@@ -127,6 +155,56 @@ func (a *Agent) runRound(ctx context.Context, conv *conversation.Manager, send e
 		}
 		return result
 	}
+}
+
+// injectReminders appends the session-context and deferred-tools reminders
+// unless their markers are already in the history.
+func (a *Agent) injectReminders(conv *conversation.Manager) error {
+	if a.sessionContext != nil {
+		marker, text := a.sessionContext()
+		if _, err := conversation.EnsureReminder(conv, marker, text); err != nil {
+			return err
+		}
+	}
+	if a.deferredNames != nil {
+		if names := a.deferredNames(); len(names) > 0 {
+			if _, err := conversation.EnsureReminder(conv, deferredMarker, deferredReminder(names)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// repairToolRefs drops tool_reference names the registry no longer offers on
+// this request's copy. After an MCP change a replayed ToolSearch result could
+// otherwise reference a tool that is not on the wire — which strict Anthropic
+// endpoints reject, and the message sits in the kept tail where compaction
+// never reaches. The stored history keeps the original references.
+func (a *Agent) repairToolRefs(messages []conversation.Message) []conversation.Message {
+	schemas := a.registry.Schemas()
+	known := make(map[string]struct{}, len(schemas))
+	for _, s := range schemas {
+		known[s.Name] = struct{}{}
+	}
+	for i := range messages {
+		for j := range messages[i].ToolResults {
+			refs := messages[i].ToolResults[j].ToolRefs
+			if len(refs) == 0 {
+				continue
+			}
+			kept := make([]string, 0, len(refs))
+			for _, name := range refs {
+				if _, ok := known[name]; ok {
+					kept = append(kept, name)
+				}
+			}
+			if len(kept) != len(refs) {
+				messages[i].ToolResults[j].ToolRefs = kept
+			}
+		}
+	}
+	return messages
 }
 
 func (a *Agent) stream(ctx context.Context, messages []conversation.Message, send eventSink) roundResult {
@@ -202,16 +280,16 @@ func (a *Agent) notifyCompaction(send eventSink) func(compaction.Event) {
 	}
 }
 
-func (r roundResult) commitTo(conv *conversation.Manager) {
+func (r roundResult) commitTo(conv *conversation.Manager) error {
 	if r.text == "" && len(r.thinking) == 0 && len(r.toolCalls) == 0 {
-		return
+		return nil
 	}
-	conv.AddAssistantMessage(r.text, r.thinking, r.toolCalls)
+	return conv.AddAssistantMessage(r.text, r.thinking, r.toolCalls)
 }
 
-func (r roundResult) commitInterrupted(conv *conversation.Manager, reason string) {
+func (r roundResult) commitInterrupted(conv *conversation.Manager, reason string) error {
 	if len(r.toolCalls) == 0 {
-		return
+		return nil
 	}
 	results := make([]conversation.ToolResultBlock, 0, len(r.toolCalls))
 	for _, call := range r.toolCalls {
@@ -221,7 +299,7 @@ func (r roundResult) commitInterrupted(conv *conversation.Manager, reason string
 			IsError:   true,
 		})
 	}
-	conv.AddToolResults(results...)
+	return conv.AddToolResults(results...)
 }
 
 func deferredReminder(names []string) string {

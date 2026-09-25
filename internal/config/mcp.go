@@ -11,8 +11,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const UserConfigDir = ".aethercode"
-
 type MCPServerConfig struct {
 	Command  string            `yaml:"command"`
 	Args     []string          `yaml:"args"`
@@ -73,11 +71,11 @@ func loadUserMCPServers() (map[string]MCPServerConfig, []string) {
 }
 
 func userConfigPath() (string, bool) {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	root := DataRoot()
+	if root == "" {
 		return "", false
 	}
-	return filepath.Join(home, UserConfigDir, FileName), true
+	return filepath.Join(root, userConfig), true
 }
 
 func (c MCPServerConfig) validate() error {

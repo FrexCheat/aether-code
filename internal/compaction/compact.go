@@ -84,10 +84,21 @@ func (m *Manager) compact(ctx context.Context, notify func(Event), auto bool) (R
 		}
 		return Result{FromTokens: from}, fmt.Errorf("compaction: summary failed: %w", err)
 	}
-	m.conv.ReplacePrefix(conversation.Message{
+	if err := m.conv.ReplacePrefix(conversation.Message{
 		Role:    conversation.RoleUser,
 		Content: boundaryMessage(extractSummary(reply), keepStart < len(msgs)),
-	}, keepStart)
+	}, keepStart); err != nil {
+		// A refused rewrite is a summary failure for the breaker's purposes:
+		// without this every round would re-run a full summarize call while
+		// the archive is broken.
+		if auto {
+			m.failures++
+		}
+		if notify != nil {
+			notify(FailEvent{Auto: auto, Err: err})
+		}
+		return Result{FromTokens: from}, fmt.Errorf("compaction: cannot rewrite the prefix: %w", err)
+	}
 	// The old anchor counts a history that no longer exists.
 	m.anchor = UsageAnchor{}
 	m.failures = 0
