@@ -1,7 +1,7 @@
 package compaction
 
 import (
-	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,45 +16,28 @@ const (
 	spillPreviewChars   = 2000
 )
 
-// UsageAnchor pins the last real API accounting: BaselineTokens is that
-// request's full prompt plus output, AnchorCount the history length it
-// covered. Everything appended after the anchor is only estimated.
-type UsageAnchor struct {
-	BaselineTokens int
-	AnchorCount    int
+// spillMarker opens every spill file; its presence anywhere in a tool result
+// means the text was read back from a spill file (Read line numbers, cat,
+// grep hits all carry it mid-content), so matching must use Contains.
+const spillMarker = "aethercode spilled tool result"
+
+const persistedOpenTag = "<persisted-output>"
+
+func spillFileHeader(toolUseID string, chars int) string {
+	return fmt.Sprintf(
+		"%s：一次工具调用的完整输出，因超出大小阈值未保留在会话上下文中。\n工具调用 ID: %s\n字符数: %d\n\n",
+		spillMarker, toolUseID, chars)
 }
 
-// tokensForChars divides by 3.5 (x2/7 in integers). Code-heavy ASCII output
-// measures ~3.8-4.2 chars/token for real tokenizers, so the ratio runs
-// deliberately low: overestimating is safe, underestimating is not.
-func tokensForChars(chars int) int {
-	return chars * 2 / 7
-}
+func persistedReplacement(chars int, path, preview string) string {
+	return fmt.Sprintf(`%s
+该工具输出过大（%d 字符），未保留在上下文中，已完整写入文件：
+%s
 
-// EstimateTokens approximates one message's wire cost. The per-entry fudges
-// are structural overheads measured in mewcode, kept without independent
-// tuning.
-func EstimateTokens(msg conversation.Message) int {
-	total := tokensForChars(len(msg.Content)) + 4
-	for _, tr := range msg.ToolResults {
-		total += tokensForChars(len(tr.Content)) + 10
-	}
-	for _, tu := range msg.ToolUses {
-		args, _ := json.Marshal(tu.Args)
-		total += 50 + tokensForChars(len(args))
-	}
-	for _, tb := range msg.ThinkingBlocks {
-		total += tokensForChars(len(tb.Text))
-	}
-	return total
-}
-
-func EstimateMessages(msgs []conversation.Message) int {
-	total := 0
-	for _, msg := range msgs {
-		total += EstimateTokens(msg)
-	}
-	return total
+前 %d 字符预览：
+%s
+需要完整内容时，用 Read 工具读取上述文件（可配合 offset/limit 分段读取）。
+</persisted-output>`, persistedOpenTag, chars, path, len([]rune(preview)), preview)
 }
 
 // spillOversized rewrites oversized tool results in the stored history to

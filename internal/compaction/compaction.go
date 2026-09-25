@@ -44,11 +44,21 @@ type Result struct {
 	FromTokens, ToTokens int
 }
 
+type ManagerParams struct {
+	Client        llm.Client
+	Conv          *conversation.Manager
+	Schemas       func() []tools.ToolSchema
+	SystemPrompt  string
+	ContextWindow int
+	SpillDir      string
+}
+
 type Manager struct {
 	mu            sync.Mutex
 	client        llm.Client
 	conv          *conversation.Manager
 	schemas       func() []tools.ToolSchema
+	estimator     *Estimator
 	contextWindow int
 	spillDir      string
 	anchor        UsageAnchor
@@ -59,13 +69,14 @@ type Manager struct {
 	used atomic.Int64
 }
 
-func NewManager(client llm.Client, conv *conversation.Manager, schemas func() []tools.ToolSchema, contextWindow int, spillDir string) *Manager {
+func NewManager(p ManagerParams) *Manager {
 	return &Manager{
-		client:        client,
-		conv:          conv,
-		schemas:       schemas,
-		contextWindow: contextWindow,
-		spillDir:      spillDir,
+		client:        p.Client,
+		conv:          p.Conv,
+		schemas:       p.Schemas,
+		estimator:     NewEstimator(p.SystemPrompt, p.Schemas),
+		contextWindow: p.ContextWindow,
+		spillDir:      p.SpillDir,
 	}
 }
 
@@ -115,13 +126,15 @@ func (m *Manager) SetSpillDir(dir string) {
 }
 
 // usedTokens is baseline-plus-increments while the anchor is valid, and a
-// full estimate otherwise (first turn, or the history was rewritten).
+// full estimate otherwise (first turn, or the history was rewritten). The
+// full estimate includes the fixed prefix — system prompt and tools — which
+// the anchor baseline already carries on the anchored path.
 func (m *Manager) usedTokens() int {
 	msgs := m.conv.Messages()
 	if m.anchor.AnchorCount > 0 && m.anchor.AnchorCount <= len(msgs) {
-		return m.anchor.BaselineTokens + EstimateMessages(msgs[m.anchor.AnchorCount:])
+		return m.anchor.BaselineTokens + m.estimator.Messages(msgs[m.anchor.AnchorCount:])
 	}
-	return EstimateMessages(msgs)
+	return m.estimator.FixedPrefix() + m.estimator.Messages(msgs)
 }
 
 // Prepare runs before every API request. Layer 1 always; Layer 2 only at the

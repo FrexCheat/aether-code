@@ -84,7 +84,14 @@ func main() {
 	// user-level settings file (it holds API keys) stays out.
 	checker.AddAllowedRoot(sess.SpillDir())
 
-	compactor := compaction.NewManager(client, conv, registry.Schemas, active.ContextWindow, sess.SpillDir())
+	compactor := compaction.NewManager(compaction.ManagerParams{
+		Client:        client,
+		Conv:          conv,
+		Schemas:       registry.Schemas,
+		SystemPrompt:  systemPrompt,
+		ContextWindow: active.ContextWindow,
+		SpillDir:      sess.SpillDir(),
+	})
 
 	ag := agent.New(client, registry, checker, mcpMgr.DeferredNames, compactor)
 

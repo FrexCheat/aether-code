@@ -21,13 +21,6 @@ const (
 	keepMaxTokens    = 40000
 )
 
-// spillMarker opens every spill file; its presence anywhere in a tool result
-// means the text was read back from a spill file (Read line numbers, cat,
-// grep hits all carry it mid-content), so matching must use Contains.
-const spillMarker = "aethercode spilled tool result"
-
-const persistedOpenTag = "<persisted-output>"
-
 const summaryPrompt = `严格禁止调用任何工具：不要调用任何工具，工具调用会被直接拒绝，并浪费你唯一的一次回复机会。你只能输出文本。
 
 下面是一次编码会话的对话历史。由于即将超出上下文窗口，其中较早的消息将被丢弃，你的任务是输出一份结构化摘要，让后续对话能够无缝继续。逐条完成以下小节，全部使用中文（代码、命令、路径、标识符保持原样）：
@@ -44,29 +37,12 @@ const summaryPrompt = `严格禁止调用任何工具：不要调用任何工具
 
 输出格式（严格遵守）：先输出 <analysis> 标签，在其中起草上述各节并自查完整性（该草稿随后会被丢弃）；确认无误后输出 <summary> 标签，给出最终摘要正文。<summary> 结束后不得再有任何文字。再次强调：全程禁止任何工具调用。`
 
-func spillFileHeader(toolUseID string, chars int) string {
-	return fmt.Sprintf(
-		"%s：一次工具调用的完整输出，因超出大小阈值未保留在会话上下文中。\n工具调用 ID: %s\n字符数: %d\n\n",
-		spillMarker, toolUseID, chars)
-}
-
-func persistedReplacement(chars int, path, preview string) string {
-	return fmt.Sprintf(`%s
-该工具输出过大（%d 字符），未保留在上下文中，已完整写入文件：
-%s
-
-前 %d 字符预览：
-%s
-需要完整内容时，用 Read 工具读取上述文件（可配合 offset/limit 分段读取）。
-</persisted-output>`, persistedOpenTag, chars, path, len([]rune(preview)), preview)
-}
-
 // compact summarizes history[:keepStart] into one boundary user message and
 // keeps the tail verbatim. The caller owns locking; auto toggles whether a
 // failure feeds the circuit breaker.
 func (m *Manager) compact(ctx context.Context, notify func(Event), auto bool) (Result, error) {
 	msgs := m.conv.Messages()
-	keepStart := computeKeepBoundary(msgs)
+	keepStart := computeKeepBoundary(m.estimator, msgs)
 	from := m.usedTokens()
 	if keepStart <= 0 {
 		return Result{FromTokens: from, ToTokens: from}, nil
@@ -115,10 +91,10 @@ func (m *Manager) compact(ctx context.Context, notify func(Event), auto bool) (R
 // message floor is met, and the newest message is kept unconditionally. The
 // boundary then snaps back so the tail never opens with a tool_result whose
 // call lives in the summary region — EnsureToolPairing would drop it.
-func computeKeepBoundary(msgs []conversation.Message) int {
+func computeKeepBoundary(est *Estimator, msgs []conversation.Message) int {
 	acc, count, keepStart := 0, 0, 0
 	for i, msg := range slices.Backward(msgs) {
-		size := EstimateTokens(msg)
+		size := est.Message(msg)
 		if count > 0 && acc+size > keepMaxTokens {
 			break
 		}
