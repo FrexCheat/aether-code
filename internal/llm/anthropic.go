@@ -144,13 +144,23 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 					toolCallID = ""
 					toolArgsSeed = nil
 				}
+			case anthropic.MessageStartEvent:
+				usage = mergeUsage(usage, anthropicUsage(
+					ev.Message.Usage.InputTokens,
+					ev.Message.Usage.OutputTokens,
+					ev.Message.Usage.CacheReadInputTokens,
+					ev.Message.Usage.CacheCreationInputTokens,
+				))
 			case anthropic.MessageDeltaEvent:
-				usage = Usage{
-					InputTokens:         int(ev.Usage.InputTokens),
-					OutputTokens:        int(ev.Usage.OutputTokens),
-					CacheReadTokens:     int(ev.Usage.CacheReadInputTokens),
-					CacheCreationTokens: int(ev.Usage.CacheCreationInputTokens),
-				}
+				// Some gateways report the input side only in message_delta
+				// instead of message_start; merging keeps whichever event
+				// actually carried each field.
+				usage = mergeUsage(usage, anthropicUsage(
+					ev.Usage.InputTokens,
+					ev.Usage.OutputTokens,
+					ev.Usage.CacheReadInputTokens,
+					ev.Usage.CacheCreationInputTokens,
+				))
 			case anthropic.MessageStopEvent:
 				sawStop = true
 			}
@@ -168,6 +178,27 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 		}
 	}()
 	return ch
+}
+
+func anthropicUsage(input, output, cacheRead, cacheWrite int64) Usage {
+	return Usage{
+		InputTokens:         int(input),
+		OutputTokens:        int(output),
+		CacheReadTokens:     int(cacheRead),
+		CacheCreationTokens: int(cacheWrite),
+	}
+}
+
+// mergeUsage folds a later event's counts into the running total, keeping the
+// larger value per field: the wire counts are cumulative and never decrease,
+// so the maximum is also the most recently reported truth.
+func mergeUsage(total, next Usage) Usage {
+	return Usage{
+		InputTokens:         max(total.InputTokens, next.InputTokens),
+		OutputTokens:        max(total.OutputTokens, next.OutputTokens),
+		CacheReadTokens:     max(total.CacheReadTokens, next.CacheReadTokens),
+		CacheCreationTokens: max(total.CacheCreationTokens, next.CacheCreationTokens),
+	}
 }
 
 func (c *anthropicClient) buildParams(req Request) anthropic.MessageNewParams {

@@ -84,13 +84,16 @@ func (m *Manager) publish() { m.used.Store(int64(m.usedTokens())) }
 // Baseline's output side accounts for the assistant message about to be
 // replayed.
 func (m *Manager) RecordUsage(u llm.Usage) {
-	total := u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheCreationTokens
-	if total == 0 {
-		return
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.anchor = UsageAnchor{BaselineTokens: total, AnchorCount: m.conv.Len()}
+	if total := u.TotalTokens(); total > 0 {
+		m.anchor = UsageAnchor{BaselineTokens: total, AnchorCount: m.conv.Len()}
+	} else {
+		// A provider or proxy that stopped reporting must not pin the estimate
+		// to a stale baseline; dropping the anchor falls back to the full
+		// estimate, which at least keeps moving.
+		m.anchor = UsageAnchor{}
+	}
 	m.publish()
 }
 

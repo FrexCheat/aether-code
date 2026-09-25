@@ -43,14 +43,24 @@ type ToolCallComplete struct {
 	Arguments map[string]any
 }
 
+// Usage is one request's token accounting, normalized across providers:
+// InputTokens excludes cache tokens — Anthropic reports them separately, and
+// the OpenAI adapter subtracts its inclusive cached/cache-write counts — so
+// the prompt size is the three input sides summed, never a bare field read.
 type Usage struct {
-	InputTokens  int
-	OutputTokens int
-	// The two cache fields are NOT counted in InputTokens by Anthropic, so the
-	// true prompt size is InputTokens + CacheReadTokens + CacheCreationTokens.
+	InputTokens         int
+	OutputTokens        int
 	CacheReadTokens     int
 	CacheCreationTokens int
 }
+
+// PromptTokens is the prompt size the request carried; TotalTokens adds the
+// output, which the next request replays as input.
+func (u Usage) PromptTokens() int {
+	return u.InputTokens + u.CacheReadTokens + u.CacheCreationTokens
+}
+
+func (u Usage) TotalTokens() int { return u.PromptTokens() + u.OutputTokens }
 
 type StreamEnd struct {
 	Usage Usage

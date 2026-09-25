@@ -202,11 +202,15 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 
 func openAIUsage(u responses.ResponseUsage) Usage {
 	cached := int(u.InputTokensDetails.CachedTokens)
-	input := max(0, int(u.InputTokens)-cached)
+	written := int(u.InputTokensDetails.CacheWriteTokens)
+	// input_tokens is inclusive on this wire: both cache details are subsets,
+	// subtracted so InputTokens keeps the package-wide "excludes cache" shape.
+	input := max(0, int(u.InputTokens)-cached-written)
 	return Usage{
-		InputTokens:     input,
-		OutputTokens:    int(u.OutputTokens),
-		CacheReadTokens: cached,
+		InputTokens:         input,
+		OutputTokens:        int(u.OutputTokens),
+		CacheReadTokens:     cached,
+		CacheCreationTokens: written,
 	}
 }
 

@@ -206,7 +206,7 @@ func (m *Model) stopClockIfIdle() {
 
 // cacheHitRate is the cached share of the prompt the last request carried.
 func cacheHitRate(u llm.Usage) int {
-	if denom := u.InputTokens + u.CacheReadTokens; denom > 0 {
+	if denom := u.PromptTokens(); denom > 0 {
 		return u.CacheReadTokens * 100 / denom
 	}
 	return 0
