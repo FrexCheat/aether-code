@@ -9,6 +9,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"mvdan.cc/sh/v3/syntax"
 )
 
 const bashDefaultTimeout = 120 * time.Second
@@ -34,13 +36,50 @@ func interpretExitCode(command string, exitCode int) bool {
 	if exitCode == 0 {
 		return false
 	}
-	if threshold, ok := commandErrorThresholds[extractLastCommand(command)]; ok {
+	if threshold, ok := commandErrorThresholds[lastCommandName(command)]; ok {
 		return exitCode >= threshold
 	}
 	return true
 }
 
-func extractLastCommand(command string) string {
+// lastCommandName names the command the line actually ends with — the head
+// word of the last element of the last pipeline — read with the same shell
+// grammar the permission layer uses, so a quoted pipe or an awk program
+// cannot masquerade as the command. A line the parser rejects falls back to
+// the naive split.
+func lastCommandName(command string) string {
+	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(command), "")
+	if err != nil || len(file.Stmts) == 0 {
+		return fallbackLastCommand(command)
+	}
+	stmt := file.Stmts[len(file.Stmts)-1]
+	for {
+		binary, ok := stmt.Cmd.(*syntax.BinaryCmd)
+		if !ok {
+			break
+		}
+		switch binary.Op {
+		case syntax.AndStmt, syntax.OrStmt, syntax.Pipe:
+			stmt = binary.Y
+		default:
+			return ""
+		}
+	}
+	call, ok := stmt.Cmd.(*syntax.CallExpr)
+	if !ok || len(call.Args) == 0 {
+		return ""
+	}
+	if name := call.Args[0].Lit(); name != "" {
+		return filepath.Base(name)
+	}
+	start, end := call.Args[0].Pos().Offset(), call.Args[0].End().Offset()
+	if start < end && end <= uint(len(command)) {
+		return filepath.Base(strings.Trim(command[start:end], `"'`))
+	}
+	return ""
+}
+
+func fallbackLastCommand(command string) string {
 	parts := strings.Split(command, "|")
 	fields := strings.Fields(strings.TrimSpace(parts[len(parts)-1]))
 	if len(fields) == 0 {
@@ -52,7 +91,7 @@ func extractLastCommand(command string) string {
 // exitCodeHint gives the semantic meaning of a non-error non-zero exit, so
 // the model learns "no matches found" instead of an opaque failure line.
 func exitCodeHint(command string, exitCode int) string {
-	switch extractLastCommand(command) {
+	switch lastCommandName(command) {
 	case "grep", "rg":
 		if exitCode == 1 {
 			return "no matches found"

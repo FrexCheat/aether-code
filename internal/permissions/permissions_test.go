@@ -25,6 +25,8 @@ func (f *fakeTool) Execute(context.Context, map[string]any) tools.ToolResult {
 
 func newTestChecker(t *testing.T, workDir string) *Checker {
 	t.Helper()
+	// Keep the user rule layer out of the test's world.
+	t.Setenv("AETHER_HOME", t.TempDir())
 	c, err := NewChecker(workDir)
 	if err != nil {
 		t.Fatalf("NewChecker: %v", err)
@@ -52,6 +54,10 @@ func TestCheckLadder(t *testing.T) {
 		{
 			"the rule files stay protected", nil, write,
 			map[string]any{"file_path": filepath.Join(work, ".aether", "permissions.local.yaml")}, Deny,
+		},
+		{
+			"the settings file stays protected", nil, bash,
+			map[string]any{"command": "cat .aether/settings.local.yaml"}, Deny,
 		},
 		{
 			"deny rule beats everything",

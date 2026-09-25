@@ -94,6 +94,12 @@ func (c *Checker) AddAllowedRoot(root string) {
 	c.extraRoots = append(c.extraRoots, resolved)
 }
 
+// RuleWarnings reports rule files that could not be parsed, for the startup
+// notice: a user whose rules silently vanished must be told.
+func (c *Checker) RuleWarnings() []string {
+	return c.rules.Warnings()
+}
+
 func (c *Checker) snapshot() ([]Rule, Mode) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

@@ -1,6 +1,46 @@
 package permissions
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/FrexCheat/aether-code/internal/tools"
+)
+
+func TestRuleWarningsOnBrokenFile(t *testing.T) {
+	work := t.TempDir()
+	t.Setenv("AETHER_HOME", t.TempDir())
+	local := filepath.Join(work, ".aether", "permissions.local.yaml")
+	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(local, []byte("rules: [unclosed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := NewChecker(work)
+	if err != nil {
+		t.Fatalf("NewChecker: %v", err)
+	}
+	warnings := c.RuleWarnings()
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "invalid YAML") {
+		t.Fatalf("warnings = %v, want one invalid-YAML notice", warnings)
+	}
+	// The ladder itself stays warning-free — a broken file contributes no
+	// rules rather than breaking checks.
+	if got := c.Check(&tools.BashTool{WorkDir: work}, map[string]any{"command": "ls"}); got.Effect != Ask {
+		t.Errorf("check with a broken rule file = %s, want ask", got.Effect)
+	}
+	// A good file produces no warning.
+	if err := os.WriteFile(local, []byte("rules:\n  - rule: \"Bash(ls *)\"\n    effect: allow\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if warnings := c.RuleWarnings(); len(warnings) != 0 {
+		t.Errorf("warnings after fixing the file = %v, want none", warnings)
+	}
+}
 
 func TestPatternMatches(t *testing.T) {
 	tests := []struct {

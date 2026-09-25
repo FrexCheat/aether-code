@@ -1,8 +1,6 @@
 package permissions
 
 import (
-	"errors"
-
 	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
@@ -97,13 +95,7 @@ func (c *Checker) RecordGrant(rules []Rule, response Response) error {
 			c.AddSessionRule(rule)
 		}
 	case AllowPermanent:
-		var failures []error
-		for _, rule := range rules {
-			if err := c.AddPermanentRule(rule); err != nil {
-				failures = append(failures, err)
-			}
-		}
-		return errors.Join(failures...)
+		return c.AddPermanentRules(rules)
 	}
 	return nil
 }
@@ -114,6 +106,7 @@ func (c *Checker) AddSessionRule(rule Rule) {
 	c.sessionRules = append(c.sessionRules, rule)
 }
 
-func (c *Checker) AddPermanentRule(rule Rule) error {
-	return c.rules.AppendLocalRule(rule)
+// AddPermanentRules writes every rule to the local file in one rewrite.
+func (c *Checker) AddPermanentRules(rules []Rule) error {
+	return c.rules.AppendLocalRules(rules)
 }

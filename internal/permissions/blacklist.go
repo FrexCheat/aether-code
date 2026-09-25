@@ -80,6 +80,16 @@ var protectedPatterns = []pattern{
 		regexp.MustCompile(`(?i)(?:^|[\s"'=>/])permissions(?:\.local)?\.ya?ml`),
 		"the permission rule files are protected",
 	},
+	// The settings files hold API keys; only the local one can be named
+	// bare — a bare settings.yaml is too generic to protect.
+	{
+		regexp.MustCompile(`(?i)\.aether[/\\][^\s"']*settings[^\s"']*\.ya?ml`),
+		"the settings files are protected (they hold API keys)",
+	},
+	{
+		regexp.MustCompile(`(?i)(?:^|[\s"'=>/])settings\.local\.ya?ml`),
+		"the settings file is protected (it holds API keys)",
+	},
 }
 
 func DetectDangerous(command string) (bool, string) {

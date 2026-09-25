@@ -27,6 +27,10 @@ type cachedFile struct {
 	modTime time.Time
 	size    int64
 	rules   []Rule
+	// warning names why the file's rules could not be read; "" when fine. A
+	// parse failure must not silently empty the rule set — denies included —
+	// so the reason is carried to the startup notice instead.
+	warning string
 }
 
 type RuleEngine struct {
@@ -73,7 +77,23 @@ func escapeRulePattern(text string) string {
 	return strings.NewReplacer(`\`, `\\`, `*`, `\*`).Replace(text)
 }
 
+// patternCache memoizes compiled rule patterns: the matcher runs for every
+// rule × name × value on every check, and patterns repeat endlessly.
+var patternCache sync.Map // pattern string → *regexp.Regexp (nil on compile failure)
+
 func patternMatches(pattern, value string) bool {
+	if cached, ok := patternCache.Load(pattern); ok {
+		re, _ := cached.(*regexp.Regexp)
+		return re != nil && re.MatchString(value)
+	}
+	re := buildPattern(pattern)
+	patternCache.Store(pattern, re)
+	return re != nil && re.MatchString(value)
+}
+
+// buildPattern compiles a rule pattern: literal text, `*` for any run, a
+// backslash escaping the next character.
+func buildPattern(pattern string) *regexp.Regexp {
 	runes := []rune(pattern)
 	var source strings.Builder
 	source.WriteString(`\A`)
@@ -92,7 +112,10 @@ func patternMatches(pattern, value string) bool {
 	}
 	source.WriteString(`\z`)
 	re, err := regexp.Compile(source.String())
-	return err == nil && re.MatchString(value)
+	if err != nil {
+		return nil
+	}
+	return re
 }
 
 // knownToolName accepts the built-in vocabulary plus any mcp__-qualified
@@ -158,6 +181,20 @@ func (e *RuleEngine) paths() []string {
 	return []string{e.userPath, e.localPath}
 }
 
+// Warnings reports every rule file whose rules could not be parsed on the
+// last read. The ladder itself stays warning-free — a broken file simply
+// contributes no rules — so callers surface these where a user sees them,
+// at startup.
+func (e *RuleEngine) Warnings() []string {
+	var out []string
+	for _, path := range e.paths() {
+		if warning := e.load(path).warning; warning != "" {
+			out = append(out, "permission rules not in effect — "+warning)
+		}
+	}
+	return out
+}
+
 func (e *RuleEngine) load(path string) cachedFile {
 	if path == "" {
 		return cachedFile{}
@@ -189,7 +226,7 @@ func parseRulesFile(path string) cachedFile {
 	}
 	var doc rulesFile
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return cachedFile{}
+		return cachedFile{warning: fmt.Sprintf("%s: invalid YAML: %v", path, err)}
 	}
 	var file cachedFile
 	for _, entry := range doc.Rules {
@@ -206,12 +243,20 @@ func parseRulesFile(path string) cachedFile {
 	return file
 }
 
-func (e *RuleEngine) AppendLocalRule(r Rule) error {
+// AppendLocalRules appends every rule in one read-modify-write: a
+// multi-subcommand grant lands atomically instead of as N whole-file
+// rewrites.
+func (e *RuleEngine) AppendLocalRules(rules []Rule) error {
+	if len(rules) == 0 {
+		return nil
+	}
 	doc, err := e.readLocal()
 	if err != nil {
 		return err
 	}
-	doc.Rules = append(doc.Rules, ruleEntry{Rule: r.String(), Effect: string(r.Effect)})
+	for _, r := range rules {
+		doc.Rules = append(doc.Rules, ruleEntry{Rule: r.String(), Effect: string(r.Effect)})
+	}
 	return e.writeLocal(doc)
 }
 

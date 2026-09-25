@@ -74,6 +74,15 @@ func main() {
 	}
 	defer sess.Close()
 
+	if warnings := checker.RuleWarnings(); len(warnings) > 0 {
+		// A rule file that did not parse silently contributes nothing —
+		// denies included — so the user hears about it here.
+		if notice != "" {
+			notice += "\n"
+		}
+		notice += strings.Join(warnings, "\n")
+	}
+
 	// The agent reads its own spill files without a boundary prompt; the
 	// user-level settings file (it holds API keys) stays out.
 	checker.AddAllowedRoot(sess.SpillDir())
