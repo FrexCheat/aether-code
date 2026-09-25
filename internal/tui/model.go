@@ -318,17 +318,24 @@ func (m *Model) answerPermission(response permissions.Response) {
 }
 
 func (m Model) handleEnter() (Model, tea.Cmd) {
-	if m.live.Active() || m.compacting {
-		return m, nil
-	}
 	text := strings.TrimSpace(m.input.Value())
 	if text == "" {
 		return m, nil
 	}
 	cmd, hint := parseCommand(text)
-	switch cmd {
-	case cmdQuit:
+	if cmd == cmdQuit {
+		// Quitting beats a turn in flight: the command means "leave now", and
+		// ctrl+c has always behaved that way. Everything below needs the
+		// history to itself.
 		return m.quit()
+	}
+	if m.live.Active() || m.compacting {
+		// The gate keeps the turn's loop the only writer of the history. Say
+		// so: a swallowed Enter otherwise reads as a key the app dropped.
+		m.emit(block{kind: blockNotice, body: "Still working — your message stays in the box until the turn ends."})
+		return m, nil
+	}
+	switch cmd {
 	case cmdClear:
 		m.input.Reset()
 		m.clearSession()

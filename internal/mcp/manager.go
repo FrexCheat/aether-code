@@ -18,6 +18,10 @@ import (
 
 const connectTimeout = 30 * time.Second
 
+// shutdownGrace caps how long Shutdown waits for the courtesy session
+// termination; a healthy server answers in well under a second.
+const shutdownGrace = 1500 * time.Millisecond
+
 const (
 	toolPrefix    = tools.MCPToolPrefix
 	toolSeparator = "__"
@@ -287,6 +291,12 @@ func (m *Manager) resolveTool(server, tool string) (*Tool, error) {
 	}
 }
 
+// Shutdown ends every session, waiting at most shutdownGrace for the servers
+// to acknowledge. The closes run in parallel — each is an independent network
+// round trip — and the wait is capped because this runs on the exit path: a
+// server that stops answering, or a pooled connection that died silently
+// during a long session, must delay the exit by a bound, never indefinitely.
+// Whatever is still in flight at the deadline finishes with the process.
 func (m *Manager) Shutdown() {
 	if m == nil {
 		return
@@ -297,7 +307,21 @@ func (m *Manager) Shutdown() {
 	}
 	conns := slices.Collect(maps.Values(m.conns))
 	m.mu.Unlock()
-	for _, conn := range conns {
-		_ = conn.session.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var wg sync.WaitGroup
+		for _, conn := range conns {
+			wg.Go(func() { _ = conn.session.Close() })
+		}
+		wg.Wait()
+	}()
+
+	timer := time.NewTimer(shutdownGrace)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
 	}
 }
