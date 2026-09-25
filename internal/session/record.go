@@ -15,8 +15,7 @@ import (
 
 // Version is the on-disk record schema version; a file written by a newer
 // version is refused rather than misread. Version 2 added thinking blocks to
-// message records and session-wide usage records; version 1 files replay as
-// before, minus that state.
+// message records; version 1 files replay as before, minus that state.
 const Version = 2
 
 const (
@@ -24,7 +23,6 @@ const (
 	recordMessage  = "message"
 	recordBoundary = "boundary"
 	recordUpdate   = "update"
-	recordUsage    = "usage"
 )
 
 // The record types are session-owned rather than conversation.Message: the
@@ -49,18 +47,6 @@ type thinkingRecord struct {
 	Signature string `json:"signature,omitempty"`
 	Content   string `json:"content,omitempty"`
 	Encrypted string `json:"encrypted,omitempty"`
-}
-
-// usageRecord is the last request's accounting. Messages counts the archived
-// messages that request covered, which is the anchor a resume restores.
-type usageRecord struct {
-	Type                string `json:"type"`
-	InputTokens         int    `json:"input_tokens"`
-	OutputTokens        int    `json:"output_tokens"`
-	CacheReadTokens     int    `json:"cache_read_tokens"`
-	CacheCreationTokens int    `json:"cache_creation_tokens"`
-	Messages            int    `json:"messages"`
-	Ts                  string `json:"ts"`
 }
 
 type toolUseRecord struct {
@@ -170,8 +156,6 @@ type loaded struct {
 	userCount    int // user text records seen — the title/emptiness probe
 	title        string
 	boundaries   map[string]struct{}
-	usage        usageRecord
-	hasUsage     bool
 	lastActive   time.Time
 	skipped      int
 }
@@ -249,20 +233,10 @@ func (l *loaded) consume(line []byte) {
 		keep := min(max(rec.Keep, 0), len(l.messages))
 		tail := l.messages[len(l.messages)-keep:]
 		l.messages = append([]conversation.Message{{Role: conversation.RoleUser, Content: rec.Content}}, tail...)
-		// An older usage record counted a history this boundary replaced.
-		l.usage, l.hasUsage = usageRecord{}, false
 		if l.boundaries == nil {
 			l.boundaries = map[string]struct{}{}
 		}
 		l.boundaries[rec.Content] = struct{}{}
-		l.touch(rec.Ts)
-	case recordUsage:
-		var rec usageRecord
-		if json.Unmarshal(line, &rec) != nil {
-			l.skipped++
-			return
-		}
-		l.usage, l.hasUsage = rec, true
 		l.touch(rec.Ts)
 	case recordUpdate:
 		var rec updateRecord

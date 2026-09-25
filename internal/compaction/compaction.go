@@ -90,11 +90,6 @@ type Result struct {
 	FromTokens, ToTokens int
 }
 
-// UsageSink receives every usage the manager records, in the same call that
-// moves the anchor. The session archive implements it, which is how a resume
-// gets the estimate anchor and the cache readout back.
-type UsageSink interface{ RecordUsage(llm.Usage) }
-
 type ManagerParams struct {
 	Client        llm.Client
 	Conv          *conversation.Manager
@@ -103,7 +98,6 @@ type ManagerParams struct {
 	ContextWindow int
 	MaxOutput     int
 	SpillDir      string
-	UsageSink     UsageSink
 }
 
 type Manager struct {
@@ -115,7 +109,6 @@ type Manager struct {
 	contextWindow int
 	thresholds    thresholds
 	spillDir      string
-	sink          UsageSink
 	anchor        UsageAnchor
 	failures      int
 	forceFailures int
@@ -125,8 +118,11 @@ type Manager struct {
 	used atomic.Int64
 }
 
+// NewManager deliberately publishes nothing: the readout reports what the
+// provider accounted for this run, so a fresh or resumed session reads zero
+// until its first turn, not a pre-request guess.
 func NewManager(p ManagerParams) *Manager {
-	m := &Manager{
+	return &Manager{
 		client:        p.Client,
 		conv:          p.Conv,
 		schemas:       p.Schemas,
@@ -134,15 +130,7 @@ func NewManager(p ManagerParams) *Manager {
 		contextWindow: p.ContextWindow,
 		thresholds:    computeThresholds(p.ContextWindow, p.MaxOutput),
 		spillDir:      p.SpillDir,
-		sink:          p.UsageSink,
 	}
-	// The footer reads UsedTokens from the first frame; a resumed session must
-	// show its real context load before the first request, not zero. Without a
-	// history there is nothing to measure (test doubles).
-	if p.Conv != nil {
-		m.publish()
-	}
-	return m
 }
 
 // Level reports where the last published estimate sits; it reads the atomic
@@ -184,6 +172,7 @@ func (m *Manager) publish() { m.used.Store(int64(m.usedTokens())) }
 // replayed.
 func (m *Manager) RecordUsage(u llm.Usage) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	if total := u.TotalTokens(); total > 0 {
 		m.anchor = UsageAnchor{BaselineTokens: total, AnchorCount: m.conv.Len()}
 	} else {
@@ -192,28 +181,6 @@ func (m *Manager) RecordUsage(u llm.Usage) {
 		// estimate, which at least keeps moving.
 		m.anchor = UsageAnchor{}
 	}
-	m.publish()
-	m.mu.Unlock()
-	if m.sink != nil {
-		m.sink.RecordUsage(u)
-	}
-}
-
-// RestoreUsage seeds the anchor from the archive, so a resumed session starts
-// on the estimate the previous run ended with. A count past the restored
-// history — a dropped tail, or a record a later boundary invalidated — is
-// ignored: the full estimate is the safe fallback.
-func (m *Manager) RestoreUsage(u llm.Usage, messages int) {
-	total := u.TotalTokens()
-	if total <= 0 || messages <= 0 {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if messages > m.conv.Len() {
-		return
-	}
-	m.anchor = UsageAnchor{BaselineTokens: total, AnchorCount: messages}
 	m.publish()
 }
 
@@ -227,14 +194,12 @@ func (m *Manager) Reset() {
 	m.publish()
 }
 
-// SetSession points Layer 1 at the new session's spill directory and usage
-// records at its archive; /clear calls it when it rotates, since each session
-// owns both.
-func (m *Manager) SetSession(spillDir string, usage UsageSink) {
+// SetSpillDir points Layer 1 at another directory; /clear calls it when it
+// rotates to a new session, since each session owns its spill files.
+func (m *Manager) SetSpillDir(dir string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.spillDir = spillDir
-	m.sink = usage
+	m.spillDir = dir
 }
 
 // usedTokens is baseline-plus-increments while the anchor is valid, and a

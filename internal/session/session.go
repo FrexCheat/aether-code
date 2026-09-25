@@ -13,7 +13,6 @@ import (
 
 	"github.com/FrexCheat/aether-code/internal/config"
 	"github.com/FrexCheat/aether-code/internal/conversation"
-	"github.com/FrexCheat/aether-code/internal/llm"
 )
 
 // MaxAge is how long an archive is kept after its last write.
@@ -149,17 +148,6 @@ func resume(conv *conversation.Manager, id string) (*Session, Info, error) {
 
 	msgs, dropped := filterUnresolvedTurns(loaded.messages)
 	conv.Load(msgs)
-	usage := llm.Usage{}
-	usageMessages := 0
-	if loaded.hasUsage {
-		usage = llm.Usage{
-			InputTokens:         loaded.usage.InputTokens,
-			OutputTokens:        loaded.usage.OutputTokens,
-			CacheReadTokens:     loaded.usage.CacheReadTokens,
-			CacheCreationTokens: loaded.usage.CacheCreationTokens,
-		}
-		usageMessages = loaded.usage.Messages
-	}
 	started := loaded.lastActive
 	if started.IsZero() {
 		started = time.Now()
@@ -187,16 +175,14 @@ func resume(conv *conversation.Manager, id string) (*Session, Info, error) {
 		}
 	}
 	return s, Info{
-		ID:            id,
-		Title:         loaded.title,
-		Cwd:           loaded.cwd,
-		Messages:      loaded.messageCount,
-		UserMessages:  loaded.userCount,
-		Skipped:       loaded.skipped,
-		Dropped:       dropped,
-		ModTime:       loaded.lastActive,
-		Usage:         usage,
-		UsageMessages: usageMessages,
+		ID:           id,
+		Title:        loaded.title,
+		Cwd:          loaded.cwd,
+		Messages:     loaded.messageCount,
+		UserMessages: loaded.userCount,
+		Skipped:      loaded.skipped,
+		Dropped:      dropped,
+		ModTime:      loaded.lastActive,
 	}, nil
 }
 
@@ -283,33 +269,6 @@ func (s *Session) RecordReplacePrefix(summary conversation.Message, keepFrom int
 	}
 	s.boundaries[summary.Content] = struct{}{}
 	return nil
-}
-
-// RecordUsage appends the accounting of the last completed request. Messages
-// counts the archived messages it covered, so a resume can measure its
-// estimate baseline against exactly that prefix. The record is advisory: a
-// failed write latches into the sticky first-failure report, never failing the
-// turn the usage came from.
-func (s *Session) RecordUsage(u llm.Usage) {
-	if u == (llm.Usage{}) {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	line, err := encodeLine(usageRecord{
-		Type:                recordUsage,
-		InputTokens:         u.InputTokens,
-		OutputTokens:        u.OutputTokens,
-		CacheReadTokens:     u.CacheReadTokens,
-		CacheCreationTokens: u.CacheCreationTokens,
-		Messages:            len(s.log),
-		Ts:                  time.Now().Format(time.RFC3339),
-	})
-	if err != nil {
-		s.noteErr(fmt.Errorf("session: cannot encode a record: %w", err))
-		return
-	}
-	_ = s.writeLocked(line)
 }
 
 // RecordReplaceToolResult freezes the replacement text the model saw for a

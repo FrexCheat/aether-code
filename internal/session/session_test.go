@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/FrexCheat/aether-code/internal/conversation"
-	"github.com/FrexCheat/aether-code/internal/llm"
 )
 
 // newTestSession confines the user root and starts one session.
@@ -47,8 +46,6 @@ func TestRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	usage := llm.Usage{InputTokens: 100, OutputTokens: 20, CacheReadTokens: 1000, CacheCreationTokens: 50}
-	s.RecordUsage(usage)
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -65,54 +62,6 @@ func TestRoundTrip(t *testing.T) {
 	}
 	if got, want := restored.Messages(), conv.Messages(); !reflect.DeepEqual(got, want) {
 		t.Errorf("restored history differs:\n got %+v\nwant %+v", got, want)
-	}
-	if info.Usage != usage || info.UsageMessages != 3 {
-		t.Errorf("usage = %+v over %d messages, want %+v over 3", info.Usage, info.UsageMessages, usage)
-	}
-}
-
-// A compaction boundary rewrites the prefix the usage record counted, so only
-// records written after the last boundary may seed a resume's anchor.
-func TestBoundaryInvalidatesEarlierUsage(t *testing.T) {
-	conv := conversation.NewManager()
-	s := newTestSession(t, conv)
-	if err := conv.AddUserMessage("one"); err != nil {
-		t.Fatal(err)
-	}
-	s.RecordUsage(llm.Usage{InputTokens: 111})
-	line, err := encodeLine(boundaryRecord{Type: recordBoundary, Content: "SUMMARY", Keep: 1, Ts: time.Now().Format(time.RFC3339)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	appendFile(t, s.path, line)
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	restored := conversation.NewManager()
-	s2, info, err := Resume(restored, s.ID())
-	if err != nil {
-		t.Fatalf("Resume: %v", err)
-	}
-	if info.Usage != (llm.Usage{}) || info.UsageMessages != 0 {
-		t.Errorf("usage = %+v over %d, want nothing (the boundary predates it)",
-			info.Usage, info.UsageMessages)
-	}
-
-	// A record written after the boundary survives.
-	s2.RecordUsage(llm.Usage{InputTokens: 222})
-	if err := s2.Close(); err != nil {
-		t.Fatal(err)
-	}
-	restored2 := conversation.NewManager()
-	s3, info, err := Resume(restored2, s.ID())
-	if err != nil {
-		t.Fatalf("Resume: %v", err)
-	}
-	defer s3.Close()
-	if info.Usage.InputTokens != 222 || info.UsageMessages != len(restored2.Messages()) {
-		t.Errorf("usage = %+v over %d, want 222 over %d",
-			info.Usage, info.UsageMessages, len(restored2.Messages()))
 	}
 }
 

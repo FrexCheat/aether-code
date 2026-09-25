@@ -68,7 +68,7 @@ func main() {
 	conv := conversation.NewManager()
 
 	session.Cleanup(session.MaxAge)
-	sess, info, notice, err := startSession(conv, cwd, opts)
+	sess, notice, err := startSession(conv, cwd, opts)
 	if err != nil {
 		fail(err)
 	}
@@ -95,12 +95,7 @@ func main() {
 		ContextWindow: active.ContextWindow,
 		MaxOutput:     active.MaxOutputTokens,
 		SpillDir:      sess.SpillDir(),
-		UsageSink:     sess,
 	})
-	// A resumed session starts where the archive left off: the footer shows
-	// the last accounting and the estimate anchors on it instead of starting
-	// cold.
-	compactor.RestoreUsage(info.Usage, info.UsageMessages)
 
 	ag := agent.New(client, registry, checker, mcpMgr.DeferredNames, compactor)
 
@@ -113,44 +108,43 @@ func main() {
 		Version:       version.Version,
 		WorkDir:       cwd,
 		Session:       sess,
-		LastUsage:     info.Usage,
 		StartupNotice: notice,
 	}); err != nil {
 		fail(err)
 	}
 }
 
-// startSession opens the session the flags asked for and returns what a resume
-// recovered plus the notice shown above the banner: a fresh session silently,
-// a resume with its state, and a --continue that found nothing with a hint
-// instead of an error.
-func startSession(conv *conversation.Manager, cwd string, opts flags) (*session.Session, session.Info, string, error) {
+// startSession opens the session the flags asked for and returns the notice
+// shown above the banner: a fresh session silently, a resume with what it
+// recovered, and a --continue that found nothing with a hint instead of an
+// error.
+func startSession(conv *conversation.Manager, cwd string, opts flags) (*session.Session, string, error) {
 	switch {
 	case opts.resumeID != "":
 		sess, info, err := session.Resume(conv, opts.resumeID)
 		if err != nil {
-			return nil, session.Info{}, "", err
+			return nil, "", err
 		}
-		return sess, info, resumeNotice(info, cwd), nil
+		return sess, resumeNotice(info, cwd), nil
 	case opts.cont:
 		sess, info, err := session.Continue(conv, cwd)
 		if errors.Is(err, session.ErrNoSession) {
 			sess, err := session.New(conv, cwd)
 			if err != nil {
-				return nil, session.Info{}, "", err
+				return nil, "", err
 			}
-			return sess, session.Info{}, "No previous session for this directory — starting a new one.", nil
+			return sess, "No previous session for this directory — starting a new one.", nil
 		}
 		if err != nil {
-			return nil, session.Info{}, "", err
+			return nil, "", err
 		}
-		return sess, info, resumeNotice(info, cwd), nil
+		return sess, resumeNotice(info, cwd), nil
 	default:
 		sess, err := session.New(conv, cwd)
 		if err != nil {
-			return nil, session.Info{}, "", err
+			return nil, "", err
 		}
-		return sess, session.Info{}, "", nil
+		return sess, "", nil
 	}
 }
 

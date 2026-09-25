@@ -9,8 +9,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/FrexCheat/aether-code/internal/llm"
 )
 
 // Info is what a session scan derives from the archive itself — there is no
@@ -24,11 +22,6 @@ type Info struct {
 	Skipped      int // unreadable records; a torn tail counts once
 	Dropped      int // interrupted tool turns removed on resume
 	ModTime      time.Time
-	// Usage is the last accounting the archive recorded and UsageMessages the
-	// messages it covered; both zero for a file that predates usage records or
-	// whose records a compaction boundary invalidated.
-	Usage         llm.Usage
-	UsageMessages int
 }
 
 var idPattern = regexp.MustCompile(`^\d{8}-\d{6}-[0-9a-f]{4}$`)
