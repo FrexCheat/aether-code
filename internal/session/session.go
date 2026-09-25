@@ -13,6 +13,7 @@ import (
 
 	"github.com/FrexCheat/aether-code/internal/config"
 	"github.com/FrexCheat/aether-code/internal/conversation"
+	"github.com/FrexCheat/aether-code/internal/llm"
 )
 
 // MaxAge is how long an archive is kept after its last write.
@@ -105,9 +106,10 @@ func Resume(conv *conversation.Manager, id string) (*Session, Info, error) {
 
 // resume locks first, then replays, then hands the history to the manager
 // before the journal attaches. Assistant turns whose tool calls all lack
-// results are dropped here: the restored history has no thinking blocks, and
-// a resumed tool loop without them is what strict Anthropic endpoints
-// reject. The count is reported so the UI can say what happened.
+// results are dropped here: nothing of the turn ever ran, so the resumed model
+// should not meet a call it never got an answer to. Partly resolved turns
+// stay — the request copy repairs those. The count is reported so the UI can
+// say what happened.
 func resume(conv *conversation.Manager, id string) (*Session, Info, error) {
 	if err := sanitizeID(id); err != nil {
 		return nil, Info{}, err
@@ -147,6 +149,17 @@ func resume(conv *conversation.Manager, id string) (*Session, Info, error) {
 
 	msgs, dropped := filterUnresolvedTurns(loaded.messages)
 	conv.Load(msgs)
+	usage := llm.Usage{}
+	usageMessages := 0
+	if loaded.hasUsage {
+		usage = llm.Usage{
+			InputTokens:         loaded.usage.InputTokens,
+			OutputTokens:        loaded.usage.OutputTokens,
+			CacheReadTokens:     loaded.usage.CacheReadTokens,
+			CacheCreationTokens: loaded.usage.CacheCreationTokens,
+		}
+		usageMessages = loaded.usage.Messages
+	}
 	started := loaded.lastActive
 	if started.IsZero() {
 		started = time.Now()
@@ -174,14 +187,16 @@ func resume(conv *conversation.Manager, id string) (*Session, Info, error) {
 		}
 	}
 	return s, Info{
-		ID:           id,
-		Title:        loaded.title,
-		Cwd:          loaded.cwd,
-		Messages:     loaded.messageCount,
-		UserMessages: loaded.userCount,
-		Skipped:      loaded.skipped,
-		Dropped:      dropped,
-		ModTime:      loaded.lastActive,
+		ID:            id,
+		Title:         loaded.title,
+		Cwd:           loaded.cwd,
+		Messages:      loaded.messageCount,
+		UserMessages:  loaded.userCount,
+		Skipped:       loaded.skipped,
+		Dropped:       dropped,
+		ModTime:       loaded.lastActive,
+		Usage:         usage,
+		UsageMessages: usageMessages,
 	}, nil
 }
 
@@ -268,6 +283,33 @@ func (s *Session) RecordReplacePrefix(summary conversation.Message, keepFrom int
 	}
 	s.boundaries[summary.Content] = struct{}{}
 	return nil
+}
+
+// RecordUsage appends the accounting of the last completed request. Messages
+// counts the archived messages it covered, so a resume can measure its
+// estimate baseline against exactly that prefix. The record is advisory: a
+// failed write latches into the sticky first-failure report, never failing the
+// turn the usage came from.
+func (s *Session) RecordUsage(u llm.Usage) {
+	if u == (llm.Usage{}) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	line, err := encodeLine(usageRecord{
+		Type:                recordUsage,
+		InputTokens:         u.InputTokens,
+		OutputTokens:        u.OutputTokens,
+		CacheReadTokens:     u.CacheReadTokens,
+		CacheCreationTokens: u.CacheCreationTokens,
+		Messages:            len(s.log),
+		Ts:                  time.Now().Format(time.RFC3339),
+	})
+	if err != nil {
+		s.noteErr(fmt.Errorf("session: cannot encode a record: %w", err))
+		return
+	}
+	_ = s.writeLocked(line)
 }
 
 // RecordReplaceToolResult freezes the replacement text the model saw for a

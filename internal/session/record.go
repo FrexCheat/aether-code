@@ -14,20 +14,23 @@ import (
 )
 
 // Version is the on-disk record schema version; a file written by a newer
-// version is refused rather than misread.
-const Version = 1
+// version is refused rather than misread. Version 2 added thinking blocks to
+// message records and session-wide usage records; version 1 files replay as
+// before, minus that state.
+const Version = 2
 
 const (
 	recordSession  = "session"
 	recordMessage  = "message"
 	recordBoundary = "boundary"
 	recordUpdate   = "update"
+	recordUsage    = "usage"
 )
 
 // The record types are session-owned rather than conversation.Message: the
 // file format is a versioned contract of its own and must not drift with the
-// in-memory type. Thinking blocks and reminders are deliberately absent —
-// they are session-scoped context that a resume rebuilds instead of replays.
+// in-memory type. Reminders are deliberately absent — they are session-scoped
+// context that a resume rebuilds instead of replays.
 
 type headerRecord struct {
 	Type      string `json:"type"`
@@ -35,6 +38,29 @@ type headerRecord struct {
 	ID        string `json:"id"`
 	Cwd       string `json:"cwd"`
 	StartedAt string `json:"started_at"`
+}
+
+// thinkingRecord is one reasoning block. Both APIs require the model's own
+// reasoning back on the next request, so a resumed session that replays a tool
+// turn without it is rejected by thinking-mode endpoints; the block is
+// archived for exactly that replay.
+type thinkingRecord struct {
+	Text      string `json:"text,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	Content   string `json:"content,omitempty"`
+	Encrypted string `json:"encrypted,omitempty"`
+}
+
+// usageRecord is the last request's accounting. Messages counts the archived
+// messages that request covered, which is the anchor a resume restores.
+type usageRecord struct {
+	Type                string `json:"type"`
+	InputTokens         int    `json:"input_tokens"`
+	OutputTokens        int    `json:"output_tokens"`
+	CacheReadTokens     int    `json:"cache_read_tokens"`
+	CacheCreationTokens int    `json:"cache_creation_tokens"`
+	Messages            int    `json:"messages"`
+	Ts                  string `json:"ts"`
 }
 
 type toolUseRecord struct {
@@ -54,6 +80,7 @@ type messageRecord struct {
 	Type        string             `json:"type"`
 	Role        string             `json:"role"`
 	Content     string             `json:"content,omitempty"`
+	Thinking    []thinkingRecord   `json:"thinking,omitempty"`
 	ToolUses    []toolUseRecord    `json:"tool_uses,omitempty"`
 	ToolResults []toolResultRecord `json:"tool_results,omitempty"`
 	Ts          string             `json:"ts"`
@@ -80,6 +107,14 @@ func messageRecordOf(msg conversation.Message, now time.Time) messageRecord {
 		Content: msg.Content,
 		Ts:      now.Format(time.RFC3339),
 	}
+	for _, tb := range msg.ThinkingBlocks {
+		rec.Thinking = append(rec.Thinking, thinkingRecord{
+			Text:      tb.Text,
+			Signature: tb.Signature,
+			Content:   tb.Content,
+			Encrypted: tb.Encrypted,
+		})
+	}
 	for _, tu := range msg.ToolUses {
 		rec.ToolUses = append(rec.ToolUses, toolUseRecord{ID: tu.ID, Name: tu.Name, Args: tu.Args})
 	}
@@ -100,6 +135,14 @@ func (r messageRecord) toMessage() (conversation.Message, bool) {
 		return conversation.Message{}, false
 	}
 	msg := conversation.Message{Role: role, Content: r.Content}
+	for _, tb := range r.Thinking {
+		msg.ThinkingBlocks = append(msg.ThinkingBlocks, conversation.ThinkingBlock{
+			Text:      tb.Text,
+			Signature: tb.Signature,
+			Content:   tb.Content,
+			Encrypted: tb.Encrypted,
+		})
+	}
 	for _, tu := range r.ToolUses {
 		msg.ToolUses = append(msg.ToolUses, conversation.ToolUseBlock{ID: tu.ID, Name: tu.Name, Args: tu.Args})
 	}
@@ -111,7 +154,7 @@ func (r messageRecord) toMessage() (conversation.Message, bool) {
 			ToolRefs:  tr.ToolRefs,
 		})
 	}
-	if msg.Content == "" && len(msg.ToolUses) == 0 && len(msg.ToolResults) == 0 {
+	if msg.Content == "" && len(msg.ThinkingBlocks) == 0 && len(msg.ToolUses) == 0 && len(msg.ToolResults) == 0 {
 		return conversation.Message{}, false
 	}
 	return msg, true
@@ -127,6 +170,8 @@ type loaded struct {
 	userCount    int // user text records seen — the title/emptiness probe
 	title        string
 	boundaries   map[string]struct{}
+	usage        usageRecord
+	hasUsage     bool
 	lastActive   time.Time
 	skipped      int
 }
@@ -204,10 +249,20 @@ func (l *loaded) consume(line []byte) {
 		keep := min(max(rec.Keep, 0), len(l.messages))
 		tail := l.messages[len(l.messages)-keep:]
 		l.messages = append([]conversation.Message{{Role: conversation.RoleUser, Content: rec.Content}}, tail...)
+		// An older usage record counted a history this boundary replaced.
+		l.usage, l.hasUsage = usageRecord{}, false
 		if l.boundaries == nil {
 			l.boundaries = map[string]struct{}{}
 		}
 		l.boundaries[rec.Content] = struct{}{}
+		l.touch(rec.Ts)
+	case recordUsage:
+		var rec usageRecord
+		if json.Unmarshal(line, &rec) != nil {
+			l.skipped++
+			return
+		}
+		l.usage, l.hasUsage = rec, true
 		l.touch(rec.Ts)
 	case recordUpdate:
 		var rec updateRecord
