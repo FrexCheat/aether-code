@@ -53,7 +53,7 @@ type Compactor interface {
 	Level() compaction.Level
 	ForceCompact(ctx context.Context, notify func(compaction.Progress)) (compaction.Result, error)
 	Reset()
-	SetSpillDir(dir string)
+	SetSession(spillDir string, usage compaction.UsageSink)
 }
 
 var _ Compactor = (*compaction.Manager)(nil)
@@ -67,6 +67,9 @@ type Options struct {
 	Version   string
 	WorkDir   string
 	Session   *session.Session
+	// LastUsage is the usage a resumed session's archive ended on; it feeds
+	// the footer's cache readout until the first request of this run lands.
+	LastUsage llm.Usage
 	// StartupNotice is shown as a status block on first render: a resume
 	// notice, a fallback when --continue found nothing, a cwd warning.
 	StartupNotice string
@@ -135,6 +138,7 @@ func newModel(opts Options) Model {
 		compactionSpinner: components.Dots,
 		scroll:            scrollState{follow: true},
 		transcript:        &transcriptView{},
+		lastUsage:         opts.LastUsage,
 		session:           opts.Session,
 	}
 	if opts.Conv.Len() > 0 {
@@ -368,7 +372,7 @@ func (m *Model) clearSession() {
 		previous := m.session
 		m.session = next
 		if m.opts.Compactor != nil {
-			m.opts.Compactor.SetSpillDir(next.SpillDir())
+			m.opts.Compactor.SetSession(next.SpillDir(), next)
 		}
 		previous.Close()
 	}
