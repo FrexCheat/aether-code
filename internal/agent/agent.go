@@ -243,17 +243,14 @@ func (a *Agent) stream(ctx context.Context, messages []conversation.Message, sen
 				return finish()
 			}
 		case llm.ThinkingDelta:
-			if !send(ThinkingDelta{Text: e.Text}) {
-				return finish()
-			}
+			// Streamed for the data layer only; thinking has no UI surface.
 		case llm.ThinkingComplete:
 			result.thinking = append(result.thinking, conversation.ThinkingBlock{
 				Text:      e.Thinking,
 				Signature: e.Signature,
+				Content:   e.Content,
+				Encrypted: e.Encrypted,
 			})
-			if !send(ThinkingComplete{Thinking: e.Thinking, Signature: e.Signature}) {
-				return finish()
-			}
 		case llm.ToolCallComplete:
 			result.toolCalls = append(result.toolCalls, conversation.ToolUseBlock{
 				ID:   e.ToolID,

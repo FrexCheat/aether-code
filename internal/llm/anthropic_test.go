@@ -1,10 +1,14 @@
 package llm
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/FrexCheat/aether-code/internal/config"
+	"github.com/FrexCheat/aether-code/internal/conversation"
 )
 
 func anthropicTestClient(t *testing.T, body string) Client {
@@ -58,6 +62,46 @@ data: {"type":"message_stop"}
 	got := streamUsage(t, anthropicTestClient(t, body))
 	if got != contractUsage {
 		t.Errorf("usage = %+v, want %+v", got, contractUsage)
+	}
+}
+
+// A redacted thinking block has no deltas: the opaque data is the payload, and
+// it must be captured for the next request to hand back unchanged.
+func TestAnthropicRedactedThinkingRoundTrip(t *testing.T) {
+	const body = `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"opaque-blob"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+	var blocks []ThinkingComplete
+	for ev := range anthropicTestClient(t, body).Stream(context.Background(), Request{}) {
+		switch e := ev.(type) {
+		case ThinkingComplete:
+			blocks = append(blocks, e)
+		case StreamError:
+			t.Fatalf("stream error: %v", e.Err)
+		}
+	}
+	want := ThinkingComplete{Encrypted: "opaque-blob"}
+	if len(blocks) != 1 || blocks[0] != want {
+		t.Fatalf("blocks = %+v, want one %+v", blocks, want)
+	}
+
+	msgs := []conversation.Message{{
+		Role:           conversation.RoleAssistant,
+		ThinkingBlocks: []conversation.ThinkingBlock{{Encrypted: "opaque-blob"}},
+	}}
+	raw, err := json.Marshal(buildAnthropicMessages(msgs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"type":"redacted_thinking"`) || !strings.Contains(string(raw), `"data":"opaque-blob"`) {
+		t.Errorf("replay = %s, want the redacted block back", raw)
 	}
 }
 

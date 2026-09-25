@@ -77,7 +77,9 @@ func (e *Estimator) Message(msg conversation.Message) int {
 		total += 50 + estimateTokens(string(args))
 	}
 	for _, tb := range msg.ThinkingBlocks {
-		total += estimateTokens(tb.Text)
+		// Every part of a reasoning block rides the request: the two text
+		// channels plus the opaque payload.
+		total += estimateTokens(tb.Text) + estimateTokens(tb.Content) + estimateTokens(tb.Encrypted)
 	}
 	return total
 }

@@ -19,13 +19,6 @@ type TextDelta struct{ Text string }
 
 type TextComplete struct{}
 
-type ThinkingDelta struct{ Text string }
-
-type ThinkingComplete struct {
-	Thinking  string
-	Signature string
-}
-
 type ToolCallBegin struct {
 	ToolID   string
 	ToolName string
@@ -65,8 +58,6 @@ type PermissionRequestEvent struct{ Request permissions.Request }
 
 func (TextDelta) event()              {}
 func (TextComplete) event()           {}
-func (ThinkingDelta) event()          {}
-func (ThinkingComplete) event()       {}
 func (ToolCallBegin) event()          {}
 func (ToolCallEnd) event()            {}
 func (LoopComplete) event()           {}

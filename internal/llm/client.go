@@ -33,9 +33,15 @@ type TextDelta struct{ Text string }
 type TextComplete struct{}
 
 type ThinkingDelta struct{ Text string }
+
+// ThinkingComplete is one finished reasoning block; the fields carry whatever
+// the provider needs to see again on the next request (see
+// conversation.ThinkingBlock for the per-protocol split).
 type ThinkingComplete struct {
 	Thinking  string
+	Content   string
 	Signature string
+	Encrypted string
 }
 
 type ToolCallComplete struct {

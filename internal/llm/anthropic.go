@@ -91,6 +91,12 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 				case anthropic.ThinkingBlock:
 					thinkingAccum.Reset()
 					thinkingSignature = block.Signature
+				case anthropic.RedactedThinkingBlock:
+					// Safety-redacted blocks carry no deltas: the opaque data
+					// is the whole payload and the API wants it back unchanged.
+					if !s.send(ThinkingComplete{Encrypted: block.Data}) {
+						return
+					}
 				case anthropic.ToolUseBlock:
 					toolCallID, toolCallName = block.ID, block.Name
 					toolArgsSeed = block.Input
@@ -248,6 +254,10 @@ func buildAnthropicMessages(messages []conversation.Message) []anthropic.Message
 		if m.Role == conversation.RoleAssistant {
 			role = anthropic.MessageParamRoleAssistant
 			for _, tb := range m.ThinkingBlocks {
+				if tb.Encrypted != "" {
+					blocks = append(blocks, anthropic.NewRedactedThinkingBlock(tb.Encrypted))
+					continue
+				}
 				blocks = append(blocks, anthropic.NewThinkingBlock(tb.Signature, tb.Text))
 			}
 			if m.Content != "" {

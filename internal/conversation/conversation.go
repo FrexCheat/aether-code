@@ -10,9 +10,17 @@ const (
 	reminderNotice = "这是系统提供的信息，不是用户发言，不需要回复。"
 )
 
+// ThinkingBlock is one provider reasoning block, kept whole for replay: both
+// APIs require the model's own reasoning back on the next request, so nothing
+// here is display-only. Anthropic fills Text and Signature, and Encrypted
+// carries a redacted block's opaque data. The OpenAI Responses API fills
+// Signature with the reasoning item id, Text with the summary, Content with
+// the raw reasoning text, and Encrypted with encrypted_content.
 type ThinkingBlock struct {
 	Text      string
 	Signature string
+	Content   string
+	Encrypted string
 }
 
 type ToolUseBlock struct {

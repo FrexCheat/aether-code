@@ -61,34 +61,33 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 		var failErr error
 		var usage Usage
 
-		// Function calls stream their name (output_item.added) then their
-		// arguments (arguments.delta → done), tracked by output_index to
-		// tolerate interleaving.
-		pendingCalls := map[int64]string{}
+		// Function calls stream their name and call id (output_item.added)
+		// then their arguments (arguments.delta → done), tracked by
+		// output_index to tolerate interleaving. The call id, not the item id,
+		// is what the function_call_output must name.
+		type pendingCall struct{ name, callID string }
+		pendingCalls := map[int64]pendingCall{}
 
 		// inText tracks the message item carrying the visible reply; its
 		// output_item.done is the unified TextComplete.
 		inText := false
 
-		// Per-item reasoning accumulation: the item's ID (captured at
-		// output_item.added) becomes the ThinkingComplete signature so the
-		// agent can replay it as a reasoning item on the next request.
+		// Per-item reasoning accumulation: the deltas feed the live
+		// ThinkingDelta stream and stand in for a stream that dies before the
+		// completed item, but the block handed to the agent comes from
+		// output_item.done — only that copy is complete, and the API requires
+		// the reasoning text back verbatim on the next request.
 		var (
-			inReasoning   bool
-			reasoningID   string
-			reasoningText strings.Builder
+			inReasoning      bool
+			reasoningID      string
+			reasoningContent strings.Builder
+			reasoningSummary strings.Builder
 		)
-		flushThinking := func() bool {
-			if !inReasoning {
-				return true
-			}
+		resetReasoning := func() {
 			inReasoning = false
-			if !s.send(ThinkingComplete{Thinking: reasoningText.String(), Signature: reasoningID}) {
-				return false
-			}
 			reasoningID = ""
-			reasoningText.Reset()
-			return true
+			reasoningContent.Reset()
+			reasoningSummary.Reset()
 		}
 
 		for stream.Next() {
@@ -98,14 +97,17 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 				case responses.ResponseOutputMessage:
 					inText = true
 				case responses.ResponseFunctionToolCall:
-					pendingCalls[ev.OutputIndex] = item.Name
+					pendingCalls[ev.OutputIndex] = pendingCall{name: item.Name, callID: item.CallID}
 				case responses.ResponseReasoningItem:
+					// A response may carry several reasoning items; each
+					// starts its own accumulation.
 					inReasoning = true
 					reasoningID = item.ID
-					reasoningText.Reset()
+					reasoningContent.Reset()
+					reasoningSummary.Reset()
 				}
 			case responses.ResponseOutputItemDoneEvent:
-				switch ev.Item.AsAny().(type) {
+				switch item := ev.Item.AsAny().(type) {
 				case responses.ResponseOutputMessage:
 					if inText {
 						inText = false
@@ -114,19 +116,33 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 						}
 					}
 				case responses.ResponseReasoningItem:
-					// Belt-and-braces: normally the *.done text events already
-					// closed the segment; emit whatever accumulated if not.
-					if !flushThinking() {
+					// The completed item is the authoritative copy, encrypted
+					// payload included; the delta accumulators only stand in
+					// for it.
+					if !s.send(ThinkingComplete{
+						Thinking:  joinReasoningSummary(item.Summary),
+						Content:   joinReasoningContent(item.Content),
+						Signature: item.ID,
+						Encrypted: item.EncryptedContent,
+					}) {
 						return
 					}
+					resetReasoning()
 				}
 			case responses.ResponseFunctionCallArgumentsDeltaEvent:
 				// Argument fragments are ignored; the done event carries the
 				// complete arguments.
 			case responses.ResponseFunctionCallArgumentsDoneEvent:
+				call := pendingCalls[ev.OutputIndex]
+				id := call.callID
+				if id == "" {
+					// A provider that never named a call id: an item id keeps
+					// the call and its output paired.
+					id = ev.ItemID
+				}
 				if !s.send(ToolCallComplete{
-					ToolID:    ev.ItemID,
-					ToolName:  pendingCalls[ev.OutputIndex],
+					ToolID:    id,
+					ToolName:  call.name,
 					Arguments: parseToolArgs(ev.Arguments),
 				}) {
 					return
@@ -136,23 +152,16 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 				if !s.send(TextDelta{Text: ev.Delta}) {
 					return
 				}
-			case responses.ResponseReasoningTextDeltaEvent, responses.ResponseReasoningSummaryTextDeltaEvent:
-				var text string
-				switch d := ev.(type) {
-				case responses.ResponseReasoningTextDeltaEvent:
-					text = d.Delta
-				case responses.ResponseReasoningSummaryTextDeltaEvent:
-					text = d.Delta
-				}
+			case responses.ResponseReasoningTextDeltaEvent:
 				inReasoning = true
-				reasoningText.WriteString(text)
-				if !s.send(ThinkingDelta{Text: text}) {
+				reasoningContent.WriteString(ev.Delta)
+				if !s.send(ThinkingDelta{Text: ev.Delta}) {
 					return
 				}
-			// Whichever done event arrives first closes the segment; the
-			// inReasoning guard keeps the second one from double-emitting.
-			case responses.ResponseReasoningTextDoneEvent, responses.ResponseReasoningSummaryTextDoneEvent:
-				if !flushThinking() {
+			case responses.ResponseReasoningSummaryTextDeltaEvent:
+				inReasoning = true
+				reasoningSummary.WriteString(ev.Delta)
+				if !s.send(ThinkingDelta{Text: ev.Delta}) {
 					return
 				}
 			case responses.ResponseCompletedEvent:
@@ -185,9 +194,40 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 			}
 		}
 
+		if inReasoning {
+			// The stream ended before the completed item: hand the agent what
+			// the deltas accumulated rather than dropping the reasoning.
+			if !s.send(ThinkingComplete{
+				Thinking:  reasoningSummary.String(),
+				Content:   reasoningContent.String(),
+				Signature: reasoningID,
+			}) {
+				return
+			}
+			resetReasoning()
+		}
+
 		s.finish(endStream(ctx, mapOpenAIError(stream.Err()), failErr, sawCompleted, usage))
 	}()
 	return s.ch
+}
+
+// joinReasoningSummary and joinReasoningContent flatten a reasoning item's
+// text parts; a provider mid-turn sends at most one of each channel.
+func joinReasoningSummary(parts []responses.ResponseReasoningItemSummary) string {
+	var b strings.Builder
+	for _, part := range parts {
+		b.WriteString(part.Text)
+	}
+	return b.String()
+}
+
+func joinReasoningContent(parts []responses.ResponseReasoningItemContent) string {
+	var b strings.Builder
+	for _, part := range parts {
+		b.WriteString(part.Text)
+	}
+	return b.String()
 }
 
 func openAIUsage(u responses.ResponseUsage) Usage {
@@ -215,11 +255,31 @@ func (c *openAIClient) buildParams(req Request) responses.ResponseNewParams {
 	}
 	if c.thinking {
 		params.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffortMedium}
+	} else {
+		params.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffortNone}
 	}
 	if len(req.Tools) > 0 {
 		params.Tools = translateOpenAITools(req.Tools)
 	}
 	return params
+}
+
+// reasoningItem re-encodes a captured reasoning block. Thinking-mode endpoints
+// reject a replayed tool turn whose reasoning_text is missing — the model's own
+// reasoning must come back — so every part we captured travels verbatim, and
+// the empty ones are omitted.
+func reasoningItem(tb conversation.ThinkingBlock) responses.ResponseInputItemUnionParam {
+	item := &responses.ResponseReasoningItemParam{ID: tb.Signature}
+	if tb.Text != "" {
+		item.Summary = []responses.ResponseReasoningItemSummaryParam{{Text: tb.Text}}
+	}
+	if tb.Content != "" {
+		item.Content = []responses.ResponseReasoningItemContentParam{{Text: tb.Content}}
+	}
+	if tb.Encrypted != "" {
+		item.EncryptedContent = param.NewOpt(tb.Encrypted)
+	}
+	return responses.ResponseInputItemUnionParam{OfReasoning: item}
 }
 
 // The Responses API tolerates arbitrary role sequences, so each message maps to
@@ -229,10 +289,7 @@ func buildOpenAIMessages(messages []conversation.Message) responses.ResponseInpu
 	for _, m := range messages {
 		if m.Role == conversation.RoleAssistant {
 			for _, tb := range m.ThinkingBlocks {
-				items = append(items, responses.ResponseInputItemParamOfReasoning(
-					tb.Signature,
-					[]responses.ResponseReasoningItemSummaryParam{{Text: tb.Text}},
-				))
+				items = append(items, reasoningItem(tb))
 			}
 			if m.Content != "" {
 				items = append(items, responses.ResponseInputItemParamOfMessage(
