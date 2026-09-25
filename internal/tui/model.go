@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -21,7 +22,29 @@ import (
 // wheelLines is one wheel notch, in history lines.
 const wheelLines = 3
 
-const availableCommands = "/quit, /exit, /clear, /compact"
+// commandSpec is one slash command: the spellings that select it and how it
+// is classified. The parser, the unknown-command hint and the banner tips
+// all derive from this table, so a command cannot go missing from one of
+// them.
+type commandSpec struct {
+	cmd   command
+	names []string
+}
+
+var commandTable = []commandSpec{
+	{cmd: cmdQuit, names: []string{"/quit", "/exit"}},
+	{cmd: cmdClear, names: []string{"/clear"}},
+	{cmd: cmdCompact, names: []string{"/compact"}},
+}
+
+// commandNames lists the primary spelling of each command, in table order.
+func commandNames() []string {
+	names := make([]string, len(commandTable))
+	for i, spec := range commandTable {
+		names[i] = spec.names[0]
+	}
+	return names
+}
 
 // Compactor is the window's view of the compaction layer.
 type Compactor interface {
@@ -91,15 +114,12 @@ func parseCommand(input string) (command, string) {
 	if !strings.HasPrefix(s, "/") {
 		return cmdNone, ""
 	}
-	switch s {
-	case "/quit", "/exit":
-		return cmdQuit, ""
-	case "/clear":
-		return cmdClear, ""
-	case "/compact":
-		return cmdCompact, ""
+	for _, spec := range commandTable {
+		if slices.Contains(spec.names, s) {
+			return spec.cmd, ""
+		}
 	}
-	return cmdUnknown, fmt.Sprintf("Unknown command %q. Available: %s", s, availableCommands)
+	return cmdUnknown, fmt.Sprintf("Unknown command %q. Available: %s", s, strings.Join(commandNames(), ", "))
 }
 
 func Run(opts Options) error {
@@ -307,31 +327,7 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 		return m.quit()
 	case cmdClear:
 		m.input.Reset()
-		// /clear is a new session, not an edit of the current one: the old
-		// archive keeps its file and stays resumable, the new one starts its
-		// own lock and spill directory, and the window starts over.
-		if m.session != nil {
-			next, err := session.New(m.opts.Conv, m.opts.WorkDir)
-			if err != nil {
-				m.emit(block{kind: blockNotice, body: "Cannot start a new session: " + err.Error(), severity: noticeError})
-				return m, nil
-			}
-			previous := m.session
-			m.session = next
-			if m.opts.Compactor != nil {
-				m.opts.Compactor.SetSpillDir(next.SpillDir())
-			}
-			previous.Close()
-		}
-		m.opts.Conv.Clear()
-		if m.opts.Compactor != nil {
-			m.opts.Compactor.Reset()
-		}
-		m.lastUsage = llm.Usage{}
-		m.sessionWarned = false
-		m.blocks = nil
-		m.scroll = scrollState{follow: true}
-		m.rebuildHistory()
+		m.clearSession()
 		return m, nil
 	case cmdCompact:
 		m.input.Reset()
@@ -357,6 +353,34 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 func (m Model) quit() (Model, tea.Cmd) {
 	m.live.Cancel()
 	return m, tea.Sequence(m.shutdownMCP(), tea.Quit)
+}
+
+// clearSession rotates to a fresh session: the old archive keeps its file
+// and stays resumable, the new one starts its own lock and spill directory,
+// and the window starts over.
+func (m *Model) clearSession() {
+	if m.session != nil {
+		next, err := session.New(m.opts.Conv, m.opts.WorkDir)
+		if err != nil {
+			m.emit(block{kind: blockNotice, body: "Cannot start a new session: " + err.Error(), severity: noticeError})
+			return
+		}
+		previous := m.session
+		m.session = next
+		if m.opts.Compactor != nil {
+			m.opts.Compactor.SetSpillDir(next.SpillDir())
+		}
+		previous.Close()
+	}
+	m.opts.Conv.Clear()
+	if m.opts.Compactor != nil {
+		m.opts.Compactor.Reset()
+	}
+	m.lastUsage = llm.Usage{}
+	m.sessionWarned = false
+	m.blocks = nil
+	m.scroll = scrollState{follow: true}
+	m.rebuildHistory()
 }
 
 func (m Model) checker() *permissions.Checker {

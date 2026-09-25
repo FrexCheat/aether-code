@@ -167,8 +167,7 @@ func TestLoadAetherChainNearZeroBudget(t *testing.T) {
 }
 
 func TestProjectInstructionsSection(t *testing.T) {
-	empty := projectInstructionsSection(t.TempDir())
-	if empty.content != "" {
+	if empty := projectInstructionsSection(t.TempDir()); empty != "" {
 		t.Errorf("no chain must yield an empty section for the assembler to drop")
 	}
 
@@ -178,11 +177,8 @@ func TestProjectInstructionsSection(t *testing.T) {
 	}
 	writeAether(t, root, "project rule")
 	s := projectInstructionsSection(root)
-	if s.priority != 8 {
-		t.Errorf("priority = %d, want 8", s.priority)
-	}
-	if !strings.Contains(s.content, "## 项目指令") || !strings.Contains(s.content, "project rule") {
-		t.Errorf("section content incomplete:\n%s", s.content)
+	if !strings.Contains(s, "## 项目指令") || !strings.Contains(s, "project rule") {
+		t.Errorf("section content incomplete:\n%s", s)
 	}
 
 	prompt := BuildSystemPrompt(Environment{WorkDir: root})

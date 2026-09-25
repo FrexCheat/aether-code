@@ -15,18 +15,15 @@ const (
 
 // projectInstructionsSection carries the AETHER.md chain at the top of the
 // prompt, ahead of the generic sections: project instructions outrank the
-// defaults. An empty chain yields empty content, dropped by the assembler.
-func projectInstructionsSection(cwd string) section {
+// defaults. An empty chain yields an empty string, dropped by the assembler.
+func projectInstructionsSection(cwd string) string {
 	chain := loadAetherChain(cwd)
 	if chain == "" {
-		return section{}
+		return ""
 	}
-	return section{
-		priority: 8,
-		content: "## 项目指令\n" +
-			"以下是本仓库的 AETHER.md 指令链（从仓库根目录到当前工作目录逐级排列，越靠后越具体、发生冲突时以靠后者为准）：\n\n" +
-			chain,
-	}
+	return "## 项目指令\n" +
+		"以下是本仓库的 AETHER.md 指令链（从仓库根目录到当前工作目录逐级排列，越靠后越具体、发生冲突时以靠后者为准）：\n\n" +
+		chain
 }
 
 // loadAetherChain concatenates the AETHER.md files from the repository root

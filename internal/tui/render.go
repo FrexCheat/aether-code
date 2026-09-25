@@ -28,8 +28,11 @@ const (
    /▟█▙ \
 ▅▅▅▅    ▅▅▅
 `
-	tipsText = "Press Enter to send · shift+enter for a newline · /clear /quit"
 )
+
+// tipsText is the banner's one-line hint; the command half derives from the
+// command table so the two cannot disagree.
+var tipsText = "Press Enter to send · shift+enter for a newline · " + strings.Join(commandNames(), " ")
 
 type noticeSeverity int
 
@@ -247,10 +250,13 @@ func renderNotice(text string, severity noticeSeverity) string {
 // turnLine reports the cache split of the turn's last request — the prompt the
 // model actually finished on — rather than a sum over the turn's rounds.
 func turnLine(elapsed time.Duration, at time.Time, usage llm.Usage) string {
-	return fmt.Sprintf("%ds · done %s · Cache Read %s tokens · Cache Create %s tokens",
+	line := fmt.Sprintf("%ds · done %s · Cache Read %s tokens",
 		int(elapsed.Seconds()), at.Format("3:04 PM"),
-		formatTokenCount(usage.CacheReadTokens),
-		formatTokenCount(usage.CacheCreationTokens))
+		formatTokenCount(usage.CacheReadTokens))
+	if usage.CacheCreationTokens > 0 {
+		line += fmt.Sprintf(" · Cache Create %s tokens", formatTokenCount(usage.CacheCreationTokens))
+	}
+	return line
 }
 
 func colorToolLine(line string, isDiff, isErr bool) string {

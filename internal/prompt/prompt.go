@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"slices"
 	"strings"
 	"time"
 )
@@ -18,12 +17,6 @@ type Environment struct {
 	IsGitRepo bool
 	GitBranch string
 	Date      string
-}
-
-// section is one block of the system prompt, ordered by priority.
-type section struct {
-	priority int
-	content  string
 }
 
 func DetectEnvironment(workDir string) Environment {
@@ -51,8 +44,12 @@ func DetectEnvironment(workDir string) Environment {
 	return env
 }
 
+// BuildSystemPrompt assembles the session's system prompt once at startup.
+// The literal order is the prompt order — project instructions ride right
+// after the identity, the environment closes — and an empty section drops
+// out, so a section that has nothing to say costs nothing.
 func BuildSystemPrompt(env Environment) string {
-	sections := []section{
+	sections := []string{
 		identitySection(),
 		projectInstructionsSection(env.WorkDir),
 		systemSection(),
@@ -64,11 +61,9 @@ func BuildSystemPrompt(env Environment) string {
 		textOutputSection(),
 		environmentSection(env),
 	}
-	slices.SortStableFunc(sections, func(a, b section) int { return a.priority - b.priority })
-
 	parts := make([]string, 0, len(sections))
 	for _, s := range sections {
-		if content := strings.TrimSpace(s.content); content != "" {
+		if content := strings.TrimSpace(s); content != "" {
 			parts = append(parts, content)
 		}
 	}

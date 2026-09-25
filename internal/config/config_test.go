@@ -68,6 +68,28 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestExpandBraced(t *testing.T) {
+	t.Setenv("AETHER_TEST_TOKEN", "secret")
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"braced expands", "Bearer ${AETHER_TEST_TOKEN}", "Bearer secret"},
+		{"unset expands empty", "x${AETHER_TEST_NOPE}y", "xy"},
+		{"doubled dollar is literal", "pa$$w0rd", "pa$w0rd"},
+		{"bare dollar survives", "a$HOME b", "a$HOME b"},
+		{"unclosed brace stays literal", "a${BROKEN", "a${BROKEN"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := expandBraced(tt.in); got != tt.want {
+				t.Errorf("expandBraced(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMaxOutputTokensYAMLTag(t *testing.T) {
 	data := []byte("default: p\nproviders:\n  - name: p\n    protocol: anthropic\n    model: m\n    base_url: https://example.test\n    api_key: k\n    max_output_tokens: 4096\n")
 	var cfg Config

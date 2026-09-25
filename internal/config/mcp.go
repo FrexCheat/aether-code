@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -92,13 +93,44 @@ func (c MCPServerConfig) validate() error {
 
 // expandValues expands ${VAR} references in each value. Unset variables
 // expand to empty, which is legitimate: some servers accept empty headers.
+// Only the braced form expands — os.ExpandEnv would also eat a bare $VAR,
+// silently mangling passwords and header values that contain a dollar sign.
 func expandValues(values map[string]string) map[string]string {
 	if values == nil {
 		return nil
 	}
 	expanded := make(map[string]string, len(values))
 	for k, v := range values {
-		expanded[k] = os.ExpandEnv(v)
+		expanded[k] = expandBraced(v)
 	}
 	return expanded
+}
+
+// expandBraced replaces ${VAR} with the variable's value and $$ with a
+// literal dollar; every other dollar survives untouched.
+func expandBraced(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		switch {
+		case s[i] != '$':
+			b.WriteByte(s[i])
+			i++
+		case i+1 < len(s) && s[i+1] == '$':
+			b.WriteByte('$')
+			i += 2
+		case i+1 < len(s) && s[i+1] == '{':
+			end := strings.IndexByte(s[i+2:], '}')
+			if end < 0 {
+				b.WriteByte('$')
+				i++
+				continue
+			}
+			b.WriteString(os.Getenv(s[i+2 : i+2+end]))
+			i += 2 + end + 1
+		default:
+			b.WriteByte('$')
+			i++
+		}
+	}
+	return b.String()
 }
