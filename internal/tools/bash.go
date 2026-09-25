@@ -83,6 +83,13 @@ type BashTool struct {
 }
 
 func (t *BashTool) Name() string { return "Bash" }
+
+func (t *BashTool) Spec() Spec {
+	// The boundary for a command is its redirects, judged separately in the
+	// permission ladder; the rule argument is the whole command line.
+	return Spec{RuleArg: "command",
+		PromptLine: "Bash 只用于系统命令和确实需要 shell 的操作"}
+}
 func (t *BashTool) Description() string {
 	return BashDescription
 }

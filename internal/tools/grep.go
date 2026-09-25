@@ -19,6 +19,12 @@ type GrepTool struct {
 }
 
 func (t *GrepTool) Name() string { return "Grep" }
+
+func (t *GrepTool) Spec() Spec {
+	// Rules match the pattern argument; the boundary checks the optional path.
+	return Spec{RuleArg: "pattern", BoundaryArg: "path",
+		PromptLine: "搜文件内容用 Grep，而不是 grep、rg 或 ag 命令"}
+}
 func (t *GrepTool) Description() string {
 	return GrepDescription
 }

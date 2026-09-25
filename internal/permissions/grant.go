@@ -40,10 +40,9 @@ func (c *Checker) Question(tool tools.Tool, args map[string]any) Request {
 	if tool == nil {
 		return Request{}
 	}
-	name := tool.Name()
 	return Request{
-		ToolName: name,
-		Action:   ruleArgument(name, args),
+		ToolName: tool.Name(),
+		Action:   ruleValue(specOf(tool), args),
 		Rules:    c.SuggestedRules(tool, args),
 	}
 }
@@ -53,10 +52,10 @@ func (c *Checker) SuggestedRules(tool tools.Tool, args map[string]any) []Rule {
 		return nil
 	}
 	name := tool.Name()
-	spec := toolSpecs[name]
-	argument := ruleArgument(name, args)
+	spec := specOf(tool)
+	argument := ruleValue(spec, args)
 
-	if spec.isPath && argument != "" {
+	if spec != nil && spec.RuleArgIsPath && argument != "" {
 		if resolved, inside := c.resolveInWorkspace(argument); !inside {
 			return []Rule{{Tool: name, Pattern: rulePatternForPath(resolved), Effect: Allow}}
 		}

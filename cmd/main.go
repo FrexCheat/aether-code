@@ -56,13 +56,7 @@ func main() {
 	}
 
 	fileStates := tools.NewFileStateCache()
-	registry := tools.NewRegistry()
-	registry.Register(&tools.ReadFileTool{WorkDir: cwd, FileStateCache: fileStates})
-	registry.Register(&tools.WriteFileTool{WorkDir: cwd, FileStateCache: fileStates})
-	registry.Register(&tools.EditFileTool{WorkDir: cwd, FileStateCache: fileStates})
-	registry.Register(&tools.BashTool{WorkDir: cwd})
-	registry.Register(&tools.GlobTool{WorkDir: cwd})
-	registry.Register(&tools.GrepTool{WorkDir: cwd})
+	registry := tools.NewBuiltinRegistry(cwd, fileStates)
 
 	mcpMgr := mcp.NewManager(cfg.MCPServers, cfg.MCPServerWarnings)
 

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
 func rulePatternForPath(resolved string) string {
@@ -67,9 +69,12 @@ func resolvePath(path string) (string, error) {
 	}
 }
 
-func checkPathPattern(name, arg string) []string {
+// checkPathPattern produces the values a rule is matched against: the raw
+// argument, plus the resolved form a recorded grant uses when the argument is
+// a path.
+func checkPathPattern(spec *tools.Spec, arg string) []string {
 	args := []string{arg}
-	if !toolSpecs[name].isPath || arg == "" {
+	if spec == nil || !spec.RuleArgIsPath || arg == "" {
 		return args
 	}
 	resolved, err := resolvePath(arg)

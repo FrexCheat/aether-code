@@ -15,6 +15,12 @@ type GlobTool struct {
 }
 
 func (t *GlobTool) Name() string { return "Glob" }
+
+func (t *GlobTool) Spec() Spec {
+	// Rules match the pattern argument; the boundary checks the optional path.
+	return Spec{RuleArg: "pattern", BoundaryArg: "path",
+		PromptLine: "找文件用 Glob，而不是 find 或 ls"}
+}
 func (t *GlobTool) Description() string {
 	return GlobDescription
 }

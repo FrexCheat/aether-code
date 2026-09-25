@@ -1,6 +1,11 @@
 package prompt
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/FrexCheat/aether-code/internal/tools"
+)
 
 func identitySection() section {
 	return section{
@@ -76,22 +81,22 @@ func executingActionsSection() section {
 }
 
 func usingToolsSection() section {
-	return section{
-		priority: 40,
-		content: "## 使用你的工具\n" +
-			"- 有专用工具时，不要用 bash 代替。用专用工具能让用户更好地理解和审查你的工作：\n" +
-			"  - 读文件用 Read，而不是 cat、head、tail 或 sed\n" +
-			"  - 改文件用 Edit，而不是 sed 或 awk\n" +
-			"  - 新建文件或整体重写用 Write，而不是 echo 或 heredoc\n" +
-			"  - 找文件用 Glob，而不是 find 或 ls\n" +
-			"  - 搜文件内容用 Grep，而不是 grep、rg 或 ag 命令\n" +
-			"  - Bash 只用于系统命令和确实需要 shell 的操作\n" +
-			"- 编辑或覆盖一个文件之前，必须先用 Read 读过它；" +
-			"没读过就改会被工具直接拒绝。\n" +
-			"- 一次回复里可以发起多个工具调用：彼此独立的调用一起发，" +
-			"有依赖的等结果回来再发。\n" +
-			"- 需要跑多条互不依赖的 Bash 命令时，拆成多次工具调用，而不是用 && 串起来。",
+	// The per-tool bullets derive from the tools manifest so the prompt and
+	// the permission vocabulary share one source of names.
+	var b strings.Builder
+	b.WriteString("## 使用你的工具\n" +
+		"- 有专用工具时，不要用 bash 代替。用专用工具能让用户更好地理解和审查你的工作：\n")
+	for _, spec := range tools.BuiltinSpecs() {
+		if spec.Spec.PromptLine != "" {
+			fmt.Fprintf(&b, "  - %s\n", spec.Spec.PromptLine)
+		}
 	}
+	b.WriteString("- 编辑或覆盖一个文件之前，必须先用 Read 读过它；" +
+		"没读过就改会被工具直接拒绝。\n" +
+		"- 一次回复里可以发起多个工具调用：彼此独立的调用一起发，" +
+		"有依赖的等结果回来再发。\n" +
+		"- 需要跑多条互不依赖的 Bash 命令时，拆成多次工具调用，而不是用 && 串起来。")
+	return section{priority: 40, content: b.String()}
 }
 
 func externalToolsSection() section {

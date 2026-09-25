@@ -14,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/FrexCheat/aether-code/internal/config"
+	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
 type Rule struct {
@@ -62,7 +63,7 @@ func ParseRule(raw string, eff Effect) (Rule, error) {
 	}
 	if !knownToolName(tool) {
 		return Rule{}, fmt.Errorf("invalid rule %q: unknown tool %q, expected one of %s",
-			raw, tool, strings.Join(toolNames, ", "))
+			raw, tool, strings.Join(tools.BuiltinNames(), ", "))
 	}
 	return Rule{Tool: tool, Pattern: pattern, Effect: eff}, nil
 }
@@ -98,10 +99,10 @@ func patternMatches(pattern, value string) bool {
 // name: the dialog records grants for MCP tools by their own name, and a
 // rule the dialog wrote must survive a reload.
 func knownToolName(tool string) bool {
-	if slices.Contains(toolNames, tool) {
+	if slices.Contains(tools.BuiltinNames(), tool) {
 		return true
 	}
-	rest, ok := strings.CutPrefix(tool, "mcp__")
+	rest, ok := strings.CutPrefix(tool, tools.MCPToolPrefix)
 	return ok && rest != ""
 }
 

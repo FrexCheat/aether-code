@@ -4,8 +4,8 @@
 package permissions
 
 import (
+	"encoding/json"
 	"fmt"
-	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -35,11 +35,6 @@ const (
 	ModeBypass      Mode = "bypass"      // everything runs, boundary included
 )
 
-type toolSpec struct {
-	arg    string
-	isPath bool
-}
-
 type Checker struct {
 	workspace string // resolved working directory
 	tempDir   string // resolved temp directory, inside the workspace scope too
@@ -52,22 +47,6 @@ type Checker struct {
 }
 
 var switchableModes = []Mode{ModeDefault, ModeAcceptEdits, ModeBypass}
-
-var toolSpecs = map[string]toolSpec{
-	"Bash":  {arg: "command"},
-	"Read":  {arg: "file_path", isPath: true},
-	"Write": {arg: "file_path", isPath: true},
-	"Edit":  {arg: "file_path", isPath: true},
-	"Glob":  {arg: "pattern"},
-	"Grep":  {arg: "pattern"},
-	// ToolSearch is rule-addressable even though it never asks by itself.
-	// McpCall is absent on purpose: the agent resolves it to the target MCP
-	// tool before the ladder runs, so MCP rules anchor on the tool's own
-	// name and no second vocabulary exists.
-	"ToolSearch": {arg: "query"},
-}
-
-var toolNames = slices.Sorted(maps.Keys(toolSpecs))
 
 func NewChecker(workDir string) (*Checker, error) {
 	workspace, err := resolvePath(workDir)
@@ -124,8 +103,35 @@ func (c *Checker) snapshot() ([]Rule, Mode) {
 	return rules, c.mode
 }
 
-func ruleArgument(name string, args map[string]any) string {
-	value, _ := args[toolSpecs[name].arg].(string)
+// specOf returns the tool's declared Spec, or nil for tools without one
+// (MCP wrappers: their rules anchor on the qualified name and the encoded
+// arguments).
+func specOf(tool tools.Tool) *tools.Spec {
+	specified, ok := tool.(tools.Specified)
+	if !ok {
+		return nil
+	}
+	spec := specified.Spec()
+	return &spec
+}
+
+// ruleValue is the string a rule pattern is matched against: the declared
+// RuleArg's value when the tool has one, otherwise the JSON-encoded
+// arguments — map keys sort, so the encoding is stable — which lets rules
+// and grants address MCP arguments. An argument-less call stays "", the
+// name-only form rules had before arguments were addressable.
+func ruleValue(spec *tools.Spec, args map[string]any) string {
+	if spec == nil {
+		if len(args) == 0 {
+			return ""
+		}
+		encoded, err := json.Marshal(args)
+		if err != nil {
+			return ""
+		}
+		return string(encoded)
+	}
+	value, _ := args[spec.RuleArg].(string)
 	return value
 }
 
@@ -167,7 +173,7 @@ func checkBlacklist(category tools.Category, argument string, subcommands []subc
 // An allow rule is also held back from a subcommand that runs code its text does
 // not show — `Bash(echo *)` must not carry `echo $(rm -rf build)` through. Deny
 // and ask rules still apply to it, since those only ever tighten the answer.
-func checkRules(name, argument string, isCommand bool, subcommands []subcommand, rules []Rule) *Decision {
+func checkRules(name, argument string, isCommand bool, subcommands []subcommand, spec *tools.Spec, rules []Rule) *Decision {
 	if len(rules) == 0 {
 		return nil
 	}
@@ -206,7 +212,7 @@ func checkRules(name, argument string, isCommand bool, subcommands []subcommand,
 	}
 
 	var matched *Decision
-	for _, value := range checkPathPattern(name, argument) {
+	for _, value := range checkPathPattern(spec, argument) {
 		switch decision := EvaluateRules(rules, name, value); {
 		case decision == nil:
 		case decision.Effect == Deny:
@@ -284,7 +290,8 @@ func (c *Checker) Check(tool tools.Tool, args map[string]any) Decision {
 	name := tool.Name()
 	category := tool.Category()
 	isCommand := category == tools.CategoryCommand
-	argument := ruleArgument(name, args)
+	spec := specOf(tool)
+	argument := ruleValue(spec, args)
 
 	var subcommands []subcommand
 	if isCommand {
@@ -295,7 +302,7 @@ func (c *Checker) Check(tool tools.Tool, args map[string]any) Decision {
 		return *decision
 	}
 	rules, mode := c.snapshot()
-	decision := checkRules(name, argument, isCommand, subcommands, rules)
+	decision := checkRules(name, argument, isCommand, subcommands, spec, rules)
 	// A deny or ask rule outranks the write boundary; an allow rule does not,
 	// having named a command rather than the path that command writes.
 	if decision != nil && decision.Effect == Allow && isCommand && mode != ModeBypass {
@@ -306,9 +313,14 @@ func (c *Checker) Check(tool tools.Tool, args map[string]any) Decision {
 	if decision != nil {
 		return *decision
 	}
-	if toolSpecs[name].isPath && argument != "" {
-		if resolved, inside := c.resolveInWorkspace(argument); !inside && mode != ModeBypass {
-			return Decision{Effect: Ask, Reason: "path is outside the workspace: " + resolved}
+	// The workspace boundary resolves BoundaryArg, which is not always the
+	// argument rules match: Glob and Grep are ruled by their pattern but may
+	// carry a path to run in.
+	if spec != nil && spec.BoundaryArg != "" && mode != ModeBypass {
+		if path, _ := args[spec.BoundaryArg].(string); path != "" {
+			if resolved, inside := c.resolveInWorkspace(path); !inside {
+				return Decision{Effect: Ask, Reason: "path is outside the workspace: " + resolved}
+			}
 		}
 	}
 	if modeDecision(mode, category) == Allow {

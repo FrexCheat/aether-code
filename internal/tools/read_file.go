@@ -14,6 +14,11 @@ type ReadFileTool struct {
 }
 
 func (t *ReadFileTool) Name() string { return "Read" }
+
+func (t *ReadFileTool) Spec() Spec {
+	return Spec{RuleArg: "file_path", RuleArgIsPath: true, BoundaryArg: "file_path",
+		PromptLine: "读文件用 Read，而不是 cat、head、tail 或 sed"}
+}
 func (t *ReadFileTool) Description() string {
 	return ReadFileDescription
 }

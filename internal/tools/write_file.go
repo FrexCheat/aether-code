@@ -14,6 +14,11 @@ type WriteFileTool struct {
 }
 
 func (t *WriteFileTool) Name() string { return "Write" }
+
+func (t *WriteFileTool) Spec() Spec {
+	return Spec{RuleArg: "file_path", RuleArgIsPath: true, BoundaryArg: "file_path",
+		PromptLine: "新建文件或整体重写用 Write，而不是 echo 或 heredoc"}
+}
 func (t *WriteFileTool) Description() string {
 	return WriteFileDescription
 }

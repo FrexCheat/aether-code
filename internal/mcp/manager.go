@@ -19,7 +19,7 @@ import (
 const connectTimeout = 30 * time.Second
 
 const (
-	toolPrefix    = "mcp__"
+	toolPrefix    = tools.MCPToolPrefix
 	toolSeparator = "__"
 	// maxToolName is the API-side limit on tool names; a longer name would be
 	// rejected by the provider and poison every request, not just this tool's

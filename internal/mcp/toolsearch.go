@@ -32,7 +32,11 @@ type ToolSearchTool struct {
 	mgr *Manager
 }
 
-func (t *ToolSearchTool) Name() string        { return ToolSearchName }
+func (t *ToolSearchTool) Name() string { return ToolSearchName }
+
+// Spec keeps ToolSearch rule-addressable even though it never asks by
+// itself: a rule can name a query it may run unasked.
+func (t *ToolSearchTool) Spec() tools.Spec    { return tools.Spec{RuleArg: "query"} }
 func (t *ToolSearchTool) Description() string { return toolSearchDescription }
 
 // CategoryRead: the search is local and harmless, so it never asks.

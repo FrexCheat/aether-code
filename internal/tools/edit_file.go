@@ -15,6 +15,11 @@ type EditFileTool struct {
 }
 
 func (t *EditFileTool) Name() string { return "Edit" }
+
+func (t *EditFileTool) Spec() Spec {
+	return Spec{RuleArg: "file_path", RuleArgIsPath: true, BoundaryArg: "file_path",
+		PromptLine: "改文件用 Edit，而不是 sed 或 awk"}
+}
 func (t *EditFileTool) Description() string {
 	return EditFileDescription
 }
