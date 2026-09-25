@@ -65,6 +65,29 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+func TestStatusHint(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		want    int
+	}{
+		{"401", "http 401 unauthorized", 401},
+		{"403", "status 403", 401},
+		{"authentication word", "authentication failed", 401},
+		{"429", "http 429", 429},
+		{"rate limit phrase", "Rate Limit exceeded", 429},
+		{"no hint", "something odd happened", 0},
+		{"unrelated digits", "processed 301 items", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := statusHint(tt.message); got != tt.want {
+				t.Errorf("statusHint(%q) = %d, want %d", tt.message, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsContextTooLong(t *testing.T) {
 	tooLong := classify(413, "", "", "prompt is too long", errors.New("cause"))
 	if !IsContextTooLong(tooLong) {

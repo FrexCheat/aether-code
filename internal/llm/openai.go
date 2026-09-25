@@ -47,11 +47,9 @@ func newOpenAIClient(cfg config.Provider, httpClient *http.Client, systemPrompt 
 
 // Stream implements Client.
 func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEvent {
-	ch := make(chan StreamEvent, channelBuffer)
+	s := newStream(ctx)
 	go func() {
-		defer close(ch)
-		send := func(ev StreamEvent) bool { return forwardEvent(ctx, ch, ev) }
-		finish := func(ev StreamEvent) { finishEvent(ctx, ch, ev) }
+		defer close(s.ch)
 
 		stream := c.sdk.Responses.NewStreaming(ctx, c.buildParams(req))
 		defer stream.Close()
@@ -82,7 +80,7 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 				return true
 			}
 			inReasoning = false
-			if !send(ThinkingComplete{Thinking: reasoningText.String(), Signature: reasoningID}) {
+			if !s.send(ThinkingComplete{Thinking: reasoningText.String(), Signature: reasoningID}) {
 				return false
 			}
 			reasoningID = ""
@@ -108,7 +106,7 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 				case responses.ResponseOutputMessage:
 					if inText {
 						inText = false
-						if !send(TextComplete{}) {
+						if !s.send(TextComplete{}) {
 							return
 						}
 					}
@@ -123,7 +121,7 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 				// Argument fragments are ignored; the done event carries the
 				// complete arguments.
 			case responses.ResponseFunctionCallArgumentsDoneEvent:
-				if !send(ToolCallComplete{
+				if !s.send(ToolCallComplete{
 					ToolID:    ev.ItemID,
 					ToolName:  pendingCalls[ev.OutputIndex],
 					Arguments: parseToolArgs(ev.Arguments),
@@ -132,7 +130,7 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 				}
 				delete(pendingCalls, ev.OutputIndex)
 			case responses.ResponseTextDeltaEvent:
-				if !send(TextDelta{Text: ev.Delta}) {
+				if !s.send(TextDelta{Text: ev.Delta}) {
 					return
 				}
 			case responses.ResponseReasoningTextDeltaEvent, responses.ResponseReasoningSummaryTextDeltaEvent:
@@ -145,7 +143,7 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 				}
 				inReasoning = true
 				reasoningText.WriteString(text)
-				if !send(ThinkingDelta{Text: text}) {
+				if !s.send(ThinkingDelta{Text: text}) {
 					return
 				}
 			// Whichever done event arrives first closes the segment; the
@@ -184,20 +182,9 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 			}
 		}
 
-		switch {
-		case ctx.Err() != nil:
-			finish(StreamError{Err: ctx.Err()})
-		case stream.Err() != nil:
-			finish(StreamError{Err: mapOpenAIError(stream.Err())})
-		case failErr != nil:
-			finish(StreamError{Err: failErr})
-		case sawCompleted:
-			finish(StreamEnd{Usage: usage})
-		default:
-			finish(StreamError{Err: errors.New("stream ended unexpectedly")})
-		}
+		s.finish(endStream(ctx, mapOpenAIError(stream.Err()), failErr, sawCompleted, usage))
 	}()
-	return ch
+	return s.ch
 }
 
 func openAIUsage(u responses.ResponseUsage) Usage {
@@ -303,13 +290,7 @@ func mapOpenAIError(err error) error {
 	}
 	status, code, message := extractOpenAIMeta(err)
 	if status == 0 {
-		s := strings.ToLower(err.Error())
-		switch {
-		case strings.Contains(s, "401") || strings.Contains(s, "403") || strings.Contains(s, "authentication"):
-			status = 401
-		case strings.Contains(s, "429") || strings.Contains(s, "rate limit"):
-			status = 429
-		}
+		status = statusHint(message)
 		if status == 0 && isNetworkHint(err) {
 			return &NetworkError{Message: message, Cause: err}
 		}

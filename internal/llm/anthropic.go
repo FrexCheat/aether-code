@@ -54,11 +54,9 @@ func newAnthropicClient(cfg config.Provider, httpClient *http.Client, systemProm
 
 // Stream implements Client.
 func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan StreamEvent {
-	ch := make(chan StreamEvent, channelBuffer)
+	s := newStream(ctx)
 	go func() {
-		defer close(ch)
-		send := func(ev StreamEvent) bool { return forwardEvent(ctx, ch, ev) }
-		finish := func(ev StreamEvent) { finishEvent(ctx, ch, ev) }
+		defer close(s.ch)
 
 		params := c.buildParams(req)
 		var opts []option.RequestOption
@@ -100,12 +98,12 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 			case anthropic.ContentBlockDeltaEvent:
 				switch d := ev.Delta.AsAny().(type) {
 				case anthropic.TextDelta:
-					if !send(TextDelta{Text: d.Text}) {
+					if !s.send(TextDelta{Text: d.Text}) {
 						return
 					}
 				case anthropic.ThinkingDelta:
 					thinkingAccum.WriteString(d.Thinking)
-					if !send(ThinkingDelta{Text: d.Thinking}) {
+					if !s.send(ThinkingDelta{Text: d.Thinking}) {
 						return
 					}
 				case anthropic.SignatureDelta:
@@ -117,11 +115,11 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 				switch {
 				case inText:
 					inText = false
-					if !send(TextComplete{}) {
+					if !s.send(TextComplete{}) {
 						return
 					}
 				case thinkingAccum.Len() > 0:
-					if !send(ThinkingComplete{Thinking: thinkingAccum.String(), Signature: thinkingSignature}) {
+					if !s.send(ThinkingComplete{Thinking: thinkingAccum.String(), Signature: thinkingSignature}) {
 						return
 					}
 					thinkingAccum.Reset()
@@ -134,7 +132,7 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 					if strings.TrimSpace(raw) == "" {
 						raw = string(toolArgsSeed)
 					}
-					if !send(ToolCallComplete{
+					if !s.send(ToolCallComplete{
 						ToolID:    toolCallID,
 						ToolName:  toolCallName,
 						Arguments: parseToolArgs(raw),
@@ -166,18 +164,9 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 			}
 		}
 
-		switch {
-		case ctx.Err() != nil:
-			finish(StreamError{Err: ctx.Err()})
-		case stream.Err() != nil:
-			finish(StreamError{Err: mapAnthropicError(stream.Err())})
-		case sawStop:
-			finish(StreamEnd{Usage: usage})
-		default:
-			finish(StreamError{Err: errors.New("stream ended unexpectedly")})
-		}
+		s.finish(endStream(ctx, mapAnthropicError(stream.Err()), nil, sawStop, usage))
 	}()
-	return ch
+	return s.ch
 }
 
 func anthropicUsage(input, output, cacheRead, cacheWrite int64) Usage {
@@ -352,17 +341,15 @@ func mapAnthropicError(err error) error {
 		message = err.Error()
 	}
 	if status == 0 {
-		s := strings.ToLower(err.Error())
-		switch {
-		case strings.Contains(s, "401") || strings.Contains(s, "403") || strings.Contains(s, "authentication"):
-			status = 401
-		case strings.Contains(s, "429") || strings.Contains(s, "rate limit"):
-			status = 429
-		case strings.Contains(s, "overloaded") || strings.Contains(s, "529"):
-			return &ServerError{Message: message, Cause: err}
-		}
-		if status == 0 && isNetworkHint(err) {
-			return &NetworkError{Message: message, Cause: err}
+		status = statusHint(message)
+		if status == 0 {
+			s := strings.ToLower(err.Error())
+			if strings.Contains(s, "overloaded") || strings.Contains(s, "529") {
+				return &ServerError{Message: message, Cause: err}
+			}
+			if isNetworkHint(err) {
+				return &NetworkError{Message: message, Cause: err}
+			}
 		}
 	}
 	return classify(status, apiType, "", message, err)

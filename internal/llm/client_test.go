@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -67,6 +68,55 @@ func TestUsageAccessors(t *testing.T) {
 			}
 			if got := tt.usage.TotalTokens(); got != tt.total {
 				t.Errorf("TotalTokens() = %d, want %d", got, tt.total)
+			}
+		})
+	}
+}
+
+func TestEndStream(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	background := context.Background()
+	cause := errors.New("cause")
+
+	tests := []struct {
+		name      string
+		ctx       context.Context
+		streamErr error
+		failErr   error
+		completed bool
+		wantEnd   bool
+		wantErr   error  // compared with errors.Is; nil means "unexpected" message expected
+		wantMsg   string // checked when wantErr is nil and wantEnd is false
+	}{
+		{"cancellation wins", cancelled, cause, cause, true, false, context.Canceled, ""},
+		{"stream error beats in-band", background, cause, errors.New("in-band"), true, false, cause, ""},
+		{"in-band failure", background, nil, cause, true, false, cause, ""},
+		{"completed", background, nil, nil, true, true, nil, ""},
+		{"unexpected", background, nil, nil, false, false, nil, "stream ended unexpectedly"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev := endStream(tt.ctx, tt.streamErr, tt.failErr, tt.completed, contractUsage)
+			if tt.wantEnd {
+				end, ok := ev.(StreamEnd)
+				if !ok {
+					t.Fatalf("event = %T, want StreamEnd", ev)
+				}
+				if end.Usage != contractUsage {
+					t.Errorf("usage = %+v, want %+v", end.Usage, contractUsage)
+				}
+				return
+			}
+			streamErr, ok := ev.(StreamError)
+			if !ok {
+				t.Fatalf("event = %T, want StreamError", ev)
+			}
+			if tt.wantErr != nil && !errors.Is(streamErr.Err, tt.wantErr) {
+				t.Errorf("err = %v, want %v", streamErr.Err, tt.wantErr)
+			}
+			if tt.wantMsg != "" && streamErr.Err.Error() != tt.wantMsg {
+				t.Errorf("err = %q, want %q", streamErr.Err.Error(), tt.wantMsg)
 			}
 		})
 	}

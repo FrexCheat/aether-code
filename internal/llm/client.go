@@ -6,6 +6,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -104,6 +105,43 @@ func finishEvent(ctx context.Context, ch chan<- StreamEvent, ev StreamEvent) {
 	select {
 	case ch <- ev:
 	case <-ctx.Done():
+	}
+}
+
+// stream bundles the response channel with the delivery closures both
+// adapters send through. The adapter goroutine closes ch on exit; send and
+// finish are bound to the request's ctx.
+type stream struct {
+	ch     chan StreamEvent
+	send   func(StreamEvent) bool
+	finish func(StreamEvent)
+}
+
+func newStream(ctx context.Context) stream {
+	ch := make(chan StreamEvent, channelBuffer)
+	return stream{
+		ch:     ch,
+		send:   func(ev StreamEvent) bool { return forwardEvent(ctx, ch, ev) },
+		finish: func(ev StreamEvent) { finishEvent(ctx, ch, ev) },
+	}
+}
+
+// endStream decides the terminal event once an adapter's event loop ends.
+// Priority: cancellation, the adapter's already-mapped stream error, a
+// failure recorded in-band by the protocol, completion. None of those means
+// the stream ended unexpectedly.
+func endStream(ctx context.Context, streamErr, failErr error, completed bool, usage Usage) StreamEvent {
+	switch {
+	case ctx.Err() != nil:
+		return StreamError{Err: ctx.Err()}
+	case streamErr != nil:
+		return StreamError{Err: streamErr}
+	case failErr != nil:
+		return StreamError{Err: failErr}
+	case completed:
+		return StreamEnd{Usage: usage}
+	default:
+		return StreamError{Err: errors.New("stream ended unexpectedly")}
 	}
 }
 

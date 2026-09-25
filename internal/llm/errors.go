@@ -151,3 +151,18 @@ func isNetworkHint(err error) bool {
 	_, ok := errors.AsType[net.Error](err)
 	return ok
 }
+
+// statusHint recovers an HTTP status from an error's text when the SDK
+// surfaced none: 401/403 for auth, 429 for rate limit, 0 otherwise. Both
+// adapters share this sniff — the SDKs do not always turn the wire status
+// into a typed error on streaming paths.
+func statusHint(message string) int {
+	s := strings.ToLower(message)
+	switch {
+	case strings.Contains(s, "401") || strings.Contains(s, "403") || strings.Contains(s, "authentication"):
+		return 401
+	case strings.Contains(s, "429") || strings.Contains(s, "rate limit"):
+		return 429
+	}
+	return 0
+}
