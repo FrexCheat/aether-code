@@ -3,6 +3,7 @@ package agent
 import (
 	"time"
 
+	"github.com/FrexCheat/aether-code/internal/compaction"
 	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/FrexCheat/aether-code/internal/permissions"
 	"github.com/FrexCheat/aether-code/internal/tools"
@@ -54,17 +55,9 @@ type LoopComplete struct {
 
 type LoopError struct{ Err error }
 
-type CompactionStart struct{ Auto bool }
-
-type CompactionDone struct {
-	Auto                 bool
-	FromTokens, ToTokens int
-}
-
-type CompactionFailed struct {
-	Auto bool
-	Err  error
-}
+// CompactionProgress carries one compaction progress step; the payload type
+// stays in the compaction package so the vocabulary has a single definition.
+type CompactionProgress struct{ Progress compaction.Progress }
 
 // PermissionRequestEvent carries a question the loop is blocked on; the call
 // proceeds only once the answer is sent on Request.Reply.
@@ -79,6 +72,4 @@ func (ToolCallEnd) event()            {}
 func (LoopComplete) event()           {}
 func (LoopError) event()              {}
 func (PermissionRequestEvent) event() {}
-func (CompactionStart) event()        {}
-func (CompactionDone) event()         {}
-func (CompactionFailed) event()       {}
+func (CompactionProgress) event()     {}

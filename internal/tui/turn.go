@@ -95,13 +95,9 @@ func (m *Model) foldEvent(ev agent.Event) tea.Cmd {
 				isDiff:  e.Result.IsDiff,
 			})
 		}
-	case agent.CompactionStart:
-		m.emit(block{kind: blockNotice, body: "Compacting conversation…"})
-	case agent.CompactionDone:
-		m.emit(block{kind: blockNotice, body: fmt.Sprintf("Context compacted: %s → %s tokens",
-			formatTokenCount(e.FromTokens), formatTokenCount(e.ToTokens))})
-	case agent.CompactionFailed:
-		m.emit(block{kind: blockNotice, body: "Compaction failed: " + e.Err.Error(), severity: noticeWarn})
+	case agent.CompactionProgress:
+		body, severity := compactionNotice(e.Progress)
+		m.emit(block{kind: blockNotice, body: body, severity: severity})
 	case agent.PermissionRequestEvent:
 		m.dialog.Open(&e.Request)
 		m.live.Pause()
@@ -183,9 +179,25 @@ func (m *Model) rebuildHistory() {
 	}
 }
 
+// compactionNotice renders one compaction progress step; both the in-turn
+// path and /compact flow through it so the wording cannot diverge.
+func compactionNotice(p compaction.Progress) (string, noticeSeverity) {
+	switch p.Phase {
+	case compaction.PhaseStart:
+		return "Compacting conversation…", noticeInfo
+	case compaction.PhaseDone:
+		return fmt.Sprintf("Context compacted: %s → %s tokens",
+			formatTokenCount(p.FromTokens), formatTokenCount(p.ToTokens)), noticeInfo
+	case compaction.PhaseFailed:
+		return "Compaction failed: " + p.Err.Error(), noticeWarn
+	default:
+		return "", noticeInfo
+	}
+}
+
 // runCompact is the only writer of the history outside a turn; it runs while
 // the input gate is closed.
-func runCompact(mgr *compaction.Manager) tea.Cmd {
+func runCompact(mgr Compactor) tea.Cmd {
 	return func() tea.Msg {
 		res, err := mgr.ForceCompact(context.Background(), nil)
 		return compactDoneMsg{result: res, err: err}
@@ -196,13 +208,14 @@ func (m Model) compactDone(msg compactDoneMsg) (Model, tea.Cmd) {
 	m.compacting = false
 	switch {
 	case msg.err != nil:
-		m.emit(block{kind: blockNotice, body: "Compaction failed: " + msg.err.Error(), severity: noticeError})
+		body, severity := compactionNotice(compaction.Progress{Phase: compaction.PhaseFailed, Err: msg.err})
+		m.emit(block{kind: blockNotice, body: body, severity: severity})
 	case !msg.result.Compacted:
 		m.emit(block{kind: blockNotice, body: "Nothing to compact."})
 	default:
-		text := fmt.Sprintf("Context compacted: %s → %s tokens",
-			formatTokenCount(msg.result.FromTokens), formatTokenCount(msg.result.ToTokens))
-		m.emit(block{kind: blockNotice, body: text})
+		body, severity := compactionNotice(compaction.Progress{Phase: compaction.PhaseDone,
+			FromTokens: msg.result.FromTokens, ToTokens: msg.result.ToTokens})
+		m.emit(block{kind: blockNotice, body: body, severity: severity})
 	}
 	m.stopClockIfIdle()
 	return m, nil

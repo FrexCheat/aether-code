@@ -90,6 +90,7 @@ func main() {
 		Schemas:       registry.Schemas,
 		SystemPrompt:  systemPrompt,
 		ContextWindow: active.ContextWindow,
+		MaxOutput:     active.MaxOutputTokens,
 		SpillDir:      sess.SpillDir(),
 	})
 

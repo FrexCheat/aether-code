@@ -12,10 +12,6 @@ import (
 )
 
 const (
-	outputReserveTokens = 20000
-	autoCompactMargin   = 13000
-	forceMargin         = 3000
-
 	keepRecentTokens = 10000
 	keepMinMessages  = 5
 	keepMaxTokens    = 40000
@@ -38,9 +34,10 @@ const summaryPrompt = `严格禁止调用任何工具：不要调用任何工具
 输出格式（严格遵守）：先输出 <analysis> 标签，在其中起草上述各节并自查完整性（该草稿随后会被丢弃）；确认无误后输出 <summary> 标签，给出最终摘要正文。<summary> 结束后不得再有任何文字。再次强调：全程禁止任何工具调用。`
 
 // compact summarizes history[:keepStart] into one boundary user message and
-// keeps the tail verbatim. The caller owns locking; auto toggles whether a
-// failure feeds the circuit breaker.
-func (m *Manager) compact(ctx context.Context, notify func(Event), auto bool) (Result, error) {
+// keeps the tail verbatim. The caller owns locking; auto marks the
+// pre-request path in the progress events, while band decides which
+// circuit-breaker counter a failure feeds.
+func (m *Manager) compact(ctx context.Context, notify func(Progress), auto bool, band failBand) (Result, error) {
 	msgs := m.conv.Messages()
 	keepStart := computeKeepBoundary(m.estimator, msgs)
 	from := m.usedTokens()
@@ -48,15 +45,13 @@ func (m *Manager) compact(ctx context.Context, notify func(Event), auto bool) (R
 		return Result{FromTokens: from, ToTokens: from}, nil
 	}
 	if notify != nil {
-		notify(StartEvent{Auto: auto})
+		notify(Progress{Phase: PhaseStart, Auto: auto})
 	}
 	reply, err := m.summarize(ctx, msgs[:keepStart])
 	if err != nil {
-		if auto {
-			m.failures++
-		}
+		m.countFailure(band)
 		if notify != nil {
-			notify(FailEvent{Auto: auto, Err: err})
+			notify(Progress{Phase: PhaseFailed, Auto: auto, Err: err})
 		}
 		return Result{FromTokens: from}, fmt.Errorf("compaction: summary failed: %w", err)
 	}
@@ -67,21 +62,20 @@ func (m *Manager) compact(ctx context.Context, notify func(Event), auto bool) (R
 		// A refused rewrite is a summary failure for the breaker's purposes:
 		// without this every round would re-run a full summarize call while
 		// the archive is broken.
-		if auto {
-			m.failures++
-		}
+		m.countFailure(band)
 		if notify != nil {
-			notify(FailEvent{Auto: auto, Err: err})
+			notify(Progress{Phase: PhaseFailed, Auto: auto, Err: err})
 		}
 		return Result{FromTokens: from}, fmt.Errorf("compaction: cannot rewrite the prefix: %w", err)
 	}
 	// The old anchor counts a history that no longer exists.
 	m.anchor = UsageAnchor{}
 	m.failures = 0
+	m.forceFailures = 0
 	m.publish()
 	res := Result{Compacted: true, FromTokens: from, ToTokens: m.usedTokens()}
 	if notify != nil {
-		notify(DoneEvent{Auto: auto, FromTokens: res.FromTokens, ToTokens: res.ToTokens})
+		notify(Progress{Phase: PhaseDone, Auto: auto, FromTokens: res.FromTokens, ToTokens: res.ToTokens})
 	}
 	return res, nil
 }

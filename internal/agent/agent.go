@@ -25,12 +25,21 @@ const deferredReminderTemplate = "以下 MCP 工具处于延迟加载状态，�
 // compaction drops it.
 const deferredMarker = "以下 MCP 工具处于延迟加载状态"
 
+// Compactor is the loop's view of the compaction layer.
+type Compactor interface {
+	Prepare(ctx context.Context, notify func(compaction.Progress))
+	ForceCompact(ctx context.Context, notify func(compaction.Progress)) (compaction.Result, error)
+	RecordUsage(u llm.Usage)
+}
+
+var _ Compactor = (*compaction.Manager)(nil)
+
 type Agent struct {
 	client        llm.Client
 	registry      *tools.Registry
 	checker       *permissions.Checker // nil disables permission checks entirely
 	deferredNames func() []string      // nil: every schema is already on the wire
-	compactor     *compaction.Manager  // nil disables context compaction
+	compactor     Compactor            // nil disables context compaction
 	askMu         sync.Mutex           // one confirmation dialog at a time
 }
 
@@ -42,7 +51,7 @@ type roundResult struct {
 	err       error
 }
 
-func New(client llm.Client, registry *tools.Registry, checker *permissions.Checker, deferredNames func() []string, compactor *compaction.Manager) *Agent {
+func New(client llm.Client, registry *tools.Registry, checker *permissions.Checker, deferredNames func() []string, compactor Compactor) *Agent {
 	return &Agent{
 		client:        client,
 		registry:      registry,
@@ -130,12 +139,14 @@ func (a *Agent) Run(ctx context.Context, conv *conversation.Manager) <-chan Even
 // context-too-long rejection force-compacts and retries the round once, the
 // provider having refused before any content block arrived.
 func (a *Agent) runRound(ctx context.Context, conv *conversation.Manager, send eventSink) roundResult {
+	skipPrepare := false
 	for attempt := 1; ; attempt++ {
-		if a.compactor != nil {
+		if a.compactor != nil && !skipPrepare {
 			// Prepare rewrites the stored history, so it must run before the
 			// request copy is taken.
 			a.compactor.Prepare(ctx, a.notifyCompaction(send))
 		}
+		skipPrepare = false
 		// The reminders ride the stored history: one stable copy per session,
 		// put back whenever compaction dropped it. They never reach the
 		// archive (the session's journal skips reminders), so a resume
@@ -148,6 +159,10 @@ func (a *Agent) runRound(ctx context.Context, conv *conversation.Manager, send e
 		result := a.stream(ctx, messages, send)
 		if attempt == 1 && a.compactor != nil && llm.IsContextTooLong(result.err) {
 			if _, err := a.compactor.ForceCompact(ctx, a.notifyCompaction(send)); err == nil {
+				// The force pass already ran Layer 1, and Layer 2 would
+				// re-trigger at the still-elevated estimate whenever the kept
+				// tail itself sits above the line: skip exactly one Prepare.
+				skipPrepare = true
 				continue
 			}
 		}
@@ -259,18 +274,11 @@ func (a *Agent) stream(ctx context.Context, messages []conversation.Message, sen
 	return finish()
 }
 
-// notifyCompaction translates compaction events into agent events; a send on
-// a cancelled turn just drops them.
-func (a *Agent) notifyCompaction(send eventSink) func(compaction.Event) {
-	return func(e compaction.Event) {
-		switch e := e.(type) {
-		case compaction.StartEvent:
-			send(CompactionStart{Auto: e.Auto})
-		case compaction.DoneEvent:
-			send(CompactionDone{Auto: e.Auto, FromTokens: e.FromTokens, ToTokens: e.ToTokens})
-		case compaction.FailEvent:
-			send(CompactionFailed{Auto: e.Auto, Err: e.Err})
-		}
+// notifyCompaction forwards compaction progress to the UI; a send on a
+// cancelled turn just drops it.
+func (a *Agent) notifyCompaction(send eventSink) func(compaction.Progress) {
+	return func(p compaction.Progress) {
+		send(CompactionProgress{Progress: p})
 	}
 }
 

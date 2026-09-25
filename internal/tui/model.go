@@ -23,11 +23,23 @@ const wheelLines = 3
 
 const availableCommands = "/quit, /exit, /clear, /compact"
 
+// Compactor is the window's view of the compaction layer.
+type Compactor interface {
+	UsedTokens() int
+	ContextWindow() int
+	Level() compaction.Level
+	ForceCompact(ctx context.Context, notify func(compaction.Progress)) (compaction.Result, error)
+	Reset()
+	SetSpillDir(dir string)
+}
+
+var _ Compactor = (*compaction.Manager)(nil)
+
 type Options struct {
 	Agent     *agent.Agent
 	Conv      *conversation.Manager
 	MCP       *mcp.Manager
-	Compactor *compaction.Manager
+	Compactor Compactor
 	Provider  config.Provider
 	Version   string
 	WorkDir   string
@@ -210,6 +222,12 @@ func (m Model) footer() components.FooterData {
 			formatTokenCount(m.opts.Compactor.UsedTokens()),
 			formatTokenCount(m.opts.Compactor.ContextWindow()),
 			cacheHitRate(m.lastUsage))
+		switch m.opts.Compactor.Level() {
+		case compaction.LevelWarn:
+			f.Usage += " · context low"
+		case compaction.LevelForce:
+			f.Usage += " · context critical — /compact"
+		}
 	}
 	return f
 }
