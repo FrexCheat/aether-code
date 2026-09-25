@@ -188,19 +188,6 @@ func (m *Manager) ContentCount(from int) int {
 	return n
 }
 
-// ContainsText reports whether any message content contains marker.
-func ContainsText(msgs []Message, marker string) bool {
-	if marker == "" {
-		return false
-	}
-	for _, msg := range msgs {
-		if strings.Contains(msg.Content, marker) {
-			return true
-		}
-	}
-	return false
-}
-
 // IsReminder reports whether the message is one of the injected
 // <system-reminder> wrappers rather than conversation content.
 func IsReminder(msg Message) bool {
@@ -209,7 +196,7 @@ func IsReminder(msg Message) bool {
 
 // EnsureReminder appends the reminder unless the marker already appears in the
 // history or text is empty; reports whether it added one. The marker is
-// expected to be a stable first line of text (see memory.SessionContext).
+// expected to be a stable first line of text (see agent.deferredMarker).
 func EnsureReminder(m *Manager, marker, text string) (bool, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {

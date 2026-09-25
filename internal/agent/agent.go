@@ -26,13 +26,12 @@ const deferredReminderTemplate = "以下 MCP 工具处于延迟加载状态，�
 const deferredMarker = "以下 MCP 工具处于延迟加载状态"
 
 type Agent struct {
-	client         llm.Client
-	registry       *tools.Registry
-	checker        *permissions.Checker         // nil disables permission checks entirely
-	deferredNames  func() []string              // nil: every schema is already on the wire
-	compactor      *compaction.Manager          // nil disables context compaction
-	sessionContext func() (marker, text string) // nil: nothing to inject
-	askMu          sync.Mutex                   // one confirmation dialog at a time
+	client        llm.Client
+	registry      *tools.Registry
+	checker       *permissions.Checker // nil disables permission checks entirely
+	deferredNames func() []string      // nil: every schema is already on the wire
+	compactor     *compaction.Manager  // nil disables context compaction
+	askMu         sync.Mutex           // one confirmation dialog at a time
 }
 
 type roundResult struct {
@@ -43,14 +42,13 @@ type roundResult struct {
 	err       error
 }
 
-func New(client llm.Client, registry *tools.Registry, checker *permissions.Checker, deferredNames func() []string, compactor *compaction.Manager, sessionContext func() (marker, text string)) *Agent {
+func New(client llm.Client, registry *tools.Registry, checker *permissions.Checker, deferredNames func() []string, compactor *compaction.Manager) *Agent {
 	return &Agent{
-		client:         client,
-		registry:       registry,
-		checker:        checker,
-		deferredNames:  deferredNames,
-		compactor:      compactor,
-		sessionContext: sessionContext,
+		client:        client,
+		registry:      registry,
+		checker:       checker,
+		deferredNames: deferredNames,
+		compactor:     compactor,
 	}
 }
 
@@ -157,23 +155,19 @@ func (a *Agent) runRound(ctx context.Context, conv *conversation.Manager, send e
 	}
 }
 
-// injectReminders appends the session-context and deferred-tools reminders
-// unless their markers are already in the history.
+// injectReminders appends the deferred-tools reminder unless its marker is
+// already in the history. The AETHER.md chain is not here: it is a system
+// prompt section, outside the message history, so compaction cannot drop it.
 func (a *Agent) injectReminders(conv *conversation.Manager) error {
-	if a.sessionContext != nil {
-		marker, text := a.sessionContext()
-		if _, err := conversation.EnsureReminder(conv, marker, text); err != nil {
-			return err
-		}
+	if a.deferredNames == nil {
+		return nil
 	}
-	if a.deferredNames != nil {
-		if names := a.deferredNames(); len(names) > 0 {
-			if _, err := conversation.EnsureReminder(conv, deferredMarker, deferredReminder(names)); err != nil {
-				return err
-			}
-		}
+	names := a.deferredNames()
+	if len(names) == 0 {
+		return nil
 	}
-	return nil
+	_, err := conversation.EnsureReminder(conv, deferredMarker, deferredReminder(names))
+	return err
 }
 
 // repairToolRefs drops tool_reference names the registry no longer offers on

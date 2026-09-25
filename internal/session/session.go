@@ -187,23 +187,6 @@ func resume(conv *conversation.Manager, id string) (*Session, Info, error) {
 
 func (s *Session) ID() string { return s.id }
 
-// Count is the number of archived messages — the extraction cursor's base.
-func (s *Session) Count() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.log)
-}
-
-// MessagesFrom returns a clamped copy of the archived messages from n on.
-func (s *Session) MessagesFrom(n int) []conversation.Message {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	n = min(max(n, 0), len(s.log))
-	out := make([]conversation.Message, len(s.log)-n)
-	copy(out, s.log[n:])
-	return out
-}
-
 // IsBoundary reports whether a user message is a compaction boundary rather
 // than something the user typed.
 func (s *Session) IsBoundary(content string) bool {

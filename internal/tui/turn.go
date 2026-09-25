@@ -9,9 +9,7 @@ import (
 
 	"github.com/FrexCheat/aether-code/internal/agent"
 	"github.com/FrexCheat/aether-code/internal/compaction"
-	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
-	"github.com/FrexCheat/aether-code/internal/memory"
 	"github.com/FrexCheat/aether-code/internal/permissions"
 )
 
@@ -20,18 +18,6 @@ type streamBatchMsg []agent.Event
 type compactDoneMsg struct {
 	result compaction.Result
 	err    error
-}
-
-// extractTail is how many archived messages a resumed session re-offers to
-// the extractor: a crashed tail then still gets one pass, and the overlap is
-// cheap next to the dedup the extractor's prompt already asks for.
-const extractTail = 40
-
-type extractDoneMsg struct {
-	sessionID string
-	end       int
-	applied   int
-	err       error
 }
 
 // waitStream drains whatever the event channel already holds into one batch, so
@@ -120,20 +106,19 @@ func (m *Model) foldEvent(ev agent.Event) tea.Cmd {
 		m.dialog.Open(&e.Request)
 		m.live.Pause()
 	case agent.LoopError, agent.LoopComplete:
-		return m.closeLive(ev)
+		m.closeLive(ev)
 	}
 	return nil
 }
 
-func (m *Model) closeLive(ev agent.Event) tea.Cmd {
+func (m *Model) closeLive(ev agent.Event) {
 	if !m.live.Active() {
-		return nil
+		return
 	}
 	elapsed := m.live.Elapsed()
 	if text := m.live.TakeText(); text != "" {
 		m.emit(block{kind: blockAssistant, body: text})
 	}
-	var extraction tea.Cmd
 	switch e := ev.(type) {
 	case agent.LoopComplete:
 		if e.Usage != (llm.Usage{}) {
@@ -142,9 +127,6 @@ func (m *Model) closeLive(ev agent.Event) tea.Cmd {
 		switch e.Reason {
 		case agent.StoppedByModel:
 			m.emit(block{kind: blockTurn, elapsed: elapsed, at: time.Now(), usage: e.Usage})
-			// The model finished on its own: the one moment a turn is worth
-			// mining for memory notes.
-			extraction = m.startExtraction()
 		case agent.StoppedByLimit:
 			limit := fmt.Sprintf("Round limit reached after %d tool rounds — the loop stopped before running out of control.", e.ToolRounds)
 			m.emit(block{kind: blockNotice, body: limit, severity: noticeWarn})
@@ -160,47 +142,6 @@ func (m *Model) closeLive(ev agent.Event) tea.Cmd {
 	m.live.Finish()
 	m.reportSessionError()
 	m.stopClockIfIdle()
-	return extraction
-}
-
-// startExtraction runs one background note-extraction pass over the archived
-// messages the previous pass has not seen; a tiny window or an in-flight pass
-// is skipped, leaving the cursor where it is.
-func (m *Model) startExtraction() tea.Cmd {
-	if m.opts.Memory == nil || m.session == nil || m.extracting {
-		return nil
-	}
-	msgs := m.session.MessagesFrom(m.extractCursor)
-	if contentChars(msgs) < memory.MinExtractChars {
-		return nil
-	}
-	m.extracting = true
-	end := m.session.Count()
-	sessionID := m.session.ID()
-	mem := m.opts.Memory
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		res, err := mem.Extract(ctx, msgs)
-		return extractDoneMsg{sessionID: sessionID, end: end, applied: len(res.Applied), err: err}
-	}
-}
-
-// extractDone settles one background pass; results for a session that is no
-// longer current (a /clear happened meanwhile) are dropped.
-func (m Model) extractDone(msg extractDoneMsg) (Model, tea.Cmd) {
-	if m.session == nil || msg.sessionID != m.session.ID() {
-		return m, nil
-	}
-	m.extracting = false
-	if msg.err != nil {
-		return m, nil // best-effort background work stays quiet
-	}
-	m.extractCursor = min(msg.end, m.session.Count())
-	if msg.applied > 0 {
-		m.emit(block{kind: blockNotice, body: fmt.Sprintf("Memory: %d note(s) saved", msg.applied)})
-	}
-	return m, nil
 }
 
 // reportSessionError surfaces the archive's first write failure once; the
@@ -214,18 +155,6 @@ func (m *Model) reportSessionError() {
 		m.sessionWarned = true
 		m.emit(block{kind: blockNotice, body: "Session archive is not being saved: " + err.Error(), severity: noticeWarn})
 	}
-}
-
-// contentChars measures a window cheaply, for the skip guard only.
-func contentChars(msgs []conversation.Message) int {
-	n := 0
-	for _, m := range msgs {
-		n += len(m.Content)
-		for _, tr := range m.ToolResults {
-			n += len(tr.Content)
-		}
-	}
-	return n
 }
 
 // emit records a block and renders it into the history.

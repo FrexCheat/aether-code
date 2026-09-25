@@ -13,7 +13,6 @@ import (
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/FrexCheat/aether-code/internal/mcp"
-	"github.com/FrexCheat/aether-code/internal/memory"
 	"github.com/FrexCheat/aether-code/internal/permissions"
 	"github.com/FrexCheat/aether-code/internal/session"
 	"github.com/FrexCheat/aether-code/internal/tui/components"
@@ -33,7 +32,6 @@ type Options struct {
 	Version   string
 	WorkDir   string
 	Session   *session.Session
-	Memory    *memory.Manager
 	// StartupNotice is shown as a status block on first render: a resume
 	// notice, a fallback when --continue found nothing, a cwd warning.
 	StartupNotice string
@@ -57,8 +55,6 @@ type Model struct {
 	transcript        *transcriptView
 	lastUsage         llm.Usage
 	session           *session.Session
-	extracting        bool
-	extractCursor     int
 	sessionWarned     bool
 }
 
@@ -114,11 +110,6 @@ func newModel(opts Options) Model {
 	}
 	if opts.StartupNotice != "" {
 		m.blocks = append(m.blocks, block{kind: blockStatus, body: opts.StartupNotice})
-	}
-	if opts.Session != nil {
-		// Rewind the extraction window so a crashed tail still gets one pass;
-		// the duplicate window is cheap and the extractor's dedup handles it.
-		m.extractCursor = max(opts.Session.Count()-extractTail, 0)
 	}
 	return m
 }
@@ -176,9 +167,6 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 
 	case compactDoneMsg:
 		return m.compactDone(msg)
-
-	case extractDoneMsg:
-		return m.extractDone(msg)
 	}
 
 	var cmd tea.Cmd
@@ -318,15 +306,10 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 			previous.Close()
 		}
 		m.opts.Conv.Clear()
-		if m.opts.Memory != nil {
-			_, _ = m.opts.Memory.Inject(m.opts.Conv)
-		}
 		if m.opts.Compactor != nil {
 			m.opts.Compactor.Reset()
 		}
 		m.lastUsage = llm.Usage{}
-		m.extracting = false
-		m.extractCursor = 0
 		m.sessionWarned = false
 		m.blocks = nil
 		m.scroll = scrollState{follow: true}

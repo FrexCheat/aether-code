@@ -12,7 +12,6 @@ import (
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/FrexCheat/aether-code/internal/mcp"
-	"github.com/FrexCheat/aether-code/internal/memory"
 	"github.com/FrexCheat/aether-code/internal/permissions"
 	"github.com/FrexCheat/aether-code/internal/prompt"
 	"github.com/FrexCheat/aether-code/internal/session"
@@ -81,20 +80,13 @@ func main() {
 	}
 	defer sess.Close()
 
-	mem := memory.NewManager(client, cwd)
-	if _, err := mem.Inject(conv); err != nil {
-		fail(err)
-	}
-	// The agent reads its own notes and spill files without a boundary
-	// prompt; the user-level settings file (it holds API keys) stays out.
-	if dir := memory.Dir(cwd); dir != "" {
-		checker.AddAllowedRoot(dir)
-	}
+	// The agent reads its own spill files without a boundary prompt; the
+	// user-level settings file (it holds API keys) stays out.
 	checker.AddAllowedRoot(sess.SpillDir())
 
 	compactor := compaction.NewManager(client, conv, registry.Schemas, active.ContextWindow, sess.SpillDir())
 
-	ag := agent.New(client, registry, checker, mcpMgr.DeferredNames, compactor, mem.SessionContext)
+	ag := agent.New(client, registry, checker, mcpMgr.DeferredNames, compactor)
 
 	if err := tui.Run(tui.Options{
 		Agent:         ag,
@@ -105,7 +97,6 @@ func main() {
 		Version:       version.Version,
 		WorkDir:       cwd,
 		Session:       sess,
-		Memory:        mem,
 		StartupNotice: notice,
 	}); err != nil {
 		fail(err)

@@ -54,6 +54,7 @@ func DetectEnvironment(workDir string) Environment {
 func BuildSystemPrompt(env Environment) string {
 	sections := []section{
 		identitySection(),
+		projectInstructionsSection(env.WorkDir),
 		systemSection(),
 		doingTasksSection(),
 		executingActionsSection(),

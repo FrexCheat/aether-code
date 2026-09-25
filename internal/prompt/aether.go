@@ -1,4 +1,4 @@
-package memory
+package prompt
 
 import (
 	"os"
@@ -8,17 +8,39 @@ import (
 	"unicode/utf8"
 )
 
-const aetherMaxFile = 24 * 1024
+const (
+	aetherMaxFile  = 24 * 1024
+	aetherMaxChain = 48 * 1024
+)
+
+// projectInstructionsSection carries the AETHER.md chain at the top of the
+// prompt, ahead of the generic sections: project instructions outrank the
+// defaults. An empty chain yields empty content, dropped by the assembler.
+func projectInstructionsSection(cwd string) section {
+	chain := loadAetherChain(cwd)
+	if chain == "" {
+		return section{}
+	}
+	return section{
+		priority: 8,
+		content: "## 项目指令\n" +
+			"以下是本仓库的 AETHER.md 指令链（从仓库根目录到当前工作目录逐级排列，越靠后越具体、发生冲突时以靠后者为准）：\n\n" +
+			chain,
+	}
+}
 
 // loadAetherChain concatenates the AETHER.md files from the repository root
 // down to the working directory — the closest file last, so it wins by
 // position — each labelled with its path and capped, with a total budget.
 // Outside a repository only the working directory itself is consulted. There
 // is no user-level file: instructions are project-scoped by design.
-func loadAetherChain(cwd string, totalCap int) string {
+func loadAetherChain(cwd string) string {
 	var b strings.Builder
-	remaining := totalCap
+	remaining := aetherMaxChain
 	for _, dir := range aetherDirs(cwd) {
+		if remaining <= 0 {
+			break
+		}
 		path := filepath.Join(dir, "AETHER.md")
 		data, err := os.ReadFile(path)
 		if err != nil || len(strings.TrimSpace(string(data))) == 0 {
@@ -28,7 +50,7 @@ func loadAetherChain(cwd string, totalCap int) string {
 		if text == "" {
 			continue
 		}
-		entry := "Contents of " + path + ":\n\n" + text + "\n\n"
+		entry := "以下来自 " + path + "：\n\n" + text + "\n\n"
 		remaining -= len(entry)
 		b.WriteString(entry)
 	}
