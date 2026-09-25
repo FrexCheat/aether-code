@@ -33,6 +33,10 @@ type Provider struct {
 	Thinking bool     `yaml:"thinking"`
 	// Zero means "not configured" and resolves to the protocol default.
 	ContextWindow int `yaml:"context_window"`
+	// MaxOutputTokens is the per-request output cap. The compaction layer
+	// derives its output reserve from it, so the trigger line and the request
+	// ceiling never drift apart. Zero resolves to the protocol default.
+	MaxOutputTokens int `yaml:"max_output_tokens"`
 }
 
 type Config struct {
@@ -61,8 +65,8 @@ func Load(dir string) (*Config, error) {
 }
 
 // DataRoot is the user-level aether directory: $AETHER_HOME when set,
-// otherwise ~/.aether. User settings, permission rules, sessions and memory
-// all live under it. Empty when no home directory can be resolved.
+// otherwise ~/.aether. User settings, permission rules and sessions all live
+// under it. Empty when no home directory can be resolved.
 func DataRoot() string {
 	if home := os.Getenv("AETHER_HOME"); home != "" {
 		return home
@@ -76,13 +80,20 @@ func DataRoot() string {
 
 func (c *Config) applyDefaults() {
 	for i := range c.Providers {
-		if c.Providers[i].ContextWindow != 0 {
-			continue
+		p := &c.Providers[i]
+		if p.ContextWindow == 0 {
+			if p.Protocol == ProtocolOpenAI {
+				p.ContextWindow = 128000
+			} else {
+				p.ContextWindow = 200000
+			}
 		}
-		if c.Providers[i].Protocol == ProtocolOpenAI {
-			c.Providers[i].ContextWindow = 128000
-		} else {
-			c.Providers[i].ContextWindow = 200000
+		if p.MaxOutputTokens == 0 {
+			if p.Protocol == ProtocolOpenAI {
+				p.MaxOutputTokens = 32000
+			} else {
+				p.MaxOutputTokens = 16384
+			}
 		}
 	}
 }
@@ -124,6 +135,9 @@ func (c *Config) validate(path string) error {
 		}
 		if p.ContextWindow < 0 {
 			return fmt.Errorf("%s: providers[%d].context_window must not be negative", path, i)
+		}
+		if p.MaxOutputTokens < 0 {
+			return fmt.Errorf("%s: providers[%d].max_output_tokens must not be negative", path, i)
 		}
 		if j, dup := seen[p.Name]; dup {
 			return fmt.Errorf("%s: providers[%d].name %q duplicates providers[%d]", path, i, p.Name, j)

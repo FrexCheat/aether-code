@@ -17,7 +17,6 @@ import (
 )
 
 const (
-	anthropicMaxTokens      = 16384
 	anthropicThinkingBudget = 8192
 	// nativeToolSearchBeta is the beta that honors defer_loading on tools and
 	// tool_reference blocks in tool results. The SDK knows neither; requests
@@ -31,6 +30,7 @@ type anthropicClient struct {
 	model        string
 	systemPrompt string
 	thinking     bool
+	maxOutput    int
 }
 
 var _ Client = (*anthropicClient)(nil)
@@ -49,6 +49,7 @@ func newAnthropicClient(cfg config.Provider, httpClient *http.Client, systemProm
 		model:        cfg.Model,
 		systemPrompt: systemPrompt,
 		thinking:     cfg.Thinking,
+		maxOutput:    cfg.MaxOutputTokens,
 	}
 }
 
@@ -191,9 +192,15 @@ func mergeUsage(total, next Usage) Usage {
 }
 
 func (c *anthropicClient) buildParams(req Request) anthropic.MessageNewParams {
+	maxTokens := int64(c.maxOutput)
+	if c.thinking && maxTokens < anthropicThinkingBudget+1024 {
+		// The thinking budget must fit inside max_tokens whatever the
+		// configured output cap says, or the request is rejected.
+		maxTokens = anthropicThinkingBudget + 1024
+	}
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(c.model),
-		MaxTokens: anthropicMaxTokens,
+		MaxTokens: maxTokens,
 		Messages:  buildAnthropicMessages(req.Messages),
 	}
 	if c.systemPrompt != "" {

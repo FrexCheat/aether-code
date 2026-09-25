@@ -10,6 +10,7 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/responses"
 	"github.com/openai/openai-go/v3/shared"
 
@@ -24,6 +25,7 @@ type openAIClient struct {
 	model        string
 	systemPrompt string
 	thinking     bool
+	maxOutput    int
 }
 
 var _ Client = (*openAIClient)(nil)
@@ -42,6 +44,7 @@ func newOpenAIClient(cfg config.Provider, httpClient *http.Client, systemPrompt 
 		model:        cfg.Model,
 		systemPrompt: systemPrompt,
 		thinking:     cfg.Thinking,
+		maxOutput:    cfg.MaxOutputTokens,
 	}
 }
 
@@ -203,8 +206,9 @@ func openAIUsage(u responses.ResponseUsage) Usage {
 
 func (c *openAIClient) buildParams(req Request) responses.ResponseNewParams {
 	params := responses.ResponseNewParams{
-		Model: shared.ResponsesModel(c.model),
-		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: buildOpenAIMessages(req.Messages)},
+		Model:           shared.ResponsesModel(c.model),
+		Input:           responses.ResponseNewParamsInputUnion{OfInputItemList: buildOpenAIMessages(req.Messages)},
+		MaxOutputTokens: param.NewOpt(int64(c.maxOutput)),
 	}
 	if c.systemPrompt != "" {
 		params.Instructions = openai.String(c.systemPrompt)
