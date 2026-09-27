@@ -11,14 +11,6 @@ import (
 
 const maxPermissionRules = 6
 
-var (
-	stylePermBox      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("3")).Padding(0, 1)
-	stylePermTitle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
-	stylePermTool     = lipgloss.NewStyle().Bold(true)
-	stylePermCursor   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
-	stylePermSelected = lipgloss.NewStyle().Bold(true)
-)
-
 type permissionOption struct {
 	label    string
 	response permissions.Response

@@ -9,8 +9,6 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-var styleInputBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1)
-
 // FooterData is what the input box's bottom line shows; it is passed in so the
 // box stays independent of the caller's state. Usage is the context readout,
 // empty when the session has no budget to report.

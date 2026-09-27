@@ -6,11 +6,6 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-var (
-	styleMenuCursor = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	styleMenuName   = lipgloss.NewStyle().Bold(true)
-)
-
 // CompletionOption is one candidate in the completion menu: the command name
 // without its slash, its argument hint and the description shown beside them.
 type CompletionOption struct {
