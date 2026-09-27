@@ -21,8 +21,9 @@ import (
 	"github.com/FrexCheat/aether-code/internal/tui/components"
 )
 
-// wheelLines is one wheel notch, in history lines.
-const wheelLines = 3
+// gateNotice is what a keystroke gets while a turn holds the single writer's
+// lock on the history; saying so beats a swallowed Enter reading as a drop.
+const gateNotice = "Still working — your message stays in the box until the turn ends."
 
 // Compactor is the window's view of the compaction layer.
 type Compactor interface {
@@ -287,9 +288,7 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 		return m.unknownCommand("/" + inv.Name)
 	}
 	if (m.live.Active() || m.compacting) && !cmd.Immediate {
-		// The gate keeps the turn's loop the only writer of the history. Say
-		// so: a swallowed Enter otherwise reads as a key the app dropped.
-		m.transcript.Emit(block{kind: blockNotice, body: "Still working — your message stays in the box until the turn ends."})
+		m.transcript.Emit(block{kind: blockNotice, body: gateNotice})
 		return m, nil
 	}
 	m.composer.Reset()
@@ -314,7 +313,7 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 // walks through.
 func (m Model) sendMessage(text string) (Model, tea.Cmd) {
 	if m.live.Active() || m.compacting {
-		m.transcript.Emit(block{kind: blockNotice, body: "Still working — your message stays in the box until the turn ends."})
+		m.transcript.Emit(block{kind: blockNotice, body: gateNotice})
 		return m, nil
 	}
 	return m.startStream(text)
@@ -533,7 +532,7 @@ func (m *Model) reLayout() {
 		return
 	}
 	m.composer.SetWidth(m.width)
-	m.composer.SetMaxHeight(min(8, max(m.height-6, 1)))
+	m.composer.SetMaxHeight(min(maxInputRows, max(m.height-6, 1)))
 	m.live.SetWidth(m.width)
 	m.transcript.SetWidth(m.width)
 }

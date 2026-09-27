@@ -353,12 +353,7 @@ func sessionsDir() (string, error) {
 // results, plus the count of dropped turns. Partly resolved messages stay:
 // the request copy repairs those.
 func filterUnresolvedTurns(msgs []conversation.Message) ([]conversation.Message, int) {
-	resolved := make(map[string]struct{})
-	for _, m := range msgs {
-		for _, tr := range m.ToolResults {
-			resolved[tr.ToolUseID] = struct{}{}
-		}
-	}
+	resolved := conversation.IndexToolResults(msgs)
 	out := make([]conversation.Message, 0, len(msgs))
 	dropped := 0
 	for _, m := range msgs {

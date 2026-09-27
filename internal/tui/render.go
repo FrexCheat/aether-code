@@ -17,24 +17,14 @@ import (
 	"github.com/FrexCheat/aether-code/internal/tui/components"
 )
 
-const (
-	collapseLines   = 3
-	titleClampChars = 160
-
-	// bannerHint is the banner's one-line hint. It deliberately does not
-	// enumerate the commands: with seven of them the hint outgrew the space
-	// beside the logo, which the banner then silently dropped. Tab completion
-	// and /help are the discovery path.
-	bannerHint = "Press Enter to send · shift+enter for a newline · / for commands"
-
-	asciiLogo = `
+// asciiLogo is the startup banner's mark; it sits with the Banner that draws it.
+const asciiLogo = `
  ┌╌╌╌╌╌┐
  └╌╌╌╌╌┘
     /▞▚\
    /▟█▙ \
 ▅▅▅▅    ▅▅▅
 `
-)
 
 type noticeSeverity int
 
@@ -180,12 +170,7 @@ func (r blockRenderer) Banner(version, workDir, model, hint string) string {
 // the archive, so there is nothing to skip, and per-turn timing is not
 // recorded — elapsed stays zero, which the renderer drops.
 func historyBlocks(msgs []conversation.Message, sess *session.Session, reg *tools.Registry) []block {
-	results := make(map[string]conversation.ToolResultBlock)
-	for _, m := range msgs {
-		for _, tr := range m.ToolResults {
-			results[tr.ToolUseID] = tr
-		}
-	}
+	results := conversation.IndexToolResults(msgs)
 	var blocks []block
 	for _, m := range msgs {
 		if sess != nil && sess.IsBoundary(m.Content) {

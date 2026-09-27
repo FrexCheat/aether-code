@@ -1,10 +1,7 @@
 package tui
 
 import (
-	"strings"
-
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/FrexCheat/aether-code/internal/tui/components"
 )
@@ -67,62 +64,6 @@ func (m Model) activeInput() inputOwner {
 // and its timer held, which is true while a modal input owner is up.
 func (m Model) liveSuspended() bool {
 	return m.activeInput().Modal()
-}
-
-// frame lays out the whole window: the history at the top, the bar (input box
-// or dialog) directly below it, pinned to the bottom edge once the history
-// fills the window.
-func (m Model) frame() string {
-	content, bar, viewHeight := m.layout()
-	top := m.scroll.resolve(len(content), viewHeight)
-	rows := make([]string, max(m.height, 1))
-	clamp := lipgloss.NewStyle().MaxWidth(max(m.width, 1))
-	for i := range viewHeight {
-		rows[i] = clamp.Render(content[top+i])
-	}
-	for i, line := range bar {
-		rows[viewHeight+i] = clamp.Render(line)
-	}
-	return strings.Join(rows, "\n")
-}
-
-// layout renders the content and the bar, and reports how many rows of content
-// stay visible above the bar.
-func (m Model) layout() (content, bar []string, viewHeight int) {
-	height := max(m.height, 1)
-	bar = m.inputLines()
-	bar = bar[:min(len(bar), max(height-1, 1))]
-	content = m.outputLines()
-	viewHeight = max(min(len(content), height-len(bar)), 0)
-	return content, bar, viewHeight
-}
-
-// outputLines is the output region: the scrollable history plus, unless a modal
-// input owner has suspended it, the turn's live tail. It never renders an input
-// component.
-func (m Model) outputLines() []string {
-	history := m.transcript.Lines()
-	if m.liveSuspended() {
-		return history
-	}
-	var live []string
-	if m.compacting {
-		live = []string{components.Dots.Line(m.clock.Frame(), "Compacting…")}
-	} else {
-		live = m.live.Lines(m.clock.Frame())
-	}
-	if len(live) == 0 {
-		return history
-	}
-	lines := make([]string, 0, len(history)+len(live))
-	lines = append(lines, history...)
-	return append(lines, live...)
-}
-
-// inputLines is the input region: whichever owner is active renders it. A modal
-// owner takes the whole region, so the composer and its footer step aside.
-func (m Model) inputLines() []string {
-	return strings.Split(m.activeInput().View(m.width, m.footer()), "\n")
 }
 
 func (m *Model) scrollBy(delta int) {

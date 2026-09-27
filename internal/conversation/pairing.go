@@ -4,6 +4,18 @@ const (
 	InterruptedToolResult = "Tool execution was interrupted. The tool may or may not have completed; verify before relying on its effects."
 )
 
+// IndexToolResults maps each tool-use ID to its result, so callers that pair
+// calls with results need not each walk the history.
+func IndexToolResults(messages []Message) map[string]ToolResultBlock {
+	index := make(map[string]ToolResultBlock)
+	for _, m := range messages {
+		for _, tr := range m.ToolResults {
+			index[tr.ToolUseID] = tr
+		}
+	}
+	return index
+}
+
 func EnsureToolPairing(messages []Message) []Message {
 	resolved := make(map[string]struct{})
 	issued := make(map[string]struct{})
