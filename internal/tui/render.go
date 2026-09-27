@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -11,6 +10,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/FrexCheat/aether-code/internal/conversation"
+	"github.com/FrexCheat/aether-code/internal/format"
 	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/FrexCheat/aether-code/internal/session"
 	"github.com/FrexCheat/aether-code/internal/tools"
@@ -254,9 +254,9 @@ func renderNotice(text string, severity noticeSeverity) string {
 func turnLine(elapsed time.Duration, at time.Time, usage llm.Usage) string {
 	line := fmt.Sprintf("%ds · done %s · Cache Read %s tokens",
 		int(elapsed.Seconds()), at.Format("3:04 PM"),
-		formatTokenCount(usage.CacheReadTokens))
+		format.Tokens(usage.CacheReadTokens))
 	if usage.CacheCreationTokens > 0 {
-		line += fmt.Sprintf(" · Cache Create %s tokens", formatTokenCount(usage.CacheCreationTokens))
+		line += fmt.Sprintf(" · Cache Create %s tokens", format.Tokens(usage.CacheCreationTokens))
 	}
 	return line
 }
@@ -279,13 +279,6 @@ func colorDiffLine(line string) string {
 		return components.DiffRemove.Render(line)
 	}
 	return components.Dim.Render(line)
-}
-
-func formatTokenCount(n int) string {
-	if n < 1000 {
-		return strconv.Itoa(n)
-	}
-	return strings.TrimSuffix(strconv.FormatFloat(float64(n)/1000, 'f', 1, 64), ".0") + "k"
 }
 
 // hardWrap clamps every line to the terminal width, so a rendered block always

@@ -1,8 +1,10 @@
 // Package command defines the slash command system: what a command is, how the
 // registry detects conflicts, how a line is parsed and how a command talks back
-// to the running window. It depends on nothing else in the program — a command
-// reaches the window only through Host, so implementations stay independent of
-// the renderer and of the services behind it.
+// to the running window. It depends on no service or renderer package — a
+// command reaches the window only through Host, so implementations stay
+// independent of the TUI and of the services behind it. The one import is the
+// leaf internal/format package, for display units every layer renders the same
+// way.
 package command
 
 // Kind is how a command executes.

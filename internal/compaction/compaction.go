@@ -54,6 +54,20 @@ const (
 	LevelForce
 )
 
+// String names the level for display; these three words are the vocabulary the
+// status readouts share, so they live with the level rather than in each
+// caller.
+func (l Level) String() string {
+	switch l {
+	case LevelWarn:
+		return "low"
+	case LevelForce:
+		return "critical"
+	default:
+		return "ok"
+	}
+}
+
 // Phase names one step of a compaction run.
 type Phase int
 

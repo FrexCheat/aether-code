@@ -66,12 +66,12 @@ func (h *hostAdapter) SetMode(mode string) error {
 
 func (h *hostAdapter) TokenUsage() command.TokenUsage {
 	if h.m.opts.Compactor == nil {
-		return command.TokenUsage{Level: "ok"}
+		return command.TokenUsage{Level: compaction.LevelOK.String()}
 	}
 	return command.TokenUsage{
 		Used:   h.m.opts.Compactor.UsedTokens(),
 		Window: h.m.opts.Compactor.ContextWindow(),
-		Level:  contextLevel(h.m.opts.Compactor.Level()),
+		Level:  h.m.opts.Compactor.Level().String(),
 	}
 }
 
@@ -140,15 +140,3 @@ func (h *hostAdapter) NewSession() error {
 func (h *hostAdapter) Compact() { h.compact = true }
 
 func (h *hostAdapter) Quit() { h.quit = true }
-
-// contextLevel names the compaction level for display in /status.
-func contextLevel(level compaction.Level) string {
-	switch level {
-	case compaction.LevelWarn:
-		return "low"
-	case compaction.LevelForce:
-		return "critical"
-	default:
-		return "ok"
-	}
-}

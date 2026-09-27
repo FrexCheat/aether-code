@@ -9,6 +9,7 @@ import (
 
 	"github.com/FrexCheat/aether-code/internal/agent"
 	"github.com/FrexCheat/aether-code/internal/compaction"
+	"github.com/FrexCheat/aether-code/internal/format"
 	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/FrexCheat/aether-code/internal/permissions"
 )
@@ -187,7 +188,7 @@ func compactionNotice(p compaction.Progress) (string, noticeSeverity) {
 		return "Compacting conversation…", noticeInfo
 	case compaction.PhaseDone:
 		return fmt.Sprintf("Context compacted: %s → %s tokens",
-			formatTokenCount(p.FromTokens), formatTokenCount(p.ToTokens)), noticeInfo
+			format.Tokens(p.FromTokens), format.Tokens(p.ToTokens)), noticeInfo
 	case compaction.PhaseFailed:
 		return "Compaction failed: " + p.Err.Error(), noticeWarn
 	default:

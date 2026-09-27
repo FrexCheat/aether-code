@@ -16,7 +16,7 @@ const (
 type TokenUsage struct {
 	Used   int
 	Window int
-	Level  string // "ok", "low", "critical"
+	Level  string // the level word from compaction.Level.String(): ok / low / critical
 }
 
 // Status is a snapshot of the running window for /status. Empty fields are

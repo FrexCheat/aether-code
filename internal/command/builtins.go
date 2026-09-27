@@ -3,6 +3,8 @@ package command
 import (
 	"fmt"
 	"strings"
+
+	"github.com/FrexCheat/aether-code/internal/format"
 )
 
 // Builtins returns the commands that ship with the app, in the order /help
@@ -183,7 +185,7 @@ func statusText(s Status, t TokenUsage) string {
 	if session != "" {
 		session = fmt.Sprintf("%s · %d messages", session, s.Messages)
 	}
-	context := fmt.Sprintf("%s / %s · %s", formatTokens(t.Used), formatTokens(t.Window), t.Level)
+	context := fmt.Sprintf("%s / %s · %s", format.Tokens(t.Used), format.Tokens(t.Window), t.Level)
 
 	rows := [][2]string{
 		{"version", s.Version},
@@ -203,11 +205,4 @@ func statusText(s Status, t TokenUsage) string {
 		fmt.Fprintf(&b, "%-9s %s\n", row[0], row[1])
 	}
 	return strings.TrimRight(b.String(), "\n")
-}
-
-func formatTokens(n int) string {
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
-	}
-	return strings.TrimSuffix(fmt.Sprintf("%.1f", float64(n)/1000), ".0") + "k"
 }

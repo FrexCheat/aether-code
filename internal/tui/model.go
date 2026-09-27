@@ -13,6 +13,7 @@ import (
 	"github.com/FrexCheat/aether-code/internal/compaction"
 	"github.com/FrexCheat/aether-code/internal/config"
 	"github.com/FrexCheat/aether-code/internal/conversation"
+	"github.com/FrexCheat/aether-code/internal/format"
 	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/FrexCheat/aether-code/internal/mcp"
 	"github.com/FrexCheat/aether-code/internal/permissions"
@@ -197,8 +198,8 @@ func (m Model) footer() components.FooterData {
 	}
 	if m.opts.Compactor != nil {
 		f.Usage = fmt.Sprintf("%s / %s · %d%% cache hit",
-			formatTokenCount(m.opts.Compactor.UsedTokens()),
-			formatTokenCount(m.opts.Compactor.ContextWindow()),
+			format.Tokens(m.opts.Compactor.UsedTokens()),
+			format.Tokens(m.opts.Compactor.ContextWindow()),
 			cacheHitRate(m.lastUsage))
 		switch m.opts.Compactor.Level() {
 		case compaction.LevelWarn:
