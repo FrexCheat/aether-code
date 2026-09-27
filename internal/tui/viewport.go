@@ -16,18 +16,6 @@ type scrollState struct {
 	top    int
 }
 
-// transcriptView is a scrolling viewport over the recorded blocks. It holds no
-// copy of the conversation: every line is the same block renderer the history
-// uses, just with expanded bodies.
-type transcriptView struct {
-	open     bool
-	frozen   int // len(blocks) when the view opened
-	offset   int // lines scrolled up from the bottom
-	rendered []string
-	atWidth  int
-	atFrozen int
-}
-
 // resolve returns the first visible line for a content of total lines in a
 // viewport of the given height.
 func (s scrollState) resolve(total, height int) int {
@@ -56,11 +44,6 @@ func (s *scrollState) by(delta, total, height int) {
 		return
 	}
 	*s = scrollState{top: max(top, 0)}
-}
-
-// scroll moves the transcript delta lines, positive toward the newest.
-func (t *transcriptView) scroll(delta int) {
-	t.offset = max(t.offset-delta, 0)
 }
 
 // inputOwner is a component that occupies the input region at the bottom of the
@@ -118,20 +101,21 @@ func (m Model) layout() (content, bar []string, viewHeight int) {
 // input owner has suspended it, the turn's live tail. It never renders an input
 // component.
 func (m Model) outputLines() []string {
+	history := m.transcript.Lines()
 	if m.liveSuspended() {
-		return m.history
+		return history
 	}
 	var live []string
 	if m.compacting {
-		live = []string{m.compactionSpinner.Line(m.clock.Frame(), "Compacting…")}
+		live = []string{components.Dots.Line(m.clock.Frame(), "Compacting…")}
 	} else {
 		live = m.live.Lines(m.clock.Frame())
 	}
 	if len(live) == 0 {
-		return m.history
+		return history
 	}
-	lines := make([]string, 0, len(m.history)+len(live))
-	lines = append(lines, m.history...)
+	lines := make([]string, 0, len(history)+len(live))
+	lines = append(lines, history...)
 	return append(lines, live...)
 }
 
@@ -153,62 +137,20 @@ func (m Model) pageLines() int {
 	return max(viewHeight-1, 1)
 }
 
-// toggleTranscript opens the expanded view, frozen at the blocks recorded so
-// far, or closes it again.
-func (m *Model) toggleTranscript() {
-	m.transcript.open = !m.transcript.open
-	if m.transcript.open {
-		m.transcript.frozen = len(m.blocks)
-		m.transcript.offset = 0
-	}
-}
-
 func (m Model) handleTranscriptKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return m.quit()
 	case "ctrl+o", "esc":
-		m.toggleTranscript()
+		m.transcript.ToggleExpanded()
 	case "up":
-		m.transcript.scroll(-1)
+		m.transcript.Scroll(-1)
 	case "down":
-		m.transcript.scroll(1)
+		m.transcript.Scroll(1)
 	case "pgup":
-		m.transcript.scroll(-m.pageLines())
+		m.transcript.Scroll(-m.pageLines())
 	case "pgdown":
-		m.transcript.scroll(m.pageLines())
+		m.transcript.Scroll(m.pageLines())
 	}
 	return m, nil
-}
-
-func (m Model) transcriptScreen() string {
-	if m.transcript.atWidth != m.width || m.transcript.atFrozen != m.transcript.frozen {
-		m.transcript.rendered = m.transcriptContent()
-		m.transcript.atWidth = m.width
-		m.transcript.atFrozen = m.transcript.frozen
-	}
-	height := max(m.height-1, 1)
-	total := len(m.transcript.rendered)
-	if m.transcript.offset > max(total-height, 0) {
-		m.transcript.offset = max(total-height, 0)
-	}
-	start := max(total-height, 0) - m.transcript.offset
-	end := min(start+height, total)
-	window := m.transcript.rendered[start:end]
-	if pad := height - len(window); pad > 0 {
-		window = append(make([]string, pad), window...)
-	}
-	footer := components.Dim.Render("Showing detailed transcript · ctrl+o to toggle · ↑↓ scroll")
-	return lipgloss.JoinVertical(lipgloss.Left, strings.Join(window, "\n"), footer)
-}
-
-func (m Model) transcriptContent() []string {
-	var lines []string
-	for i, b := range m.blocks[:m.transcript.frozen] {
-		if i > 0 {
-			lines = append(lines, "")
-		}
-		lines = append(lines, strings.Split(m.renderer.Render(b, true), "\n")...)
-	}
-	return lines
 }

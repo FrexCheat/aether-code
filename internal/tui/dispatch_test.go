@@ -44,12 +44,12 @@ func dispatchModel(t *testing.T) Model {
 func TestDispatchHelpListsCommands(t *testing.T) {
 	m := dispatchModel(t)
 	m.composer.SetValue("/help")
-	before := len(m.blocks)
+	before := len(m.transcript.blocks)
 	m, _ = m.handleEnter()
-	if len(m.blocks) != before+1 {
-		t.Fatalf("blocks grew by %d, want 1", len(m.blocks)-before)
+	if len(m.transcript.blocks) != before+1 {
+		t.Fatalf("blocks grew by %d, want 1", len(m.transcript.blocks)-before)
 	}
-	body := m.blocks[before].body
+	body := m.transcript.blocks[before].body
 	for _, want := range []string{"/exit", "/review", "/session [list]"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("help misses %q:\n%s", want, body)
@@ -64,9 +64,9 @@ func TestDispatchUnknownPointsToHelp(t *testing.T) {
 	m := dispatchModel(t)
 	for _, input := range []string{"/nope", "/"} {
 		m.composer.SetValue(input)
-		before := len(m.blocks)
+		before := len(m.transcript.blocks)
 		m, _ = m.handleEnter()
-		if body := m.blocks[before].body; !strings.Contains(body, "/help") {
+		if body := m.transcript.blocks[before].body; !strings.Contains(body, "/help") {
 			t.Errorf("%q hint misses /help: %q", input, body)
 		}
 	}
@@ -75,9 +75,9 @@ func TestDispatchUnknownPointsToHelp(t *testing.T) {
 func TestDispatchStatusShowsSnapshot(t *testing.T) {
 	m := dispatchModel(t)
 	m.composer.SetValue("/status")
-	before := len(m.blocks)
+	before := len(m.transcript.blocks)
 	m, _ = m.handleEnter()
-	body := m.blocks[before].body
+	body := m.transcript.blocks[before].body
 	for _, want := range []string{"version", "9.9.9", "mod", "workdir"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("status misses %q:\n%s", want, body)
@@ -88,13 +88,13 @@ func TestDispatchStatusShowsSnapshot(t *testing.T) {
 func TestDispatchCompactWithoutCompactor(t *testing.T) {
 	m := dispatchModel(t)
 	m.composer.SetValue("/compact")
-	before := len(m.blocks)
+	before := len(m.transcript.blocks)
 	m, cmd := m.handleEnter()
 	if cmd != nil {
 		t.Errorf("compaction without a compactor must not start a command")
 	}
-	if !strings.Contains(m.blocks[before].body, "not available") {
-		t.Errorf("compact notice = %q", m.blocks[before].body)
+	if !strings.Contains(m.transcript.blocks[before].body, "not available") {
+		t.Errorf("compact notice = %q", m.transcript.blocks[before].body)
 	}
 }
 
@@ -105,13 +105,13 @@ func TestDispatchGateBlocksHelpAllowsExit(t *testing.T) {
 	m.live.Begin(make(chan agent.Event), func() { cancelled = true })
 
 	m.composer.SetValue("/help")
-	before := len(m.blocks)
+	before := len(m.transcript.blocks)
 	m, cmd := m.handleEnter()
 	if cmd != nil || cancelled {
 		t.Errorf("help must be gated, cmd=%v cancelled=%v", cmd, cancelled)
 	}
-	if !strings.Contains(m.blocks[before].body, "Still working") {
-		t.Errorf("gate notice = %q", m.blocks[before].body)
+	if !strings.Contains(m.transcript.blocks[before].body, "Still working") {
+		t.Errorf("gate notice = %q", m.transcript.blocks[before].body)
 	}
 
 	m.composer.SetValue("/exit")

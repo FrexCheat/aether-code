@@ -14,7 +14,7 @@ import (
 func TestModalInputSuspendsLiveTail(t *testing.T) {
 	m := dispatchModel(t)
 	m.width = 80
-	m.history = []string{"history-line"}
+	m.transcript.lines = []string{"history-line"}
 	m.live.Begin(make(chan agent.Event), func() {})
 	m.dialog.Open(&permissions.Request{
 		ToolName: "bash",
@@ -37,7 +37,7 @@ func TestModalInputSuspendsLiveTail(t *testing.T) {
 // region untouched and keeps the input box visible.
 func TestCompletionMenuLeavesOutputAlone(t *testing.T) {
 	m := dispatchModel(t)
-	m.history = []string{"history-line"}
+	m.transcript.lines = []string{"history-line"}
 	m.live.Begin(make(chan agent.Event), func() {})
 	m.composer.OpenMenu([]components.CompletionOption{{Name: "exit"}, {Name: "help"}})
 

@@ -42,7 +42,7 @@ func TestMessageDuringTurnKeepsTextAndNotices(t *testing.T) {
 	cancelled := false
 	m := turnInFlight(t, &cancelled)
 	m.composer.SetValue("hello")
-	before := len(m.blocks)
+	before := len(m.transcript.blocks)
 	m, cmd := m.handleEnter()
 	if cmd != nil || cancelled {
 		t.Errorf("cmd = %v cancelled = %v; a gated message must not start anything", cmd, cancelled)
@@ -50,7 +50,7 @@ func TestMessageDuringTurnKeepsTextAndNotices(t *testing.T) {
 	if m.composer.Value() != "hello" {
 		t.Errorf("input = %q, want the text kept in the box", m.composer.Value())
 	}
-	if len(m.blocks) != before+1 || !strings.Contains(m.blocks[before].body, "Still working") {
-		t.Errorf("blocks grew by %d, want one notice", len(m.blocks)-before)
+	if len(m.transcript.blocks) != before+1 || !strings.Contains(m.transcript.blocks[before].body, "Still working") {
+		t.Errorf("blocks grew by %d, want one notice", len(m.transcript.blocks)-before)
 	}
 }

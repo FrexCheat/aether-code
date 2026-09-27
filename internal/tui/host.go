@@ -26,11 +26,11 @@ type hostAdapter struct {
 func (h *hostAdapter) Message(text string, sev command.Severity) {
 	switch sev {
 	case command.Warn:
-		h.m.emit(block{kind: blockNotice, body: text, severity: noticeWarn})
+		h.m.transcript.Emit(block{kind: blockNotice, body: text, severity: noticeWarn})
 	case command.Error:
-		h.m.emit(block{kind: blockNotice, body: text, severity: noticeError})
+		h.m.transcript.Emit(block{kind: blockNotice, body: text, severity: noticeError})
 	default:
-		h.m.emit(block{kind: blockStatus, body: text})
+		h.m.transcript.Emit(block{kind: blockStatus, body: text})
 	}
 }
 
@@ -86,8 +86,8 @@ func (h *hostAdapter) Status() command.Status {
 		Mode:     h.Mode(),
 		MCP:      h.m.mcpStatus,
 	}
-	if h.m.session != nil {
-		s.SessionID = h.m.session.ID()
+	if h.m.opts.Session != nil {
+		s.SessionID = h.m.opts.Session.ID()
 	}
 	if h.m.opts.Conv != nil {
 		s.Messages = h.m.opts.Conv.Len()
@@ -105,8 +105,8 @@ func (h *hostAdapter) Sessions() ([]command.SessionInfo, error) {
 		return nil, err
 	}
 	current := ""
-	if h.m.session != nil {
-		current = h.m.session.ID()
+	if h.m.opts.Session != nil {
+		current = h.m.opts.Session.ID()
 	}
 	out := make([]command.SessionInfo, 0, len(infos))
 	for _, info := range infos {
@@ -123,8 +123,8 @@ func (h *hostAdapter) Sessions() ([]command.SessionInfo, error) {
 
 func (h *hostAdapter) CurrentSession() command.SessionInfo {
 	s := command.SessionInfo{}
-	if h.m.session != nil {
-		s.ID = h.m.session.ID()
+	if h.m.opts.Session != nil {
+		s.ID = h.m.opts.Session.ID()
 	}
 	if h.m.opts.Conv != nil {
 		s.Messages = h.m.opts.Conv.Len()
