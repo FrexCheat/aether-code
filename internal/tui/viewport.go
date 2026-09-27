@@ -69,7 +69,6 @@ func (t *transcriptView) scroll(delta int) {
 // suspends the output region's live tail; a non-modal owner leaves the output
 // region untouched.
 type inputOwner interface {
-	Active() bool
 	Modal() bool
 	View(width int, footer components.FooterData) string
 }
@@ -84,8 +83,7 @@ func (m Model) activeInput() inputOwner {
 // liveSuspended reports whether the output region's live tail must be hidden
 // and its timer held, which is true while a modal input owner is up.
 func (m Model) liveSuspended() bool {
-	owner := m.activeInput()
-	return owner.Active() && owner.Modal()
+	return m.activeInput().Modal()
 }
 
 // frame lays out the whole window: the history at the top, the bar (input box
