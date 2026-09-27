@@ -10,7 +10,6 @@ import (
 	"charm.land/glamour/v2/styles"
 	"charm.land/lipgloss/v2"
 
-	"github.com/FrexCheat/aether-code/internal/command"
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/FrexCheat/aether-code/internal/session"
@@ -22,6 +21,12 @@ const (
 	collapseLines   = 3
 	titleClampChars = 160
 
+	// bannerHint is the banner's one-line hint. It deliberately does not
+	// enumerate the commands: with seven of them the hint outgrew the space
+	// beside the logo, which the banner then silently dropped. Tab completion
+	// and /help are the discovery path.
+	bannerHint = "Press Enter to send · shift+enter for a newline · / for commands"
+
 	asciiLogo = `
  ┌╌╌╌╌╌┐
  └╌╌╌╌╌┘
@@ -30,21 +35,6 @@ const (
 ▅▅▅▅    ▅▅▅
 `
 )
-
-// tips is the banner's one-line hint; the command half derives from the
-// registry, so the two cannot disagree.
-func tips(reg *command.Registry) string {
-	const base = "Press Enter to send · shift+enter for a newline"
-	commands := reg.All()
-	if len(commands) == 0 {
-		return base
-	}
-	names := make([]string, len(commands))
-	for i, c := range commands {
-		names[i] = "/" + c.Name
-	}
-	return base + " · " + strings.Join(names, " ")
-}
 
 type noticeSeverity int
 

@@ -170,7 +170,7 @@ func (m Model) blockLines(b block) []string {
 func (m *Model) rebuildHistory() {
 	m.history = make([]string, 0, len(m.history)+1)
 	if m.width > 0 {
-		banner := m.renderer.Banner(m.opts.Version, m.opts.WorkDir, m.opts.Provider.Model, m.tips)
+		banner := m.renderer.Banner(m.opts.Version, m.opts.WorkDir, m.opts.Provider.Model, bannerHint)
 		m.history = append(m.history, hardWrap(banner, m.width)...)
 		m.history = append(m.history, "")
 	}

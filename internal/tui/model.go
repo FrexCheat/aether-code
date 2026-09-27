@@ -70,7 +70,6 @@ type Model struct {
 	session           *session.Session
 	sessionWarned     bool
 	commands          *command.Registry
-	tips              string
 	mcpStatus         string
 }
 
@@ -94,7 +93,6 @@ func newModel(opts Options) Model {
 		transcript:        &transcriptView{},
 		session:           opts.Session,
 		commands:          opts.Commands,
-		tips:              tips(opts.Commands),
 	}
 	if opts.Conv.Len() > 0 {
 		m.blocks = historyBlocks(opts.Conv.Messages(), opts.Session, opts.Agent.Registry())
@@ -509,28 +507,33 @@ func (m Model) shutdownMCP() tea.Cmd {
 	}
 }
 
+// mcpSummary is the one-line MCP readout: how many servers and tools settled,
+// the loading mode, and — so a broken server is not silent — their names. The
+// per-server ✓ listing is gone; the detail lives in /status's mcp field, which
+// carries this same line.
 func mcpSummary(r mcp.Result) string {
 	var total int
+	var failed []string
 	for _, s := range r.Servers {
 		total += s.Tools
+		if s.Err != "" {
+			failed = append(failed, s.Name)
+		}
 	}
-	if len(r.Servers) == 0 && len(r.Warnings) == 0 {
+	// Each failed server contributes one warning; anything beyond that is a
+	// configuration warning worth a count.
+	warnings := max(len(r.Warnings)-len(failed), 0)
+	if len(r.Servers) == 0 && warnings == 0 {
 		return ""
 	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "MCP: %d server(s), %d tool(s), loading mode %s\n", len(r.Servers), total, r.Mode)
-	for _, s := range r.Servers {
-		if s.Err != "" {
-			fmt.Fprintf(&b, "  ✗ %s: %s\n", s.Name, s.Err)
-			continue
-		}
-		fmt.Fprintf(&b, "  ✓ %s: %d tool(s)\n", s.Name, s.Tools)
+	line := fmt.Sprintf("MCP: %d server(s), %d tool(s) · loading mode %s", len(r.Servers), total, r.Mode)
+	if len(failed) > 0 {
+		line += " · failed: " + strings.Join(failed, ", ")
 	}
-	for _, w := range r.Warnings {
-		fmt.Fprintf(&b, "  warning: %s\n", w)
+	if warnings > 0 {
+		line += fmt.Sprintf(" · %d warning(s)", warnings)
 	}
-	return strings.TrimSuffix(b.String(), "\n")
+	return line
 }
 
 func (m *Model) reLayout() {

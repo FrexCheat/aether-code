@@ -184,14 +184,18 @@ func (m *Manager) RecordUsage(u llm.Usage) {
 	m.publish()
 }
 
-// Reset drops the anchor and both failure counts; called by /clear.
+// Reset drops the anchor and both failure counts and returns the readout to
+// the fresh-session state; called by /clear. It zeros the published snapshot
+// instead of republishing the estimate: /clear starts an empty conversation, so
+// the readout must match a fresh start — the fixed prefix is not "usage" until
+// a request actually carries it.
 func (m *Manager) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.anchor = UsageAnchor{}
 	m.failures = 0
 	m.forceFailures = 0
-	m.publish()
+	m.used.Store(0)
 }
 
 // SetSpillDir points Layer 1 at another directory; /clear calls it when it
