@@ -52,6 +52,10 @@ type PermissionDialog struct {
 
 func (d PermissionDialog) Active() bool { return d.req != nil }
 
+// Modal reports that the dialog takes the whole input region: the composer and
+// its footer step aside, and the output region's live tail is suspended.
+func (d PermissionDialog) Modal() bool { return true }
+
 func (d *PermissionDialog) Open(req *permissions.Request) {
 	d.req = req
 	d.cursor = 0
@@ -78,7 +82,9 @@ func (d PermissionDialog) options() []permissionOption {
 	return permissionOptionsFor(d.req)
 }
 
-func (d PermissionDialog) View(width int) string {
+// View renders the dialog; the footer argument is ignored — a modal owner
+// takes the whole input region.
+func (d PermissionDialog) View(width int, _ FooterData) string {
 	boxWidth := max(width-2, 20)
 	inner := max(boxWidth-2, 10)
 

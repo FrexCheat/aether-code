@@ -10,6 +10,7 @@ import (
 	"charm.land/glamour/v2/styles"
 	"charm.land/lipgloss/v2"
 
+	"github.com/FrexCheat/aether-code/internal/command"
 	"github.com/FrexCheat/aether-code/internal/conversation"
 	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/FrexCheat/aether-code/internal/session"
@@ -30,9 +31,20 @@ const (
 `
 )
 
-// tipsText is the banner's one-line hint; the command half derives from the
-// command table so the two cannot disagree.
-var tipsText = "Press Enter to send · shift+enter for a newline · " + strings.Join(commandNames(), " ")
+// tips is the banner's one-line hint; the command half derives from the
+// registry, so the two cannot disagree.
+func tips(reg *command.Registry) string {
+	const base = "Press Enter to send · shift+enter for a newline"
+	commands := reg.All()
+	if len(commands) == 0 {
+		return base
+	}
+	names := make([]string, len(commands))
+	for i, c := range commands {
+		names[i] = "/" + c.Name
+	}
+	return base + " · " + strings.Join(names, " ")
+}
 
 type noticeSeverity int
 
@@ -154,7 +166,7 @@ func (r blockRenderer) toolBody(b block, expanded bool) string {
 // Banner draws the startup banner. The model name sits with the rest of the
 // banner text rather than being right-aligned against the margin, where a
 // narrow terminal would clip it; the provider name is deliberately absent.
-func (r blockRenderer) Banner(version, workDir, model string) string {
+func (r blockRenderer) Banner(version, workDir, model, hint string) string {
 	lines := []string{
 		components.Title.Render("Aether Code") + " " + components.Dim.Render("v"+version),
 		components.Dim.Render(workDir),
@@ -162,7 +174,7 @@ func (r blockRenderer) Banner(version, workDir, model string) string {
 	if model != "" {
 		lines = append(lines, components.Dim.Render(model))
 	}
-	lines = append(lines, components.Dim.Render(tipsText))
+	lines = append(lines, components.Dim.Render(hint))
 	text := lipgloss.JoinVertical(lipgloss.Left, lines...)
 
 	logo := components.Logo.Render(asciiLogo)

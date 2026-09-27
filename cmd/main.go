@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/FrexCheat/aether-code/internal/agent"
+	"github.com/FrexCheat/aether-code/internal/command"
 	"github.com/FrexCheat/aether-code/internal/compaction"
 	"github.com/FrexCheat/aether-code/internal/config"
 	"github.com/FrexCheat/aether-code/internal/conversation"
@@ -47,6 +48,10 @@ func main() {
 		fail(err)
 	}
 	active := cfg.Active()
+
+	// A command name or alias claimed twice is a programming error; New panics
+	// on it here, at startup, rather than at whatever later keystroke hits it.
+	commands := command.New(command.Builtins()...)
 
 	systemPrompt := prompt.BuildSystemPrompt(prompt.DetectEnvironment(cwd))
 
@@ -104,6 +109,7 @@ func main() {
 		Conv:          conv,
 		MCP:           mcpMgr,
 		Compactor:     compactor,
+		Commands:      commands,
 		Provider:      active,
 		Version:       version.Version,
 		WorkDir:       cwd,

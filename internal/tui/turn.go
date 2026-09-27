@@ -51,7 +51,7 @@ func (m *Model) startStream(text string) (Model, tea.Cmd) {
 		return *m, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	m.input.Reset()
+	m.composer.Reset()
 	m.emit(block{kind: blockUser, body: text})
 	m.scroll = scrollState{follow: true}
 	m.live.Begin(m.opts.Agent.Run(ctx, m.opts.Conv), cancel)
@@ -170,7 +170,7 @@ func (m Model) blockLines(b block) []string {
 func (m *Model) rebuildHistory() {
 	m.history = make([]string, 0, len(m.history)+1)
 	if m.width > 0 {
-		banner := m.renderer.Banner(m.opts.Version, m.opts.WorkDir, m.opts.Provider.Model)
+		banner := m.renderer.Banner(m.opts.Version, m.opts.WorkDir, m.opts.Provider.Model, m.tips)
 		m.history = append(m.history, hardWrap(banner, m.width)...)
 		m.history = append(m.history, "")
 	}

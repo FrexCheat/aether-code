@@ -63,6 +63,31 @@ func (t *transcriptView) scroll(delta int) {
 	t.offset = max(t.offset-delta, 0)
 }
 
+// inputOwner is a component that occupies the input region at the bottom of the
+// window. At most one is active at a time; the composer is the fallback. A modal
+// owner takes the whole region — the composer and its footer hide — and
+// suspends the output region's live tail; a non-modal owner leaves the output
+// region untouched.
+type inputOwner interface {
+	Active() bool
+	Modal() bool
+	View(width int, footer components.FooterData) string
+}
+
+func (m Model) activeInput() inputOwner {
+	if m.dialog.Active() {
+		return m.dialog
+	}
+	return m.composer
+}
+
+// liveSuspended reports whether the output region's live tail must be hidden
+// and its timer held, which is true while a modal input owner is up.
+func (m Model) liveSuspended() bool {
+	owner := m.activeInput()
+	return owner.Active() && owner.Modal()
+}
+
 // frame lays out the whole window: the history at the top, the bar (input box
 // or dialog) directly below it, pinned to the bottom edge once the history
 // fills the window.
@@ -84,18 +109,18 @@ func (m Model) frame() string {
 // stay visible above the bar.
 func (m Model) layout() (content, bar []string, viewHeight int) {
 	height := max(m.height, 1)
-	bar = m.barLines()
+	bar = m.inputLines()
 	bar = bar[:min(len(bar), max(height-1, 1))]
-	content = m.contentLines()
+	content = m.outputLines()
 	viewHeight = max(min(len(content), height-len(bar)), 0)
 	return content, bar, viewHeight
 }
 
-// contentLines is the scrollable history: the banner, every recorded block, and
-// the tail of the turn in flight. A dialog hides the tail — the running tools
-// and the spinner step aside along with the bar.
-func (m Model) contentLines() []string {
-	if m.dialog.Active() {
+// outputLines is the output region: the scrollable history plus, unless a modal
+// input owner has suspended it, the turn's live tail. It never renders an input
+// component.
+func (m Model) outputLines() []string {
+	if m.liveSuspended() {
 		return m.history
 	}
 	var live []string
@@ -112,13 +137,10 @@ func (m Model) contentLines() []string {
 	return append(lines, live...)
 }
 
-// barLines is the bottom area: the permission dialog when one is up, the input
-// box and its footer otherwise.
-func (m Model) barLines() []string {
-	if m.dialog.Active() {
-		return strings.Split(m.dialog.View(m.width), "\n")
-	}
-	return strings.Split(m.input.View(m.footer()), "\n")
+// inputLines is the input region: whichever owner is active renders it. A modal
+// owner takes the whole region, so the composer and its footer step aside.
+func (m Model) inputLines() []string {
+	return strings.Split(m.activeInput().View(m.width, m.footer()), "\n")
 }
 
 func (m *Model) scrollBy(delta int) {

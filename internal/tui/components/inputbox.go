@@ -58,9 +58,10 @@ func (b InputBox) Update(msg tea.Msg) (InputBox, tea.Cmd) {
 	return b, cmd
 }
 
-func (b InputBox) View(f FooterData) string {
-	box := styleInputBox.Width(max(b.width-2, 10)).Render(b.area.View())
-	return lipgloss.JoinVertical(lipgloss.Left, box, b.footerLine(f))
+// boxView renders the bordered text box alone; the composer places the
+// completion menu between it and the footer.
+func (b InputBox) boxView() string {
+	return styleInputBox.Width(max(b.width-2, 10)).Render(b.area.View())
 }
 
 func (b InputBox) Value() string { return b.area.Value() }

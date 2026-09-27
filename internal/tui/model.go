@@ -3,12 +3,13 @@ package tui
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
+	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/FrexCheat/aether-code/internal/agent"
+	"github.com/FrexCheat/aether-code/internal/command"
 	"github.com/FrexCheat/aether-code/internal/compaction"
 	"github.com/FrexCheat/aether-code/internal/config"
 	"github.com/FrexCheat/aether-code/internal/conversation"
@@ -21,30 +22,6 @@ import (
 
 // wheelLines is one wheel notch, in history lines.
 const wheelLines = 3
-
-// commandSpec is one slash command: the spellings that select it and how it
-// is classified. The parser, the unknown-command hint and the banner tips
-// all derive from this table, so a command cannot go missing from one of
-// them.
-type commandSpec struct {
-	cmd   command
-	names []string
-}
-
-var commandTable = []commandSpec{
-	{cmd: cmdQuit, names: []string{"/quit", "/exit"}},
-	{cmd: cmdClear, names: []string{"/clear"}},
-	{cmd: cmdCompact, names: []string{"/compact"}},
-}
-
-// commandNames lists the primary spelling of each command, in table order.
-func commandNames() []string {
-	names := make([]string, len(commandTable))
-	for i, spec := range commandTable {
-		names[i] = spec.names[0]
-	}
-	return names
-}
 
 // Compactor is the window's view of the compaction layer.
 type Compactor interface {
@@ -63,6 +40,7 @@ type Options struct {
 	Conv      *conversation.Manager
 	MCP       *mcp.Manager
 	Compactor Compactor
+	Commands  *command.Registry
 	Provider  config.Provider
 	Version   string
 	WorkDir   string
@@ -77,7 +55,7 @@ type Model struct {
 	width             int
 	height            int
 	ready             bool
-	input             components.InputBox
+	composer          components.Composer
 	dialog            components.PermissionDialog
 	live              components.LiveRegion
 	clock             components.Clock
@@ -91,35 +69,14 @@ type Model struct {
 	lastUsage         llm.Usage
 	session           *session.Session
 	sessionWarned     bool
+	commands          *command.Registry
+	tips              string
+	mcpStatus         string
 }
-
-type command int
-
-const (
-	cmdNone command = iota
-	cmdQuit
-	cmdClear
-	cmdCompact
-	cmdUnknown
-)
 
 // mcpReadyMsg carries the outcome of the background settle.
 type mcpReadyMsg struct {
 	result mcp.Result
-}
-
-// parseCommand classifies user input; for cmdUnknown the string is the hint.
-func parseCommand(input string) (command, string) {
-	s := strings.TrimSpace(input)
-	if !strings.HasPrefix(s, "/") {
-		return cmdNone, ""
-	}
-	for _, spec := range commandTable {
-		if slices.Contains(spec.names, s) {
-			return spec.cmd, ""
-		}
-	}
-	return cmdUnknown, fmt.Sprintf("Unknown command %q. Available: %s", s, strings.Join(commandNames(), ", "))
 }
 
 func Run(opts Options) error {
@@ -130,12 +87,14 @@ func Run(opts Options) error {
 func newModel(opts Options) Model {
 	m := Model{
 		opts:              opts,
-		input:             components.NewInputBox(),
+		composer:          components.NewComposer(),
 		live:              components.NewLiveRegion(components.Points, components.Dots),
 		compactionSpinner: components.Dots,
 		scroll:            scrollState{follow: true},
 		transcript:        &transcriptView{},
 		session:           opts.Session,
+		commands:          opts.Commands,
+		tips:              tips(opts.Commands),
 	}
 	if opts.Conv.Len() > 0 {
 		m.blocks = historyBlocks(opts.Conv.Messages(), opts.Session, opts.Agent.Registry())
@@ -147,7 +106,7 @@ func newModel(opts Options) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.input.Focus(), m.connectMCP())
+	return tea.Batch(m.composer.Focus(), m.connectMCP())
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -192,8 +151,9 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		return m.handleStreamBatch(msg)
 
 	case mcpReadyMsg:
-		if text := mcpSummary(msg.result); text != "" {
-			m.emit(block{kind: blockStatus, body: text})
+		m.mcpStatus = mcpSummary(msg.result)
+		if m.mcpStatus != "" {
+			m.emit(block{kind: blockStatus, body: m.mcpStatus})
 		}
 		return m, nil
 
@@ -202,7 +162,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
+	m.composer, cmd = m.composer.Update(msg)
 	return m, cmd
 }
 
@@ -258,6 +218,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		return m.handleTranscriptKey(msg)
 	case m.dialog.Active():
 		return m.handlePermissionKey(msg)
+	case m.composer.MenuActive():
+		return m.handleCompletionKey(msg)
 	}
 	switch msg.String() {
 	case "ctrl+c":
@@ -276,11 +238,13 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	case "pgdown":
 		m.scrollBy(m.pageLines())
 		return m, nil
+	case "tab":
+		return m.handleTab()
 	case "enter":
 		return m.handleEnter()
 	}
 	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
+	m.composer, cmd = m.composer.Update(msg)
 	return m, cmd
 }
 
@@ -313,48 +277,168 @@ func (m *Model) answerPermission(response permissions.Response) {
 	}
 }
 
+// handleEnter is the dispatcher: a slash command runs locally, anything else
+// becomes a user message.
 func (m Model) handleEnter() (Model, tea.Cmd) {
-	text := strings.TrimSpace(m.input.Value())
+	text := strings.TrimSpace(m.composer.Value())
 	if text == "" {
 		return m, nil
 	}
-	cmd, hint := parseCommand(text)
-	if cmd == cmdQuit {
-		// Quitting beats a turn in flight: the command means "leave now", and
-		// ctrl+c has always behaved that way. Everything below needs the
-		// history to itself.
-		return m.quit()
+	if !strings.HasPrefix(text, "/") {
+		return m.sendMessage(text)
 	}
-	if m.live.Active() || m.compacting {
+	inv, ok := command.Parse(text)
+	if !ok {
+		// A "/" with no name is not a message either; steer it to /help.
+		return m.unknownCommand(text)
+	}
+	cmd := m.commands.Lookup(inv.Name)
+	if cmd == nil {
+		return m.unknownCommand("/" + inv.Name)
+	}
+	if (m.live.Active() || m.compacting) && !cmd.Immediate {
 		// The gate keeps the turn's loop the only writer of the history. Say
 		// so: a swallowed Enter otherwise reads as a key the app dropped.
 		m.emit(block{kind: blockNotice, body: "Still working — your message stays in the box until the turn ends."})
 		return m, nil
 	}
-	switch cmd {
-	case cmdClear:
-		m.input.Reset()
-		m.clearSession()
-		return m, nil
-	case cmdCompact:
-		m.input.Reset()
-		if m.opts.Compactor == nil {
-			m.emit(block{kind: blockNotice, body: "Compaction is not available for this session.", severity: noticeWarn})
-			return m, nil
-		}
-		if m.compacting {
-			return m, nil
-		}
-		m.compacting = true
-		m.emit(block{kind: blockNotice, body: "Compacting conversation…"})
-		tick := m.clock.Start()
-		return m, tea.Sequence(tick, runCompact(m.opts.Compactor))
-	case cmdUnknown:
-		m.input.Reset()
-		m.emit(block{kind: blockNotice, body: hint, severity: noticeError})
+	m.composer.Reset()
+	h := &hostAdapter{m: &m, registry: m.commands}
+	if cmd.Kind == command.Prompt {
+		h.SendUserMessage(command.RenderPrompt(cmd.Prompt, inv))
+	} else if err := cmd.Run(h, inv.Args); err != nil {
+		h.Message(err.Error(), command.Error)
+	}
+	switch {
+	case h.quit:
+		return m.quit()
+	case h.compact:
+		return m.startCompact()
+	case h.prompt != "":
+		return m.startStream(h.prompt)
+	}
+	return m, nil
+}
+
+// sendMessage submits a plain message, subject to the same gate a command
+// walks through.
+func (m Model) sendMessage(text string) (Model, tea.Cmd) {
+	if m.live.Active() || m.compacting {
+		m.emit(block{kind: blockNotice, body: "Still working — your message stays in the box until the turn ends."})
 		return m, nil
 	}
 	return m.startStream(text)
+}
+
+// startCompact runs the forced compaction /compact asks for, spinner and all.
+func (m Model) startCompact() (Model, tea.Cmd) {
+	if m.opts.Compactor == nil {
+		m.emit(block{kind: blockNotice, body: "Compaction is not available for this session.", severity: noticeWarn})
+		return m, nil
+	}
+	if m.compacting {
+		return m, nil
+	}
+	m.compacting = true
+	m.emit(block{kind: blockNotice, body: "Compacting conversation…"})
+	tick := m.clock.Start()
+	return m, tea.Sequence(tick, runCompact(m.opts.Compactor))
+}
+
+func (m Model) unknownCommand(display string) (Model, tea.Cmd) {
+	m.composer.Reset()
+	m.emit(block{kind: blockNotice, body: fmt.Sprintf("Unknown command %s. Type /help for a list.", display), severity: noticeError})
+	return m, nil
+}
+
+// handleTab completes the command name in the box: one candidate fills it,
+// several open the menu.
+func (m Model) handleTab() (Model, tea.Cmd) {
+	m.composer.CloseMenu()
+	prefix, ok := commandPrefix(m.composer.Value())
+	if !ok {
+		return m, nil
+	}
+	matches := m.commands.Match(prefix)
+	switch len(matches) {
+	case 0:
+		return m, nil
+	case 1:
+		m.composer.SetValue("/" + matches[0].Name + " ")
+		return m, nil
+	default:
+		m.composer.OpenMenu(completionOptions(matches))
+		return m, nil
+	}
+}
+
+// handleCompletionKey drives the open menu: arrows move, tab or enter accept,
+// esc closes, and any other key edits the box and re-filters.
+func (m Model) handleCompletionKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m.quit()
+	case "up":
+		m.composer.MoveMenu(-1)
+		return m, nil
+	case "down":
+		m.composer.MoveMenu(1)
+		return m, nil
+	case "tab", "enter":
+		if option, ok := m.composer.SelectedMenu(); ok {
+			m.composer.SetValue("/" + option.Name + " ")
+		}
+		m.composer.CloseMenu()
+		return m, nil
+	case "esc":
+		m.composer.CloseMenu()
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.composer, cmd = m.composer.Update(msg)
+	m.refreshMenu()
+	return m, cmd
+}
+
+// refreshMenu re-filters after an edit; fewer than two candidates leave nothing
+// to choose between, so the menu closes.
+func (m *Model) refreshMenu() {
+	prefix, ok := commandPrefix(m.composer.Value())
+	if !ok {
+		m.composer.CloseMenu()
+		return
+	}
+	matches := m.commands.Match(prefix)
+	if len(matches) < 2 {
+		m.composer.CloseMenu()
+		return
+	}
+	m.composer.OpenMenu(completionOptions(matches))
+}
+
+// commandPrefix reports the command-name prefix the box holds, when its whole
+// value is a single slash-prefixed token — the only shape worth completing.
+func commandPrefix(value string) (string, bool) {
+	s := strings.TrimSpace(value)
+	if !strings.HasPrefix(s, "/") {
+		return "", false
+	}
+	rest := s[1:]
+	if rest == "" {
+		return "", true
+	}
+	if strings.IndexFunc(rest, unicode.IsSpace) >= 0 {
+		return "", false
+	}
+	return strings.ToLower(rest), true
+}
+
+func completionOptions(cmds []*command.Command) []components.CompletionOption {
+	options := make([]components.CompletionOption, len(cmds))
+	for i, c := range cmds {
+		options[i] = components.CompletionOption{Name: c.Name, Hint: c.ArgHint, Description: c.Description}
+	}
+	return options
 }
 
 func (m Model) quit() (Model, tea.Cmd) {
@@ -453,8 +537,8 @@ func (m *Model) reLayout() {
 	if m.width <= 0 {
 		return
 	}
-	m.input.SetWidth(m.width)
-	m.input.SetMaxHeight(min(8, max(m.height-6, 1)))
+	m.composer.SetWidth(m.width)
+	m.composer.SetMaxHeight(min(8, max(m.height-6, 1)))
 	m.live.SetWidth(m.width)
 	m.renderer.SetWidth(m.width)
 }
