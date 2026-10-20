@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -10,33 +11,75 @@ import (
 	"github.com/FrexCheat/aether-code/internal/agent"
 	"github.com/FrexCheat/aether-code/internal/compaction"
 	"github.com/FrexCheat/aether-code/internal/format"
-	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/FrexCheat/aether-code/internal/permissions"
 )
 
-type streamBatchMsg []agent.Event
+const turnEventBuffer = 64
+
+type streamBatchMsg []agent.TurnEvent
 
 type compactDoneMsg struct {
 	result compaction.Result
 	err    error
 }
 
-// waitStream drains whatever the event channel already holds into one batch, so
-// a delta burst renders as a single frame.
-func waitStream(ch <-chan agent.Event) tea.Cmd {
+type turnStream struct {
+	turn     *agent.Turn
+	events   chan agent.TurnEvent
+	cancel   context.CancelFunc
+	stop     chan struct{}
+	stopOnce sync.Once
+}
+
+func startTurnStream(turn *agent.Turn, cancel context.CancelFunc) *turnStream {
+	stream := &turnStream{
+		turn:   turn,
+		events: make(chan agent.TurnEvent, turnEventBuffer),
+		cancel: cancel,
+		stop:   make(chan struct{}),
+	}
+	go stream.pump()
+	return stream
+}
+
+func (s *turnStream) pump() {
+	defer close(s.events)
+	for event := range s.turn.Events() {
+		select {
+		case s.events <- event:
+		case <-s.stop:
+			return
+		}
+	}
+}
+
+func (s *turnStream) Cancel() { s.cancel() }
+
+func (s *turnStream) Close() {
+	s.stopOnce.Do(func() {
+		close(s.stop)
+		s.cancel()
+	})
+}
+
+func (s *turnStream) AnswerPermission(id string, response permissions.Response) error {
+	return s.turn.AnswerPermission(id, response)
+}
+
+func waitStream(ch <-chan agent.TurnEvent) tea.Cmd {
 	return func() tea.Msg {
-		ev, ok := <-ch
+		event, ok := <-ch
 		if !ok {
 			return nil
 		}
-		batch := []agent.Event{ev}
+		batch := []agent.TurnEvent{event}
 		for {
 			select {
-			case ev, ok := <-ch:
+			case event, ok := <-ch:
 				if !ok {
 					return streamBatchMsg(batch)
 				}
-				batch = append(batch, ev)
+				batch = append(batch, event)
 			default:
 				return streamBatchMsg(batch)
 			}
@@ -46,8 +89,6 @@ func waitStream(ch <-chan agent.Event) tea.Cmd {
 
 func (m *Model) startStream(text string) (Model, tea.Cmd) {
 	if err := m.opts.Conv.AddUserMessage(text); err != nil {
-		// The input keeps its text so the user can retry once the archive
-		// recovers.
 		m.transcript.Emit(block{kind: blockNotice, body: "Cannot send message: " + err.Error(), severity: noticeError})
 		return *m, nil
 	}
@@ -55,44 +96,45 @@ func (m *Model) startStream(text string) (Model, tea.Cmd) {
 	return m.startTurn()
 }
 
-// startTurn runs the agent over the history as it now stands. A slash-activated
-// Skill delivers its instructions before this, so the first request already
-// carries them.
 func (m *Model) startTurn() (Model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(context.Background())
+	turn := m.opts.Agent.StartTurn(ctx, m.opts.Conv)
+	m.turn = startTurnStream(turn, cancel)
 	m.composer.Reset()
 	m.scroll = scrollState{follow: true}
-	m.live.Begin(m.opts.Agent.Run(ctx, m.opts.Conv), cancel)
-	return *m, tea.Sequence(m.clock.Start(), waitStream(m.live.Events()))
+	m.live.Begin()
+	return *m, tea.Sequence(m.clock.Start(), waitStream(m.turn.events))
 }
 
 func (m *Model) handleStreamBatch(batch streamBatchMsg) (Model, tea.Cmd) {
 	var cmds []tea.Cmd
-	for _, ev := range batch {
-		if cmd := m.foldEvent(ev); cmd != nil {
+	for _, event := range batch {
+		if cmd := m.foldEvent(event); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
-		if !m.live.Active() {
+		if m.turn == nil {
 			break
 		}
 	}
-	if m.live.Active() {
-		cmds = append(cmds, waitStream(m.live.Events()))
+	if m.turn != nil {
+		cmds = append(cmds, waitStream(m.turn.events))
 	}
 	return *m, tea.Batch(cmds...)
 }
 
-func (m *Model) foldEvent(ev agent.Event) tea.Cmd {
-	switch e := ev.(type) {
+func (m *Model) foldEvent(event agent.TurnEvent) tea.Cmd {
+	switch e := event.(type) {
 	case agent.TextDelta:
 		m.live.AppendText(e.Text)
 	case agent.TextComplete:
 		if text := m.live.TakeText(); text != "" {
 			m.transcript.Emit(block{kind: blockAssistant, body: text})
 		}
-	case agent.ToolCallBegin:
+	case agent.ThinkingDelta, agent.ThinkingCompleted:
+		// Thinking is available to other frontends but has no TUI surface.
+	case agent.ToolStarted:
 		m.live.BeginTool(e.ToolID, toolTitle(m.opts.Agent.Registry(), e.ToolName, e.Args))
-	case agent.ToolCallEnd:
+	case agent.ToolFinished:
 		if title, ok := m.live.EndTool(e.ToolID); ok {
 			m.transcript.Emit(block{
 				kind:    blockTool,
@@ -103,54 +145,68 @@ func (m *Model) foldEvent(ev agent.Event) tea.Cmd {
 				isDiff:  e.Result.IsDiff,
 			})
 		}
+	case agent.UsageUpdated:
+		m.lastUsage = e.Usage
 	case agent.CompactionProgress:
 		body, severity := compactionNotice(e.Progress)
 		m.transcript.Emit(block{kind: blockNotice, body: body, severity: severity})
-	case agent.PermissionRequestEvent:
-		m.dialog.Open(&e.Request)
+	case agent.PermissionRequested:
+		m.dialog.Open(e.ID, &e.Prompt)
 		m.live.Pause()
-	case agent.LoopError, agent.LoopComplete:
-		m.closeLive(ev)
+	case agent.TurnFailed, agent.TurnCompleted:
+		m.closeLive(event)
 	}
 	return nil
 }
 
-func (m *Model) closeLive(ev agent.Event) {
-	if !m.live.Active() {
+func (m *Model) closeLive(event agent.TurnEvent) {
+	if m.turn == nil {
 		return
 	}
 	elapsed := m.live.Elapsed()
 	if text := m.live.TakeText(); text != "" {
 		m.transcript.Emit(block{kind: blockAssistant, body: text})
 	}
-	switch e := ev.(type) {
-	case agent.LoopComplete:
-		if e.Usage != (llm.Usage{}) {
-			m.lastUsage = e.Usage
-		}
+	switch e := event.(type) {
+	case agent.TurnCompleted:
 		switch e.Reason {
 		case agent.StoppedByModel:
-			m.transcript.Emit(block{kind: blockTurn, elapsed: elapsed, at: time.Now(), usage: e.Usage})
+			m.transcript.Emit(block{kind: blockTurn, elapsed: elapsed, at: time.Now(), usage: m.lastUsage})
 		case agent.StoppedByLimit:
 			limit := fmt.Sprintf("Round limit reached after %d tool rounds — the loop stopped before running out of control.", e.ToolRounds)
 			m.transcript.Emit(block{kind: blockNotice, body: limit, severity: noticeWarn})
-			m.transcript.Emit(block{kind: blockTurn, elapsed: elapsed, at: time.Now(), usage: e.Usage})
+			m.transcript.Emit(block{kind: blockTurn, elapsed: elapsed, at: time.Now(), usage: m.lastUsage})
 		case agent.StoppedByUser:
 			m.transcript.Emit(block{kind: blockNotice, body: "Cancelled."})
 		}
-	case agent.LoopError:
+	case agent.TurnFailed:
 		m.transcript.Emit(block{kind: blockNotice, body: "Error: " + e.Err.Error(), severity: noticeError})
 	}
 	m.answerPermission(permissions.Reject)
-	m.live.Cancel()
 	m.live.Finish()
+	m.turn.Close()
+	m.turn = nil
 	m.reportSessionError()
 	m.stopClockIfIdle()
 }
 
-// reportSessionError surfaces the archive's first write failure once; the
-// inline paths (a refused message, a failed turn) already told the user, and
-// this latch covers the silent ones.
+func (m *Model) answerPermission(response permissions.Response) {
+	id, prompt := m.dialog.Close()
+	if prompt == nil {
+		return
+	}
+	m.live.Resume()
+	if m.turn != nil {
+		_ = m.turn.AnswerPermission(id, response)
+	}
+}
+
+func (m *Model) cancelTurn() {
+	if m.turn != nil {
+		m.turn.Cancel()
+	}
+}
+
 func (m *Model) reportSessionError() {
 	if m.sessionWarned || m.opts.Session == nil {
 		return
@@ -161,28 +217,24 @@ func (m *Model) reportSessionError() {
 	}
 }
 
-// compactionNotice renders one compaction progress step; both the in-turn
-// path and /compact flow through it so the wording cannot diverge.
-func compactionNotice(p compaction.Progress) (string, noticeSeverity) {
-	switch p.Phase {
+func compactionNotice(progress compaction.Progress) (string, noticeSeverity) {
+	switch progress.Phase {
 	case compaction.PhaseStart:
 		return "Compacting conversation…", noticeInfo
 	case compaction.PhaseDone:
 		return fmt.Sprintf("Context compacted: %s → %s tokens",
-			format.Tokens(p.FromTokens), format.Tokens(p.ToTokens)), noticeInfo
+			format.Tokens(progress.FromTokens), format.Tokens(progress.ToTokens)), noticeInfo
 	case compaction.PhaseFailed:
-		return "Compaction failed: " + p.Err.Error(), noticeWarn
+		return "Compaction failed: " + progress.Err.Error(), noticeWarn
 	default:
 		return "", noticeInfo
 	}
 }
 
-// runCompact is the only writer of the history outside a turn; it runs while
-// the input gate is closed.
 func runCompact(mgr Compactor) tea.Cmd {
 	return func() tea.Msg {
-		res, err := mgr.ForceCompact(context.Background(), nil)
-		return compactDoneMsg{result: res, err: err}
+		result, err := mgr.ForceCompact(context.Background(), nil)
+		return compactDoneMsg{result: result, err: err}
 	}
 }
 
@@ -195,8 +247,11 @@ func (m Model) compactDone(msg compactDoneMsg) (Model, tea.Cmd) {
 	case !msg.result.Compacted:
 		m.transcript.Emit(block{kind: blockNotice, body: "Nothing to compact."})
 	default:
-		body, severity := compactionNotice(compaction.Progress{Phase: compaction.PhaseDone,
-			FromTokens: msg.result.FromTokens, ToTokens: msg.result.ToTokens})
+		body, severity := compactionNotice(compaction.Progress{
+			Phase:      compaction.PhaseDone,
+			FromTokens: msg.result.FromTokens,
+			ToTokens:   msg.result.ToTokens,
+		})
 		m.transcript.Emit(block{kind: blockNotice, body: body, severity: severity})
 	}
 	m.stopClockIfIdle()

@@ -25,8 +25,8 @@ var permissionOptions = []permissionOption{
 
 // permissionOptionsFor drops the two options that would record a rule when the
 // call has none to record.
-func permissionOptionsFor(req *permissions.Request) []permissionOption {
-	if len(req.Rules) == 0 {
+func permissionOptionsFor(prompt *permissions.Prompt) []permissionOption {
+	if len(prompt.Rules) == 0 {
 		return []permissionOption{
 			{label: "Allow once", response: permissions.AllowOnce},
 			{label: "Deny", response: permissions.Reject},
@@ -38,18 +38,20 @@ func permissionOptionsFor(req *permissions.Request) []permissionOption {
 // PermissionDialog owns the confirmation prompt. It takes over the bar, so the
 // input box and the footer step aside while it is up.
 type PermissionDialog struct {
-	req    *permissions.Request
+	id     string
+	prompt *permissions.Prompt
 	cursor int
 }
 
-func (d PermissionDialog) Active() bool { return d.req != nil }
+func (d PermissionDialog) Active() bool { return d.prompt != nil }
 
 // Modal reports that the dialog takes the whole input region: the composer and
 // its footer step aside, and the output region's live tail is suspended.
 func (d PermissionDialog) Modal() bool { return true }
 
-func (d *PermissionDialog) Open(req *permissions.Request) {
-	d.req = req
+func (d *PermissionDialog) Open(id string, prompt *permissions.Prompt) {
+	d.id = id
+	d.prompt = prompt
 	d.cursor = 0
 }
 
@@ -60,18 +62,18 @@ func (d *PermissionDialog) Move(delta int) {
 
 func (d PermissionDialog) Selected() permissions.Response { return d.options()[d.cursor].response }
 
-func (d *PermissionDialog) Close() *permissions.Request {
-	req := d.req
-	d.req = nil
+func (d *PermissionDialog) Close() (string, *permissions.Prompt) {
+	id, prompt := d.id, d.prompt
+	d.id, d.prompt = "", nil
 	d.cursor = 0
-	return req
+	return id, prompt
 }
 
 func (d PermissionDialog) options() []permissionOption {
-	if d.req == nil {
+	if d.prompt == nil {
 		return permissionOptions
 	}
-	return permissionOptionsFor(d.req)
+	return permissionOptionsFor(d.prompt)
 }
 
 // View renders the dialog; the footer argument is ignored — a modal owner
@@ -81,17 +83,17 @@ func (d PermissionDialog) View(width int, _ FooterData) string {
 	inner := max(boxWidth-2, 10)
 
 	parts := []string{stylePermTitle.Render("Permission required"), ""}
-	heading := stylePermTool.Render(d.req.ToolName)
-	if d.req.Action != "" {
-		heading += "\n" + lipgloss.Wrap(d.req.Action, inner, " -/")
+	heading := stylePermTool.Render(d.prompt.ToolName)
+	if d.prompt.Action != "" {
+		heading += "\n" + lipgloss.Wrap(d.prompt.Action, inner, " -/")
 	}
 	parts = append(parts, heading)
 
-	if len(d.req.Rules) > 0 {
+	if len(d.prompt.Rules) > 0 {
 		lines := []string{"", Dim.Render("Granting it would record:")}
-		for i, rule := range d.req.Rules {
+		for i, rule := range d.prompt.Rules {
 			if i == maxPermissionRules {
-				lines = append(lines, Dim.Render(fmt.Sprintf("  … +%d more", len(d.req.Rules)-i)))
+				lines = append(lines, Dim.Render(fmt.Sprintf("  … +%d more", len(d.prompt.Rules)-i)))
 				break
 			}
 			lines = append(lines, Dim.Render(lipgloss.Wrap("  • "+rule.String(), inner, " -/")))

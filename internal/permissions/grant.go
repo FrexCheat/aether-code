@@ -17,11 +17,10 @@ const (
 	Reject                         // do not run this call
 )
 
-type Request struct {
+type Prompt struct {
 	ToolName string
 	Action   string
 	Rules    []Rule
-	Reply    chan<- Response
 }
 
 func (r Response) Allows() bool {
@@ -34,11 +33,11 @@ func (r Response) Allows() bool {
 }
 
 // Question builds the prompt the TUI shows for a call the ladder left open.
-func (c *Checker) Question(tool tools.Tool, args map[string]any) Request {
+func (c *Checker) Question(tool tools.Tool, args map[string]any) Prompt {
 	if tool == nil {
-		return Request{}
+		return Prompt{}
 	}
-	return Request{
+	return Prompt{
 		ToolName: tool.Name(),
 		Action:   ruleValue(specOf(tool), args),
 		Rules:    c.SuggestedRules(tool, args),

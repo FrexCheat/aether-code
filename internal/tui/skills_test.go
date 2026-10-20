@@ -149,6 +149,10 @@ func TestDispatchSkill(t *testing.T) {
 
 	// /skills then shows what is loaded and which one is live. The turn above
 	// is still open, and the input gate is not what this test is about.
+	if m.turn != nil {
+		m.turn.Close()
+		m.turn = nil
+	}
 	m.live.Finish()
 	m.composer.SetValue("/skills")
 	m, _ = m.handleEnter()

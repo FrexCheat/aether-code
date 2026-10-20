@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/FrexCheat/aether-code/internal/agent"
 	"github.com/FrexCheat/aether-code/internal/command"
 	"github.com/FrexCheat/aether-code/internal/conversation"
 )
@@ -17,7 +16,8 @@ func turnInFlight(t *testing.T, cancelled *bool) Model {
 		Conv:     conversation.NewManager(),
 		Commands: command.New(command.Builtins()...),
 	})
-	m.live.Begin(make(chan agent.Event), func() { *cancelled = true })
+	m.turn = &turnStream{cancel: func() { *cancelled = true }, stop: make(chan struct{})}
+	m.live.Begin()
 	return m
 }
 

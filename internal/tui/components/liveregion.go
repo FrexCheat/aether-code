@@ -5,8 +5,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/FrexCheat/aether-code/internal/agent"
 )
 
 const maxRunningTools = 5
@@ -21,8 +19,7 @@ type toolCall struct {
 // are separated like history blocks, so the tail keeps its shape once flushed.
 // The caller supplies the clock's frame, so no row owns a tick chain.
 type LiveRegion struct {
-	events       <-chan agent.Event
-	cancel       func()
+	running      bool
 	text         []byte
 	tools        []toolCall
 	toolSpinner  Spinner
@@ -38,20 +35,18 @@ func NewLiveRegion(toolSpinner, labelSpinner Spinner) LiveRegion {
 	return LiveRegion{toolSpinner: toolSpinner, labelSpinner: labelSpinner}
 }
 
-func (l LiveRegion) Active() bool { return l.cancel != nil }
-
-func (l LiveRegion) Events() <-chan agent.Event { return l.events }
+func (l LiveRegion) Active() bool { return l.running }
 
 func (l LiveRegion) Elapsed() time.Duration { return l.timer.Elapsed() }
 
-func (l *LiveRegion) Begin(events <-chan agent.Event, cancel func()) {
-	l.events, l.cancel = events, cancel
+func (l *LiveRegion) Begin() {
+	l.running = true
 	l.reset()
 	l.timer.Start()
 }
 
 func (l *LiveRegion) Finish() {
-	l.events, l.cancel = nil, nil
+	l.running = false
 	l.reset()
 }
 
@@ -60,12 +55,6 @@ func (l *LiveRegion) reset() {
 	l.text = nil
 	l.tools = nil
 	l.wrapped, l.partial = nil, ""
-}
-
-func (l *LiveRegion) Cancel() {
-	if l.cancel != nil {
-		l.cancel()
-	}
 }
 
 func (l *LiveRegion) Pause()  { l.timer.Pause() }

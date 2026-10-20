@@ -6,7 +6,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/FrexCheat/aether-code/internal/agent"
 	"github.com/FrexCheat/aether-code/internal/command"
 	"github.com/FrexCheat/aether-code/internal/config"
 	"github.com/FrexCheat/aether-code/internal/conversation"
@@ -102,7 +101,8 @@ func TestDispatchCompactWithoutCompactor(t *testing.T) {
 func TestDispatchGateBlocksHelpAllowsExit(t *testing.T) {
 	cancelled := false
 	m := dispatchModel(t)
-	m.live.Begin(make(chan agent.Event), func() { cancelled = true })
+	m.turn = &turnStream{cancel: func() { cancelled = true }, stop: make(chan struct{})}
+	m.live.Begin()
 
 	m.composer.SetValue("/help")
 	before := len(m.transcript.blocks)

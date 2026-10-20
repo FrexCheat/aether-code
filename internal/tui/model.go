@@ -63,6 +63,7 @@ type Model struct {
 	composer      components.Composer
 	dialog        components.PermissionDialog
 	live          components.LiveRegion
+	turn          *turnStream
 	clock         components.Clock
 	transcript    *transcript
 	scroll        scrollState
@@ -232,7 +233,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		m.transcript.ToggleExpanded()
 		return m, nil
 	case "esc":
-		m.live.Cancel()
+		m.cancelTurn()
 		return m, nil
 	case "pgup":
 		m.scrollBy(-m.pageLines())
@@ -267,18 +268,6 @@ func (m Model) handlePermissionKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) answerPermission(response permissions.Response) {
-	req := m.dialog.Close()
-	if req == nil {
-		return
-	}
-	m.live.Resume()
-	select {
-	case req.Reply <- response:
-	default:
-	}
-}
-
 // handleEnter is the dispatcher: a slash command runs locally, anything else
 // becomes a user message.
 func (m Model) handleEnter() (Model, tea.Cmd) {
@@ -301,7 +290,7 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 	if cmd == nil {
 		return m.unknownCommand("/" + inv.Name)
 	}
-	if (m.live.Active() || m.compacting) && !cmd.Immediate {
+	if m.busy() && !cmd.Immediate {
 		m.transcript.Emit(block{kind: blockNotice, body: gateNotice})
 		return m, nil
 	}
@@ -335,7 +324,7 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 // sendMessage submits a plain message, subject to the same gate a command
 // walks through.
 func (m Model) sendMessage(text string) (Model, tea.Cmd) {
-	if m.live.Active() || m.compacting {
+	if m.busy() {
 		m.transcript.Emit(block{kind: blockNotice, body: gateNotice})
 		return m, nil
 	}
@@ -454,7 +443,10 @@ func completionOptions(cmds []*command.Command) []components.CompletionOption {
 }
 
 func (m Model) quit() (Model, tea.Cmd) {
-	m.live.Cancel()
+	if m.turn != nil {
+		m.turn.Close()
+		m.turn = nil
+	}
 	return m, tea.Sequence(m.shutdownMCP(), tea.Quit)
 }
 
@@ -498,6 +490,10 @@ func (m Model) checker() *permissions.Checker {
 		return nil
 	}
 	return m.opts.Agent.Checker()
+}
+
+func (m Model) busy() bool {
+	return m.turn != nil || m.compacting
 }
 
 func (m Model) cyclePermissionMode() (Model, tea.Cmd) {

@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/FrexCheat/aether-code/internal/agent"
 	"github.com/FrexCheat/aether-code/internal/permissions"
 	"github.com/FrexCheat/aether-code/internal/tui/components"
 )
@@ -15,10 +14,10 @@ func TestModalInputSuspendsLiveTail(t *testing.T) {
 	m := dispatchModel(t)
 	m.width = 80
 	m.transcript.lines = []string{"history-line"}
-	m.live.Begin(make(chan agent.Event), func() {})
-	m.dialog.Open(&permissions.Request{
+	m.live.Begin()
+	m.turn = &turnStream{cancel: func() {}, stop: make(chan struct{})}
+	m.dialog.Open("permission-1", &permissions.Prompt{
 		ToolName: "bash",
-		Reply:    make(chan permissions.Response, 1),
 	})
 
 	if out := m.outputLines(); len(out) != 1 || out[0] != "history-line" {
@@ -38,7 +37,7 @@ func TestModalInputSuspendsLiveTail(t *testing.T) {
 func TestCompletionMenuLeavesOutputAlone(t *testing.T) {
 	m := dispatchModel(t)
 	m.transcript.lines = []string{"history-line"}
-	m.live.Begin(make(chan agent.Event), func() {})
+	m.live.Begin()
 	m.composer.OpenMenu([]components.CompletionOption{{Name: "exit"}, {Name: "help"}})
 
 	out := strings.Join(m.outputLines(), "\n")

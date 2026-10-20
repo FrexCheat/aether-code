@@ -38,7 +38,7 @@ func (h *hostAdapter) Message(text string, sev command.Severity) {
 }
 
 func (h *hostAdapter) SendUserMessage(text string) bool {
-	if h.m.live.Active() || h.m.compacting {
+	if h.m.busy() {
 		return false
 	}
 	h.prompt = text
@@ -178,7 +178,7 @@ func (h *hostAdapter) ReloadSkills() { h.m.syncSkills(true) }
 // SendUserMessage records a prompt: carrying it out is the dispatcher's job,
 // once the handler has returned.
 func (h *hostAdapter) ActivateSkill(name, args string) error {
-	if h.m.live.Active() || h.m.compacting {
+	if h.m.busy() {
 		return errors.New("a Skill cannot start while a turn is running")
 	}
 	state := h.m.opts.Skills
