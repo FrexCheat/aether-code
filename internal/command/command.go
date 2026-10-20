@@ -18,6 +18,9 @@ const (
 	UI
 	// Prompt commands hand a preset prompt to the model.
 	Prompt
+	// Skill commands are defined by a loaded Skill rather than by this package:
+	// the host delivers the instructions into the conversation.
+	Skill
 )
 
 // Command is one slash command: the spellings that select it, what it is for
@@ -32,8 +35,9 @@ type Command struct {
 	// Immediate marks a command that may run while a turn is streaming. Every
 	// other command waits for the turn to end, like a plain message does.
 	Immediate bool
-	// Run is the handler; it is nil for Prompt commands, which carry a template
-	// instead.
+	// Run is the handler; it is nil for the kinds the dispatcher carries out
+	// itself — Prompt, which brings a template, and Skill, which is activated
+	// by the command's name.
 	Run func(h Host, args []string) error
 	// Prompt is the preset template for a Prompt command. It may contain
 	// $ARGUMENTS, which RenderPrompt substitutes.

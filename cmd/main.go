@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/FrexCheat/aether-code/internal/agent"
@@ -16,6 +17,7 @@ import (
 	"github.com/FrexCheat/aether-code/internal/permissions"
 	"github.com/FrexCheat/aether-code/internal/prompt"
 	"github.com/FrexCheat/aether-code/internal/session"
+	"github.com/FrexCheat/aether-code/internal/skills"
 	"github.com/FrexCheat/aether-code/internal/tools"
 	"github.com/FrexCheat/aether-code/internal/tui"
 	"github.com/FrexCheat/aether-code/internal/version"
@@ -53,7 +55,14 @@ func main() {
 	// on it here, at startup, rather than at whatever later keystroke hits it.
 	commands := command.New(command.Builtins()...)
 
-	systemPrompt := prompt.BuildSystemPrompt(prompt.DetectEnvironment(cwd))
+	env := prompt.DetectEnvironment(cwd)
+	catalog := skills.Load(cwd)
+	state := skills.NewState(catalog)
+
+	// The system prompt is assembled once here and never changes again: it
+	// carries the available-skills listing, and changing it mid-session would
+	// invalidate the cached prefix along with every message behind it.
+	systemPrompt := prompt.BuildSystemPrompt(env, catalog.Listing())
 
 	client, err := llm.NewClient(active, nil, systemPrompt)
 	if err != nil {
@@ -81,16 +90,21 @@ func main() {
 
 	if warnings := checker.RuleWarnings(); len(warnings) > 0 {
 		// A rule file that did not parse silently contributes nothing —
-		// denies included — so the user hears about it here.
-		if notice != "" {
-			notice += "\n"
-		}
-		notice += strings.Join(warnings, "\n")
+		// denies included — so the user hears about it here. The same goes for
+		// a Skill that was skipped: silence would leave them believing they
+		// have one.
+		notice = joinNotice(notice, warnings)
 	}
+	notice = joinNotice(notice, catalog.Notes())
 
-	// The agent reads its own spill files without a boundary prompt; the
-	// user-level settings file (it holds API keys) stays out.
+	// The agent reads its own spill files without a boundary prompt, and so does
+	// the user-level Skill directory: a bundle's reference documents are part of
+	// the program the user installed, not something to be asked about on every
+	// read.
 	checker.AddAllowedRoot(sess.SpillDir())
+	if root := config.DataRoot(); root != "" {
+		checker.AddAllowedRoot(filepath.Join(root, "skills"))
+	}
 
 	compactor := compaction.NewManager(compaction.ManagerParams{
 		Client:        client,
@@ -100,9 +114,18 @@ func main() {
 		ContextWindow: active.ContextWindow,
 		MaxOutput:     active.MaxOutputTokens,
 		SpillDir:      sess.SpillDir(),
+		// Instructions the session loaded explicitly come back after a
+		// compaction: the summary replaced them without restating them, and the
+		// model cannot tell that it was following a procedure.
+		Recovery: func() string { return state.RecoveryBlocks() },
 	})
 
 	ag := agent.New(client, registry, checker, mcpMgr.DeferredNames, compactor)
+
+	registry.Register(skills.NewTool(state))
+
+	// A resume does nothing Skill-related: the blocks are in the replayed
+	// history as they were delivered, and the ledger starts empty.
 
 	if err := tui.Run(tui.Options{
 		Agent:         ag,
@@ -114,10 +137,23 @@ func main() {
 		Version:       version.Version,
 		WorkDir:       cwd,
 		Session:       sess,
+		Skills:        state,
 		StartupNotice: notice,
 	}); err != nil {
 		fail(err)
 	}
+}
+
+// joinNotice appends a group of notes to the startup notice, one per line,
+// skipping an empty group so the notice never opens on a blank line.
+func joinNotice(notice string, notes []string) string {
+	if len(notes) == 0 {
+		return notice
+	}
+	if notice != "" {
+		notice += "\n"
+	}
+	return notice + strings.Join(notes, "\n")
 }
 
 // startSession opens the session the flags asked for and returns the notice

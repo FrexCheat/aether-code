@@ -76,6 +76,63 @@ func TestMatch(t *testing.T) {
 	}
 }
 
+// skillCommands is the shape a host builds for the dynamic layer: one command
+// per loaded Skill, carrying no handler of its own.
+func skillCommands(names ...string) []*Command {
+	commands := make([]*Command, len(names))
+	for i, name := range names {
+		commands[i] = &Command{Name: name, Description: name, Kind: Skill}
+	}
+	return commands
+}
+
+func TestRegistryDynamic(t *testing.T) {
+	r := testRegistry(t)
+	r.SetDynamic(skillCommands("commit", "report"))
+
+	if got := r.Lookup("COMMIT"); got == nil || got.Kind != Skill || got.Name != "commit" {
+		t.Errorf("Lookup(COMMIT) = %+v, want the commit Skill", got)
+	}
+	want := []string{"exit", "help", "session", "commit", "report"}
+	var names []string
+	for _, c := range r.All() {
+		names = append(names, c.Name)
+	}
+	if !slices.Equal(names, want) {
+		t.Errorf("All() = %q, want the static layer first", names)
+	}
+	if got := r.Match("c"); len(got) != 1 || got[0].Name != "commit" {
+		t.Errorf("Match(c) = %+v, want the commit Skill", got)
+	}
+
+	// The layer is replaced wholesale, not added to.
+	r.SetDynamic(skillCommands("report"))
+	if r.Lookup("commit") != nil {
+		t.Error("a name from the replaced layer is still reachable")
+	}
+	// And it never takes a built-in's spelling away: the dynamic command is the
+	// one that is dropped, and the caller is told which.
+	if dropped := r.SetDynamic(skillCommands("help", "report")); !slices.Equal(dropped, []string{"help"}) {
+		t.Errorf("SetDynamic() dropped %q, want just the shadowed name", dropped)
+	}
+	if got := r.Lookup("help"); got == nil || got.Kind != Local {
+		t.Errorf("Lookup(help) = %+v, want the built-in to keep its name", got)
+	}
+	if got := r.Match("hel"); len(got) != 1 || got[0].Kind != Local {
+		t.Errorf("Match(hel) = %+v, want only the built-in", got)
+	}
+	if got := r.Lookup("report"); got == nil || got.Kind != Skill {
+		t.Errorf("Lookup(report) = %+v, want the Skill beside it", got)
+	}
+
+	defer func() {
+		if recover() == nil {
+			t.Error("a duplicate inside one batch is a programming error and must panic")
+		}
+	}()
+	r.SetDynamic(skillCommands("dup", "dup"))
+}
+
 func TestNewPanicsOnConflict(t *testing.T) {
 	tests := []struct {
 		name     string

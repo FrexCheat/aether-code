@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/FrexCheat/aether-code/internal/conversation"
+	"github.com/FrexCheat/aether-code/internal/skills"
 )
 
 // newTestSession confines the user root and starts one session.
@@ -62,6 +63,36 @@ func TestRoundTrip(t *testing.T) {
 	}
 	if got, want := restored.Messages(), conv.Messages(); !reflect.DeepEqual(got, want) {
 		t.Errorf("restored history differs:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// A delivered Skill block is not something the user said, so the session is
+// titled after the request that came with it.
+func TestTitleSkipsSkillBlocks(t *testing.T) {
+	conv := conversation.NewManager()
+	s := newTestSession(t, conv)
+
+	if err := conv.AddUserMessage(skills.Marker("commit", "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := conv.AddUserMessage("fix the parser"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restored := conversation.NewManager()
+	s2, info, err := Resume(restored, s.ID())
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	defer s2.Close()
+	if info.Title != "fix the parser" {
+		t.Errorf("Title = %q, want the request the block came with", info.Title)
+	}
+	if info.UserMessages != 2 {
+		t.Errorf("UserMessages = %d, want both messages counted", info.UserMessages)
 	}
 }
 

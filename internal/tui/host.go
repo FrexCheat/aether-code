@@ -3,12 +3,14 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/FrexCheat/aether-code/internal/command"
 	"github.com/FrexCheat/aether-code/internal/compaction"
 	"github.com/FrexCheat/aether-code/internal/permissions"
 	"github.com/FrexCheat/aether-code/internal/session"
+	"github.com/FrexCheat/aether-code/internal/skills"
 )
 
 // hostAdapter is the Model as a command.Host: the renderer-agnostic surface a
@@ -16,11 +18,12 @@ import (
 // message, a compaction, a quit — are recorded here and turned into tea.Cmds
 // by the dispatcher once the handler returns.
 type hostAdapter struct {
-	m        *Model
-	registry *command.Registry
-	prompt   string
-	quit     bool
-	compact  bool
+	m          *Model
+	registry   *command.Registry
+	prompt     string
+	activation *skillRequest
+	quit       bool
+	compact    bool
 }
 
 func (h *hostAdapter) Message(text string, sev command.Severity) {
@@ -85,6 +88,7 @@ func (h *hostAdapter) Status() command.Status {
 		WorkDir:  h.m.opts.WorkDir,
 		Mode:     h.Mode(),
 		MCP:      h.m.mcpStatus,
+		Skills:   skillsStatus(h.m.opts.Skills),
 	}
 	if h.m.opts.Session != nil {
 		s.SessionID = h.m.opts.Session.ID()
@@ -139,4 +143,69 @@ func (h *hostAdapter) NewSession() error {
 
 func (h *hostAdapter) Compact() { h.compact = true }
 
+// Skills reports the catalog with its activation ledger, in the order the
+// window would list them.
+func (h *hostAdapter) Skills() command.SkillReport {
+	state := h.m.opts.Skills
+	if state == nil {
+		return command.SkillReport{}
+	}
+	active := make(map[string]bool)
+	for _, a := range state.Active() {
+		active[a.Name] = true
+	}
+	report := command.SkillReport{Notes: slices.Clone(state.Catalog().Notes())}
+	for _, skill := range state.List() {
+		found := h.registry.Lookup(skill.Name)
+		slash := found != nil && found.Kind == command.Skill
+		if found != nil && !slash {
+			report.Notes = append(report.Notes, shadowNote(skill.Name))
+		}
+		report.Skills = append(report.Skills, command.SkillInfo{
+			Name:        skill.Name,
+			Description: skill.Description,
+			Source:      string(skill.Source),
+			Active:      active[skill.Name],
+			Slash:       slash,
+		})
+	}
+	return report
+}
+
+func (h *hostAdapter) ReloadSkills() { h.m.syncSkills(true) }
+
+// ActivateSkill records the Skill a slash command asked for, the way
+// SendUserMessage records a prompt: carrying it out is the dispatcher's job,
+// once the handler has returned.
+func (h *hostAdapter) ActivateSkill(name, args string) error {
+	if h.m.live.Active() || h.m.compacting {
+		return errors.New("a Skill cannot start while a turn is running")
+	}
+	state := h.m.opts.Skills
+	if state == nil {
+		return errors.New("skills are unavailable in this session")
+	}
+	if state.Get(name) == nil {
+		return fmt.Errorf("unknown skill %q", name)
+	}
+	h.activation = &skillRequest{name: name, args: args}
+	return nil
+}
+
 func (h *hostAdapter) Quit() { h.quit = true }
+
+// skillsStatus is the /status line: what is active, and how much of it.
+func skillsStatus(state *skills.State) string {
+	if state == nil {
+		return ""
+	}
+	active := state.Active()
+	if len(active) == 0 {
+		return "none"
+	}
+	names := make([]string, len(active))
+	for i, a := range active {
+		names[i] = a.Name
+	}
+	return fmt.Sprintf("%s · %d active", strings.Join(names, ", "), len(active))
+}

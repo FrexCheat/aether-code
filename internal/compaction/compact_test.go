@@ -220,6 +220,64 @@ func TestComputeKeepBoundary(t *testing.T) {
 	}
 }
 
+func TestRecovery(t *testing.T) {
+	tests := []struct {
+		name     string
+		recovery func() string
+		want     string
+	}{
+		{name: "no provider", recovery: nil},
+		{name: "an empty answer changes nothing", recovery: func() string { return "   \n" }},
+		{name: "the provider's text rides the boundary", recovery: func() string { return "[aether:skill commit] 按它执行" },
+			want: "[aether:skill commit] 按它执行"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, _ := breakerManager(t, 6, 8000)
+			client, ok := m.client.(*stubClient)
+			if !ok {
+				t.Fatal("the breaker fixture changed shape")
+			}
+			client.fail = false
+			m.recovery = tt.recovery
+
+			before := m.conv.Messages()[0].Content
+			result, err := m.ForceCompact(context.Background(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !result.Compacted {
+				t.Fatal("the fixture did not compact")
+			}
+			msgs := m.conv.Messages()
+			if msgs[0].Content == before {
+				t.Fatal("the head of the history survived the rewrite")
+			}
+			boundary := msgs[0]
+			if boundary.Role != conversation.RoleUser {
+				t.Errorf("the boundary is a %s message", boundary.Role)
+			}
+			if !strings.Contains(boundary.Content, "</summary>") {
+				t.Fatalf("the boundary lost its summary:\n%s", boundary.Content)
+			}
+			if tt.want == "" {
+				if strings.Contains(boundary.Content, "[aether:skill") {
+					t.Errorf("a provider with nothing to say must leave the boundary alone:\n%s", boundary.Content)
+				}
+				return
+			}
+			// It lands after the summary it belongs beside, and before the tail
+			// that was kept verbatim.
+			if at, summary := strings.Index(boundary.Content, tt.want), strings.Index(boundary.Content, "</summary>"); at < summary {
+				t.Errorf("the recovered text is at %d, before the summary ends at %d", at, summary)
+			}
+			if !strings.Contains(boundary.Content, tt.want) {
+				t.Errorf("the boundary misses the recovered text:\n%s", boundary.Content)
+			}
+		})
+	}
+}
+
 func TestExtractSummary(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -48,7 +48,13 @@ func DetectEnvironment(workDir string) Environment {
 // The literal order is the prompt order — project instructions ride right
 // after the identity, the environment closes — and an empty section drops
 // out, so a section that has nothing to say costs nothing.
-func BuildSystemPrompt(env Environment) string {
+//
+// skillList is the available-skills listing, empty when there is none. It is
+// passed in rather than read from a package here because the caller already
+// holds the loaded catalog; the prompt is assembled exactly once either way,
+// and a prompt that changed mid-session would invalidate the whole cached
+// prefix with the history behind it.
+func BuildSystemPrompt(env Environment, skillList string) string {
 	sections := []string{
 		identitySection(),
 		projectInstructionsSection(env.WorkDir),
@@ -57,6 +63,7 @@ func BuildSystemPrompt(env Environment) string {
 		executingActionsSection(),
 		usingToolsSection(),
 		externalToolsSection(),
+		availableSkillsSection(skillList),
 		toneStyleSection(),
 		textOutputSection(),
 		environmentSection(env),

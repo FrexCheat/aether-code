@@ -112,6 +112,12 @@ type ManagerParams struct {
 	ContextWindow int
 	MaxOutput     int
 	SpillDir      string
+	// Recovery supplies the text a boundary message puts back alongside the
+	// summary: instructions the session loaded explicitly and the summary
+	// silently replaced. The host wires it to whatever keeps that ledger, so
+	// this package needs to know nothing about it. nil or an empty answer
+	// leaves the boundary as the summary alone.
+	Recovery func() string
 }
 
 type Manager struct {
@@ -119,6 +125,7 @@ type Manager struct {
 	client        llm.Client
 	conv          *conversation.Manager
 	schemas       func() []tools.ToolSchema
+	recovery      func() string
 	estimator     *Estimator
 	contextWindow int
 	thresholds    thresholds
@@ -140,6 +147,7 @@ func NewManager(p ManagerParams) *Manager {
 		client:        p.Client,
 		conv:          p.Conv,
 		schemas:       p.Schemas,
+		recovery:      p.Recovery,
 		estimator:     NewEstimator(p.SystemPrompt, p.Schemas),
 		contextWindow: p.ContextWindow,
 		thresholds:    computeThresholds(p.ContextWindow, p.MaxOutput),

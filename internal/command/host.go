@@ -31,6 +31,25 @@ type Status struct {
 	Messages  int
 	Mode      string
 	MCP       string
+	Skills    string
+}
+
+// SkillInfo is one loaded Skill, for /skills.
+type SkillInfo struct {
+	Name        string
+	Description string
+	Source      string
+	Active      bool
+	// Slash reports whether the Skill is reachable as /name: a built-in
+	// command keeps its spelling when a Skill asks for the same one.
+	Slash bool
+}
+
+// SkillReport is the whole /skills readout: what is loaded, and what the scan
+// had to skip.
+type SkillReport struct {
+	Skills []SkillInfo
+	Notes  []string
 }
 
 // SessionInfo is one archive in the /session listing.
@@ -71,6 +90,13 @@ type Host interface {
 	NewSession() error
 	// Compact requests a compaction.
 	Compact()
+	// Skills reports the loaded Skills.
+	Skills() SkillReport
+	// ReloadSkills rescans the Skill directories and reports what it found.
+	ReloadSkills()
+	// ActivateSkill loads a Skill the user typed as a slash command into the
+	// conversation.
+	ActivateSkill(name, args string) error
 	// Quit requests that the program exits.
 	Quit()
 }

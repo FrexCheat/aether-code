@@ -51,9 +51,16 @@ func (m *Model) startStream(text string) (Model, tea.Cmd) {
 		m.transcript.Emit(block{kind: blockNotice, body: "Cannot send message: " + err.Error(), severity: noticeError})
 		return *m, nil
 	}
+	m.transcript.Emit(block{kind: blockUser, body: text})
+	return m.startTurn()
+}
+
+// startTurn runs the agent over the history as it now stands. A slash-activated
+// Skill delivers its instructions before this, so the first request already
+// carries them.
+func (m *Model) startTurn() (Model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.composer.Reset()
-	m.transcript.Emit(block{kind: blockUser, body: text})
 	m.scroll = scrollState{follow: true}
 	m.live.Begin(m.opts.Agent.Run(ctx, m.opts.Conv), cancel)
 	return *m, tea.Sequence(m.clock.Start(), waitStream(m.live.Events()))

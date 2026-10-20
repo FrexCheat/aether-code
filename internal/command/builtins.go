@@ -17,7 +17,7 @@ func Builtins() []*Command {
 		clearCommand(),
 		sessionCommand(),
 		statusCommand(),
-		reviewCommand(),
+		skillsCommand(),
 	}
 }
 
@@ -112,24 +112,31 @@ func statusCommand() *Command {
 	}
 }
 
-func reviewCommand() *Command {
+// skillsCommand is the diagnostic face of the Skill system. The load report is
+// printed once at startup, so a user who edits a Skill needs somewhere to ask
+// "what does it look like now, where did it come from, why is it not working" —
+// /help only lists names and descriptions.
+func skillsCommand() *Command {
 	return &Command{
-		Name:        "review",
-		Description: "Review uncommitted changes with the model",
-		Usage:       "/review [path or commit]",
-		ArgHint:     "[path or commit]",
-		Kind:        Prompt,
-		Prompt:      reviewPrompt,
+		Name:        "skills",
+		Description: "List the loaded Skills, or rescan the directories",
+		Usage:       "/skills [reload]",
+		ArgHint:     "[reload]",
+		Kind:        Local,
+		Run: func(h Host, args []string) error {
+			switch {
+			case len(args) == 0:
+				h.Message(skillListText(h.Skills()), Info)
+				return nil
+			case strings.EqualFold(args[0], "reload"):
+				h.ReloadSkills()
+				return nil
+			default:
+				return fmt.Errorf("usage: %s", "/skills [reload]")
+			}
+		},
 	}
 }
-
-// reviewPrompt is model-facing text, so it is Chinese like the other
-// model-facing prompts in the project.
-const reviewPrompt = `请审查当前工作区的未提交改动。
-先运行 git status 和 git diff 了解改动范围，再按严重程度列出问题，每条给出文件与行号、问题说明与修改建议；没有发现问题时明确说明。
-重点关注：正确性、边界条件、并发安全、错误处理、可读性与命名，以及是否与既有代码风格一致。
-
-审查范围（为空则审查全部未提交改动）：$ARGUMENTS`
 
 // helpText is one compact line per command: "/name [arg] — description".
 func helpText(commands []*Command) string {
@@ -176,6 +183,37 @@ func sessionListText(sessions []SessionInfo) string {
 	return strings.Join(lines, "\n")
 }
 
+// skillListText is one line per Skill: the name, its description, the tier it
+// came from, and a star when it is active. The scan's notes follow, because a
+// file that was skipped is the one thing a listing cannot show on its own.
+func skillListText(report SkillReport) string {
+	if len(report.Skills) == 0 {
+		return "No Skills loaded."
+	}
+	width := 0
+	for _, skill := range report.Skills {
+		width = max(width, len(skill.Name))
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Skills (%d):\n", len(report.Skills))
+	for _, skill := range report.Skills {
+		mark := " "
+		if skill.Active {
+			mark = "*"
+		}
+		fmt.Fprintf(&b, "%s %-*s  %s  [%s]\n", mark, width, skill.Name, skill.Description, skill.Source)
+	}
+	for _, skill := range report.Skills {
+		if !skill.Slash {
+			fmt.Fprintf(&b, "\n/%s is taken by a built-in command; the Skill still loads by name.\n", skill.Name)
+		}
+	}
+	for _, note := range report.Notes {
+		b.WriteString("\n" + note + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 func statusText(s Status, t TokenUsage) string {
 	provider := s.Provider
 	if s.Protocol != "" {
@@ -196,6 +234,7 @@ func statusText(s Status, t TokenUsage) string {
 		{"context", context},
 		{"mode", s.Mode},
 		{"mcp", s.MCP},
+		{"skills", s.Skills},
 	}
 	var b strings.Builder
 	for _, row := range rows {

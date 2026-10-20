@@ -18,6 +18,7 @@ import (
 	"github.com/FrexCheat/aether-code/internal/mcp"
 	"github.com/FrexCheat/aether-code/internal/permissions"
 	"github.com/FrexCheat/aether-code/internal/session"
+	"github.com/FrexCheat/aether-code/internal/skills"
 	"github.com/FrexCheat/aether-code/internal/tui/components"
 )
 
@@ -47,6 +48,9 @@ type Options struct {
 	Version   string
 	WorkDir   string
 	Session   *session.Session
+	// Skills is the loaded Skill catalog with its activation ledger. nil on a
+	// session without Skills, which the window then says instead of failing.
+	Skills *skills.State
 	// StartupNotice is shown as a status block on first render: a resume
 	// notice, a fallback when --continue found nothing, a cwd warning.
 	StartupNotice string
@@ -94,6 +98,13 @@ func newModel(opts Options) Model {
 		blocks = append(blocks, block{kind: blockStatus, body: opts.StartupNotice})
 	}
 	m.transcript.Load(blocks)
+	if opts.Skills != nil {
+		// The dynamic layer goes up before the first render; the load report
+		// itself is already in the startup notice.
+		for _, name := range opts.Commands.SetDynamic(skillCommands(opts.Skills.Catalog())) {
+			m.transcript.Emit(block{kind: blockNotice, body: shadowNote(name), severity: noticeWarn})
+		}
+	}
 	return m
 }
 
@@ -275,6 +286,9 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 	if text == "" {
 		return m, nil
 	}
+	// Before the line is acted on, not after: a Skill written a moment ago has
+	// to be there for the /name that is about to select it.
+	m.syncSkills(false)
 	if !strings.HasPrefix(text, "/") {
 		return m.sendMessage(text)
 	}
@@ -293,16 +307,25 @@ func (m Model) handleEnter() (Model, tea.Cmd) {
 	}
 	m.composer.Reset()
 	h := &hostAdapter{m: &m, registry: m.opts.Commands}
-	if cmd.Kind == command.Prompt {
+	switch cmd.Kind {
+	case command.Prompt:
 		h.SendUserMessage(command.RenderPrompt(cmd.Prompt, inv))
-	} else if err := cmd.Run(h, inv.Args); err != nil {
-		h.Message(err.Error(), command.Error)
+	case command.Skill:
+		if err := h.ActivateSkill(cmd.Name, inv.RawArgs); err != nil {
+			h.Message(err.Error(), command.Error)
+		}
+	default:
+		if err := cmd.Run(h, inv.Args); err != nil {
+			h.Message(err.Error(), command.Error)
+		}
 	}
 	switch {
 	case h.quit:
 		return m.quit()
 	case h.compact:
 		return m.startCompact()
+	case h.activation != nil:
+		return m.activateSkill(*h.activation)
 	case h.prompt != "":
 		return m.startStream(h.prompt)
 	}
@@ -456,11 +479,18 @@ func (m *Model) clearSession() {
 	if m.opts.Compactor != nil {
 		m.opts.Compactor.Reset()
 	}
+	// The delivered blocks went with the history; the ledger that would put them
+	// back has to go too, or the next compaction would resurrect instructions
+	// from a conversation the user just dropped.
+	cleared := m.opts.Skills.Clear()
 	m.lastUsage = llm.Usage{}
 	m.sessionWarned = false
 	m.transcript.Clear()
 	m.scroll = scrollState{follow: true}
 	m.transcript.Rebuild(m.opts.Version, m.opts.WorkDir, m.opts.Provider.Model)
+	if cleared > 0 {
+		m.transcript.Emit(block{kind: blockStatus, body: fmt.Sprintf("Cleared %d activated Skill(s).", cleared)})
+	}
 }
 
 func (m Model) checker() *permissions.Checker {

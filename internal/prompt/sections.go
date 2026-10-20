@@ -97,6 +97,23 @@ func externalToolsSection() string {
 		"- 不要臆测或编造未出现在工具列表或系统提醒中的 MCP 工具名。"
 }
 
+// availableSkillsSection lists what this session found, names and one-liners
+// only: the instructions themselves arrive when they are asked for. It stays
+// next to the MCP section because both answer "what else can you call", and it
+// is frozen with the rest of the prompt — a Skill added while the session runs
+// is announced in the conversation instead.
+func availableSkillsSection(list string) string {
+	if strings.TrimSpace(list) == "" {
+		return ""
+	}
+	return "## 可用 Skill\n" +
+		"以下是本会话发现的能力包，每个都封装了一套可复用的流程。\n" +
+		"需要遵循其中某一套时，用 Skill 工具按名字把它的完整指令加载进来，再照它执行。" +
+		"只看到名字与说明时，不要凭空猜测它的内容。\n" +
+		"\n" +
+		list
+}
+
 func toneStyleSection() string {
 	return "## 语气与风格\n" +
 		"- 回复要简洁。\n" +

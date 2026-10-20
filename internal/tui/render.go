@@ -13,6 +13,7 @@ import (
 	"github.com/FrexCheat/aether-code/internal/format"
 	"github.com/FrexCheat/aether-code/internal/llm"
 	"github.com/FrexCheat/aether-code/internal/session"
+	"github.com/FrexCheat/aether-code/internal/skills"
 	"github.com/FrexCheat/aether-code/internal/tools"
 	"github.com/FrexCheat/aether-code/internal/tui/components"
 )
@@ -180,7 +181,7 @@ func historyBlocks(msgs []conversation.Message, sess *session.Session, reg *tool
 		switch m.Role {
 		case conversation.RoleUser:
 			if m.Content != "" {
-				blocks = append(blocks, block{kind: blockUser, body: m.Content})
+				blocks = append(blocks, userBlock(m.Content))
 			}
 		case conversation.RoleAssistant:
 			if m.Content != "" {
@@ -197,6 +198,24 @@ func historyBlocks(msgs []conversation.Message, sess *session.Session, reg *tool
 		}
 	}
 	return blocks
+}
+
+// userBlock renders one user message. A delivered Skill block is an
+// instruction the host put in the history, so it reads as a notice rather than
+// as something the user typed; the body itself is not shown, since a resumed
+// session is not the place to re-read a procedure that is still in the history
+// for the model to follow.
+func userBlock(content string) block {
+	line, _, _ := strings.Cut(content, "\n")
+	name, args, ok := skills.ParseMarker(line)
+	if !ok {
+		return block{kind: blockUser, body: content}
+	}
+	body := "Skill " + name + " activated"
+	if args != "" {
+		body += " · " + args
+	}
+	return block{kind: blockNotice, body: body}
 }
 
 // toolTitle is the one place tool titles get trimmed for display: one line,

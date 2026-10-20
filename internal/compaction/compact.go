@@ -55,9 +55,18 @@ func (m *Manager) compact(ctx context.Context, notify func(Progress), auto bool,
 		}
 		return Result{FromTokens: from}, fmt.Errorf("compaction: summary failed: %w", err)
 	}
+	// What the summary replaced but did not restate goes back in the same
+	// message: the boundary is where the model reads that its context was
+	// rewritten, so it is where the ledger of what it was told has to be
+	// restored. It rides the boundary record, which is why a resume replays it
+	// without anything extra.
+	extra := ""
+	if m.recovery != nil {
+		extra = strings.TrimSpace(m.recovery())
+	}
 	if err := m.conv.ReplacePrefix(conversation.Message{
 		Role:    conversation.RoleUser,
-		Content: boundaryMessage(extractSummary(reply), keepStart < len(msgs)),
+		Content: boundaryMessage(extractSummary(reply), extra, keepStart < len(msgs)),
 	}, keepStart); err != nil {
 		// A refused rewrite is a summary failure for the breaker's purposes:
 		// without this every round would re-run a full summarize call while
@@ -176,7 +185,7 @@ func extractSummary(reply string) string {
 	return strings.TrimSpace(reply)
 }
 
-func boundaryMessage(summary string, tail bool) string {
+func boundaryMessage(summary, extra string, tail bool) string {
 	var b strings.Builder
 	b.WriteString("本次会话延续自之前的对话：上下文空间不足，早期对话已被压缩为下面的摘要。")
 	if tail {
@@ -186,5 +195,9 @@ func boundaryMessage(summary string, tail bool) string {
 	b.WriteString(summary)
 	b.WriteString("\n</summary>\n\n")
 	b.WriteString("摘要只是压缩描述，细节可能失真。当需要确切信息时（文件的当前内容、命令的原始输出、代码原文），用工具重新读取文件或重新执行操作，不要依据摘要重构。")
+	if extra != "" {
+		b.WriteString("\n\n")
+		b.WriteString(extra)
+	}
 	return b.String()
 }

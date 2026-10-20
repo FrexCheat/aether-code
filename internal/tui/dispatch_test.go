@@ -50,7 +50,7 @@ func TestDispatchHelpListsCommands(t *testing.T) {
 		t.Fatalf("blocks grew by %d, want 1", len(m.transcript.blocks)-before)
 	}
 	body := m.transcript.blocks[before].body
-	for _, want := range []string{"/exit", "/review", "/session [list]"} {
+	for _, want := range []string{"/exit", "/skills [reload]", "/session [list]"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("help misses %q:\n%s", want, body)
 		}

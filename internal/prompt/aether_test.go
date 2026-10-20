@@ -181,7 +181,7 @@ func TestProjectInstructionsSection(t *testing.T) {
 		t.Errorf("section content incomplete:\n%s", s)
 	}
 
-	prompt := BuildSystemPrompt(Environment{WorkDir: root})
+	prompt := BuildSystemPrompt(Environment{WorkDir: root}, "")
 	if !strings.Contains(prompt, "project rule") {
 		t.Errorf("the chain must ride the assembled system prompt")
 	}

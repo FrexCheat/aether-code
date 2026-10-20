@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/FrexCheat/aether-code/internal/conversation"
+	"github.com/FrexCheat/aether-code/internal/skills"
 )
 
 // Version is the on-disk record schema version; a file written by a newer
@@ -218,7 +219,9 @@ func (l *loaded) consume(line []byte) {
 		l.messageCount++
 		if msg.Role == conversation.RoleUser && msg.Content != "" {
 			l.userCount++
-			if l.title == "" {
+			// A delivered Skill block is not something the user said, so it is
+			// no title for the session either; the request that came with it is.
+			if l.title == "" && !skills.IsBlock(msg.Content) {
 				l.title = makeTitle(msg.Content)
 			}
 		}
