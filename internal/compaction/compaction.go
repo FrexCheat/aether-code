@@ -1,8 +1,4 @@
-// Package compaction owns the two-layer context budget: Layer 1 spills
-// oversized tool results to disk before every request, Layer 2 summarizes
-// older history once the estimated context nears the window. Token usage is
-// anchored on the last real API accounting; only the increments since it are
-// char-estimated.
+// Package compaction spills large tool results and summarizes old history.
 package compaction
 
 import (
@@ -29,8 +25,6 @@ const (
 	warnMargin          = 20000
 )
 
-// thresholds are the trigger lines in tokens, precomputed once at
-// construction so reads never recompute them.
 type thresholds struct {
 	auto  int
 	force int
@@ -45,7 +39,6 @@ func computeThresholds(contextWindow, maxOutput int) thresholds {
 	return thresholds{auto: usable - autoCompactMargin, force: usable - forceMargin}
 }
 
-// Level classifies the last published estimate against the lines.
 type Level int
 
 const (
@@ -54,9 +47,6 @@ const (
 	LevelForce
 )
 
-// String names the level for display; these three words are the vocabulary the
-// status readouts share, so they live with the level rather than in each
-// caller.
 func (l Level) String() string {
 	switch l {
 	case LevelWarn:
@@ -68,7 +58,6 @@ func (l Level) String() string {
 	}
 }
 
-// Phase names one step of a compaction run.
 type Phase int
 
 const (
@@ -77,8 +66,6 @@ const (
 	PhaseFailed
 )
 
-// Progress reports one compaction step. Auto marks the pre-request path
-// (false: /compact or a prompt-too-long retry).
 type Progress struct {
 	Phase                Phase
 	Auto                 bool
@@ -86,10 +73,6 @@ type Progress struct {
 	Err                  error
 }
 
-// failBand names the circuit-breaker counter a failed summary feeds: the
-// pre-request bands count separately so a permanently failing summarizer at
-// the force line cannot re-run every round, while the auto band keeps its
-// own three-strike budget.
 type failBand int
 
 const (
@@ -97,8 +80,6 @@ const (
 	bandForce
 )
 
-// Result reports one ForceCompact run. Compacted=false means there was no
-// history worth summarizing (or nothing at all).
 type Result struct {
 	Compacted            bool
 	FromTokens, ToTokens int
@@ -112,11 +93,7 @@ type ManagerParams struct {
 	ContextWindow int
 	MaxOutput     int
 	SpillDir      string
-	// Recovery supplies the text a boundary message puts back alongside the
-	// summary: instructions the session loaded explicitly and the summary
-	// silently replaced. The host wires it to whatever keeps that ledger, so
-	// this package needs to know nothing about it. nil or an empty answer
-	// leaves the boundary as the summary alone.
+	// Recovery restores instructions the summary replaced.
 	Recovery func() string
 }
 
@@ -133,15 +110,10 @@ type Manager struct {
 	anchor        UsageAnchor
 	failures      int
 	forceFailures int
-	// used publishes usedTokens for lock-free readers: Prepare and ForceCompact
-	// hold mu across the summarize call, so the TUI cannot read the estimate
-	// under the lock.
+	// Prepare and ForceCompact hold mu across the summarize call.
 	used atomic.Int64
 }
 
-// NewManager deliberately publishes nothing: the readout reports what the
-// provider accounted for this run, so a fresh or resumed session reads zero
-// until its first turn, not a pre-request guess.
 func NewManager(p ManagerParams) *Manager {
 	return &Manager{
 		client:        p.Client,
@@ -155,8 +127,6 @@ func NewManager(p ManagerParams) *Manager {
 	}
 }
 
-// Level reports where the last published estimate sits; it reads the atomic
-// snapshot and never blocks behind a compaction in flight.
 func (m *Manager) Level() Level {
 	used := int(m.used.Load())
 	switch {
@@ -169,7 +139,6 @@ func (m *Manager) Level() Level {
 	}
 }
 
-// countFailure feeds the band's breaker; any success clears both.
 func (m *Manager) countFailure(band failBand) {
 	if band == bandForce {
 		m.forceFailures++
@@ -178,13 +147,10 @@ func (m *Manager) countFailure(band failBand) {
 	m.failures++
 }
 
-// UsedTokens is the last published context estimate; safe to call at any time.
 func (m *Manager) UsedTokens() int { return int(m.used.Load()) }
 
-// ContextWindow is the provider's window the estimate is measured against.
 func (m *Manager) ContextWindow() int { return m.contextWindow }
 
-// publish refreshes the snapshot. The caller holds mu.
 func (m *Manager) publish() { m.used.Store(int64(m.usedTokens())) }
 
 // RecordUsage re-anchors on a completed request. Call it right after the
@@ -206,11 +172,6 @@ func (m *Manager) RecordUsage(u llm.Usage) {
 	m.publish()
 }
 
-// Reset drops the anchor and both failure counts and returns the readout to
-// the fresh-session state; called by /clear. It zeros the published snapshot
-// instead of republishing the estimate: /clear starts an empty conversation, so
-// the readout must match a fresh start — the fixed prefix is not "usage" until
-// a request actually carries it.
 func (m *Manager) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -220,18 +181,12 @@ func (m *Manager) Reset() {
 	m.used.Store(0)
 }
 
-// SetSpillDir points Layer 1 at another directory; /clear calls it when it
-// rotates to a new session, since each session owns its spill files.
 func (m *Manager) SetSpillDir(dir string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.spillDir = dir
 }
 
-// usedTokens is baseline-plus-increments while the anchor is valid, and a
-// full estimate otherwise (first turn, or the history was rewritten). The
-// full estimate includes the fixed prefix — system prompt and tools — which
-// the anchor baseline already carries on the anchored path.
 func (m *Manager) usedTokens() int {
 	msgs := m.conv.Messages()
 	if m.anchor.AnchorCount > 0 && m.anchor.AnchorCount <= len(msgs) {

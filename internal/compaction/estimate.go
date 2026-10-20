@@ -39,11 +39,7 @@ func NewEstimator(systemPrompt string, schemas func() []tools.ToolSchema) *Estim
 	return &Estimator{systemPrompt: systemPrompt, schemas: schemas}
 }
 
-// FixedPrefix prices what never enters the message list: the system prompt
-// and every tool definition on the wire. It runs only on the no-anchor path
-// (first rounds, after a rewrite); once real usage arrives the anchor
-// baseline already carries the prefix, and caching the value from startup
-// would miss the MCP settle that changes the tool set mid-session anyway.
+// FixedPrefix is only used without an anchor; MCP can change the tool set later.
 func (e *Estimator) FixedPrefix() int {
 	total := estimateTokens(e.systemPrompt)
 	for _, s := range e.schemas() {
@@ -60,8 +56,6 @@ func (e *Estimator) Messages(msgs []conversation.Message) int {
 	return total
 }
 
-// Message approximates one message's wire cost; the per-entry fudges are
-// structural overheads carried over from the original estimator.
 func (e *Estimator) Message(msg conversation.Message) int {
 	total := estimateTokens(msg.Content) + 4
 	for _, tr := range msg.ToolResults {
@@ -105,7 +99,6 @@ func (e *Estimator) toolPrice(name string) int {
 	return unknownToolPrice
 }
 
-// estimateTokens is the two-bucket approximation.
 func estimateTokens(text string) int {
 	ascii, other := 0, 0
 	for _, r := range text {

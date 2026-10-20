@@ -25,7 +25,6 @@ const (
 	nativeToolSearchBeta = "advanced-tool-use-2025-11-20"
 )
 
-// anthropicClient is the llm.Client backed by the Anthropic Messages API.
 type anthropicClient struct {
 	sdk          anthropic.Client
 	model        string
@@ -54,7 +53,6 @@ func newAnthropicClient(cfg config.Provider, httpClient *http.Client, systemProm
 	}
 }
 
-// Stream implements Client.
 func (c *anthropicClient) Stream(ctx context.Context, req Request) iter.Seq2[StreamEvent, error] {
 	return func(yield func(StreamEvent, error) bool) {
 		params := c.buildParams(req)

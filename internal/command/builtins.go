@@ -7,8 +7,6 @@ import (
 	"github.com/FrexCheat/aether-code/internal/format"
 )
 
-// Builtins returns the commands that ship with the app, in the order /help
-// lists them.
 func Builtins() []*Command {
 	return []*Command{
 		exitCommand(),
@@ -112,10 +110,6 @@ func statusCommand() *Command {
 	}
 }
 
-// skillsCommand is the diagnostic face of the Skill system. The load report is
-// printed once at startup, so a user who edits a Skill needs somewhere to ask
-// "what does it look like now, where did it come from, why is it not working" —
-// /help only lists names and descriptions.
 func skillsCommand() *Command {
 	return &Command{
 		Name:        "skills",
@@ -138,7 +132,6 @@ func skillsCommand() *Command {
 	}
 }
 
-// helpText is one compact line per command: "/name [arg] — description".
 func helpText(commands []*Command) string {
 	lines := make([]string, 0, len(commands))
 	for _, c := range commands {
@@ -183,9 +176,6 @@ func sessionListText(sessions []SessionInfo) string {
 	return strings.Join(lines, "\n")
 }
 
-// skillListText is one line per Skill: the name, its description, the tier it
-// came from, and a star when it is active. The scan's notes follow, because a
-// file that was skipped is the one thing a listing cannot show on its own.
 func skillListText(report SkillReport) string {
 	if len(report.Skills) == 0 {
 		return "No Skills loaded."

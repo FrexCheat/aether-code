@@ -18,7 +18,6 @@ import (
 	"github.com/FrexCheat/aether-code/internal/tui/components"
 )
 
-// asciiLogo is the startup banner's mark; it sits with the Banner that draws it.
 const asciiLogo = `
  ┌╌╌╌╌╌┐
  └╌╌╌╌╌┘
@@ -35,8 +34,6 @@ const (
 	noticeError
 )
 
-// blockKind selects the scrollback rendering of a block. Assistant text,
-// tool results and notices are the only things that reach the transcript.
 type blockKind int
 
 const (
@@ -48,9 +45,6 @@ const (
 	blockStatus
 )
 
-// block is one printed unit of history. It carries the full, uncollapsed
-// content, so the same record renders both the collapsed scrollback line and
-// the expanded ctrl+o view.
 type block struct {
 	kind     blockKind
 	title    string
@@ -63,14 +57,11 @@ type block struct {
 	severity noticeSeverity
 }
 
-// blockRenderer turns a block into text. It is the only place a block reaches
-// the terminal, so scrollback and the expanded view can never diverge in style.
 type blockRenderer struct {
 	width    int
 	markdown *glamour.TermRenderer
 }
 
-// SetWidth rebuilds the markdown renderer against a new terminal width.
 func (r *blockRenderer) SetWidth(w int) {
 	r.width = w
 	if w <= 0 {
@@ -130,8 +121,6 @@ func (r blockRenderer) tool(b block, expanded bool) string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, components.ToolIndent+dot+" ", head)
 }
 
-// toolBody renders the result text: collapsed to a few lines in the
-// scrollback, the whole wrapped body in the expanded view.
 func (r blockRenderer) toolBody(b block, expanded bool) string {
 	lines := components.WrapLines(b.body, max(r.width-6, 20))
 	if !expanded && len(lines) > collapseLines+1 {
@@ -144,9 +133,6 @@ func (r blockRenderer) toolBody(b block, expanded bool) string {
 	return strings.Join(lines, "\n")
 }
 
-// Banner draws the startup banner. The model name sits with the rest of the
-// banner text rather than being right-aligned against the margin, where a
-// narrow terminal would clip it; the provider name is deliberately absent.
 func (r blockRenderer) Banner(version, workDir, model, hint string) string {
 	lines := []string{
 		components.Title.Render("Aether Code") + " " + components.Dim.Render("v"+version),
@@ -165,11 +151,6 @@ func (r blockRenderer) Banner(version, workDir, model, hint string) string {
 	return lipgloss.JoinHorizontal(lipgloss.Center, logo, "   ", text)
 }
 
-// historyBlocks rebuilds the scrollback from a restored history: user and
-// assistant text verbatim, tool calls paired with their results in record
-// order, compaction boundaries as notices. Reminders and thinking never reach
-// the archive, so there is nothing to skip, and per-turn timing is not
-// recorded — elapsed stays zero, which the renderer drops.
 func historyBlocks(msgs []conversation.Message, sess *session.Session, reg *tools.Registry) []block {
 	results := conversation.IndexToolResults(msgs)
 	var blocks []block
@@ -200,11 +181,6 @@ func historyBlocks(msgs []conversation.Message, sess *session.Session, reg *tool
 	return blocks
 }
 
-// userBlock renders one user message. A delivered Skill block is an
-// instruction the host put in the history, so it reads as a notice rather than
-// as something the user typed; the body itself is not shown, since a resumed
-// session is not the place to re-read a procedure that is still in the history
-// for the model to follow.
 func userBlock(content string) block {
 	line, _, _ := strings.Cut(content, "\n")
 	name, args, ok := skills.ParseMarker(line)
@@ -218,8 +194,6 @@ func userBlock(content string) block {
 	return block{kind: blockNotice, body: body}
 }
 
-// toolTitle is the one place tool titles get trimmed for display: one line,
-// titleClampChars runes. The clamp is a pure display concern.
 func toolTitle(reg *tools.Registry, name string, args map[string]any) string {
 	title := name
 	if reg != nil {
@@ -253,8 +227,6 @@ func renderNotice(text string, severity noticeSeverity) string {
 	return b.String()
 }
 
-// turnLine reports the cache split of the turn's last request — the prompt the
-// model actually finished on — rather than a sum over the turn's rounds.
 func turnLine(elapsed time.Duration, at time.Time, usage llm.Usage) string {
 	line := fmt.Sprintf("%ds · done %s · Cache Read %s tokens",
 		int(elapsed.Seconds()), at.Format("3:04 PM"),
@@ -285,8 +257,6 @@ func colorDiffLine(line string) string {
 	return components.Dim.Render(line)
 }
 
-// hardWrap clamps every line to the terminal width, so a rendered block always
-// occupies exactly the rows it reports.
 func hardWrap(s string, width int) []string {
 	if width <= 0 {
 		width = 80

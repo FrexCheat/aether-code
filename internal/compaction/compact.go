@@ -33,10 +33,7 @@ const summaryPrompt = `严格禁止调用任何工具：不要调用任何工具
 
 输出格式（严格遵守）：先输出 <analysis> 标签，在其中起草上述各节并自查完整性（该草稿随后会被丢弃）；确认无误后输出 <summary> 标签，给出最终摘要正文。<summary> 结束后不得再有任何文字。再次强调：全程禁止任何工具调用。`
 
-// compact summarizes history[:keepStart] into one boundary user message and
-// keeps the tail verbatim. The caller owns locking; auto marks the
-// pre-request path in the progress events, while band decides which
-// circuit-breaker counter a failure feeds.
+// compact summarizes history[:keepStart] into one boundary message.
 func (m *Manager) compact(ctx context.Context, notify func(Progress), auto bool, band failBand) (Result, error) {
 	msgs := m.conv.Messages()
 	keepStart := computeKeepBoundary(m.estimator, msgs)
@@ -89,11 +86,7 @@ func (m *Manager) compact(ctx context.Context, notify func(Progress), auto bool,
 	return res, nil
 }
 
-// computeKeepBoundary walks back from the tail until both floors hold
-// (keepRecentTokens AND keepMinMessages); the cap only applies once the
-// message floor is met, and the newest message is kept unconditionally. The
-// boundary then snaps back so the tail never opens with a tool_result whose
-// call lives in the summary region — EnsureToolPairing would drop it.
+// The tail must not open with a tool result whose call was summarized.
 func computeKeepBoundary(est *Estimator, msgs []conversation.Message) int {
 	acc, count, keepStart := 0, 0, 0
 	for i, msg := range slices.Backward(msgs) {
@@ -141,11 +134,7 @@ func computeKeepBoundary(est *Estimator, msgs []conversation.Message) int {
 	return keepStart
 }
 
-// summarize sends the doomed region plus the summary prompt through the same
-// client and tools array as the main loop, so the request prefix — tools and
-// system prompt — stays byte-identical and hits the prompt cache. Only text
-// events are consumed; a tool call on the wire is ignored, the prompt already
-// forbids them.
+// Reusing the main request prefix keeps the summary call prompt-cacheable.
 func (m *Manager) summarize(ctx context.Context, region []conversation.Message) (string, error) {
 	msgs := append(slices.Clone(region), conversation.Message{
 		Role:    conversation.RoleUser,
@@ -169,9 +158,7 @@ func (m *Manager) summarize(ctx context.Context, region []conversation.Message) 
 	return "", errors.New("compaction: summary stream ended unexpectedly")
 }
 
-// extractSummary drops the analysis draft and takes the summary body; when
-// the tags are missing the raw reply wins — a format slip must never discard
-// a summary the model already paid for.
+// A malformed tagged reply still returns the raw summary rather than dropping it.
 func extractSummary(reply string) string {
 	if before, rest, ok := strings.Cut(reply, "<analysis>"); ok {
 		if _, after, closed := strings.Cut(rest, "</analysis>"); closed {

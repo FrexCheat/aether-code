@@ -6,8 +6,6 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// WrapLines breaks text into lines no wider than width, keeping the breaks the
-// text already carries.
 func WrapLines(s string, width int) []string {
 	var out []string
 	for line := range strings.SplitSeq(s, "\n") {

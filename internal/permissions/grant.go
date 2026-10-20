@@ -4,7 +4,6 @@ import (
 	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
-// grantPatternLen bounds how much of a call's argument an allow rule keeps.
 const grantPatternLen = 60
 
 type Response int
@@ -32,7 +31,6 @@ func (r Response) Allows() bool {
 	}
 }
 
-// Question builds the prompt the TUI shows for a call the ladder left open.
 func (c *Checker) Question(tool tools.Tool, args map[string]any) Prompt {
 	if tool == nil {
 		return Prompt{}
@@ -105,7 +103,6 @@ func (c *Checker) AddSessionRule(rule Rule) {
 	c.sessionRules = append(c.sessionRules, rule)
 }
 
-// AddPermanentRules writes every rule to the local file in one rewrite.
 func (c *Checker) AddPermanentRules(rules []Rule) error {
 	return c.rules.AppendLocalRules(rules)
 }

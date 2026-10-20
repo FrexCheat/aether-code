@@ -14,10 +14,6 @@ type toolCall struct {
 	title string
 }
 
-// LiveRegion renders the turn in flight — the running tools, the streamed
-// assistant text and the activity line — as the tail of the history. Its groups
-// are separated like history blocks, so the tail keeps its shape once flushed.
-// The caller supplies the clock's frame, so no row owns a tick chain.
 type LiveRegion struct {
 	running      bool
 	text         []byte
@@ -30,7 +26,6 @@ type LiveRegion struct {
 	partial      string   // the trailing line, still growing
 }
 
-// NewLiveRegion builds the region with the spinner each animated row shows.
 func NewLiveRegion(toolSpinner, labelSpinner Spinner) LiveRegion {
 	return LiveRegion{toolSpinner: toolSpinner, labelSpinner: labelSpinner}
 }
@@ -50,7 +45,6 @@ func (l *LiveRegion) Finish() {
 	l.reset()
 }
 
-// reset drops the turn's streamed text and running tools.
 func (l *LiveRegion) reset() {
 	l.text = nil
 	l.tools = nil
@@ -83,7 +77,6 @@ func (l *LiveRegion) BeginTool(id, title string) {
 	}
 }
 
-// EndTool stops showing a running tool and reports the title it was shown under.
 func (l *LiveRegion) EndTool(id string) (title string, found bool) {
 	for i, call := range l.tools {
 		if call.id == id {
@@ -94,7 +87,6 @@ func (l *LiveRegion) EndTool(id string) (title string, found bool) {
 	return "", false
 }
 
-// TakeText returns and clears the streamed text, so it flushes exactly once.
 func (l *LiveRegion) TakeText() string {
 	text := string(l.text)
 	l.text = nil
@@ -102,9 +94,6 @@ func (l *LiveRegion) TakeText() string {
 	return text
 }
 
-// Lines is the live tail of the history: the running tools, the streamed text
-// in full, and the activity line. Every group is followed by a blank line — the
-// same separator its history blocks carry — so the tail does not look jammed.
 func (l LiveRegion) Lines(tick int) []string {
 	if !l.Active() {
 		return nil
@@ -122,9 +111,7 @@ func (l LiveRegion) Lines(tick int) []string {
 	return append(lines, l.labelSpinner.Line(tick, label))
 }
 
-// appendText folds new text into the wrapped-line cache: everything before the
-// last newline is complete and wrapped once, while the trailing line stays
-// partial so a delta never re-wraps what is already done.
+// Only complete lines enter the wrapped cache; the trailing line keeps growing.
 func (l *LiveRegion) appendText(s string) {
 	segments := strings.Split(l.partial+s, "\n")
 	l.partial = segments[len(segments)-1]
@@ -133,8 +120,6 @@ func (l *LiveRegion) appendText(s string) {
 	}
 }
 
-// toolLines is the running-tool group: the tools still executing, capped with a
-// "+N more running" line.
 func (l LiveRegion) toolLines(tick int) []string {
 	if len(l.tools) == 0 {
 		return nil
@@ -154,7 +139,6 @@ func (l LiveRegion) toolLines(tick int) []string {
 	return lines
 }
 
-// textLines is the streamed assistant text, wrapped.
 func (l LiveRegion) textLines() []string {
 	if l.partial == "" {
 		return l.wrapped

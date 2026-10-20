@@ -9,26 +9,18 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// FooterData is what the input box's bottom line shows; it is passed in so the
-// box stays independent of the caller's state. Usage is the context readout,
-// empty when the session has no budget to report.
 type FooterData struct {
 	Mode     string
 	Usage    string
 	Scrolled bool
 }
 
-// CompletionOption is one candidate in the completion menu: the command name
-// without its slash, its argument hint and the description shown beside them.
 type CompletionOption struct {
 	Name        string
 	Hint        string
 	Description string
 }
 
-// Composer is the input region's fallback owner: the text box, the completion
-// menu below it and the footer. The box and the menu are one interaction
-// component — the menu never hides the box, unlike a modal owner.
 type Composer struct {
 	area    textarea.Model
 	width   int
@@ -46,16 +38,13 @@ func NewComposer() Composer {
 	area.MaxHeight = 8
 	area.MaxWidth = 0
 	area.DynamicHeight = true
-	// Enter sends, so the textarea only breaks the line on shift+enter — plus
-	// ctrl+j, which terminals that do not speak the kitty keyboard protocol can
-	// still tell apart from enter.
+	// Terminals without the kitty protocol cannot distinguish shift+enter.
 	area.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("shift+enter", "ctrl+j"))
 	area.SetStyles(inputStyles())
 	area.Focus()
 	return Composer{area: area}
 }
 
-// Modal is false: the composer leaves the output region and the live tail alone.
 func (c Composer) Modal() bool { return false }
 
 func (c *Composer) SetWidth(w int) {
@@ -63,7 +52,6 @@ func (c *Composer) SetWidth(w int) {
 	c.area.SetWidth(max(w-6, 10))
 }
 
-// SetMaxHeight caps how tall the box grows with its content.
 func (c *Composer) SetMaxHeight(h int) { c.area.MaxHeight = max(h, 1) }
 
 func (c Composer) Value() string { return c.area.Value() }
@@ -109,8 +97,6 @@ func (c Composer) SelectedMenu() (CompletionOption, bool) {
 	return c.options[c.cursor], true
 }
 
-// View renders the box, then the completion menu when it is open, then the
-// footer.
 func (c Composer) View(width int, footer FooterData) string {
 	parts := []string{c.boxView()}
 	if c.MenuActive() {
@@ -120,14 +106,10 @@ func (c Composer) View(width int, footer FooterData) string {
 	return strings.Join(parts, "\n")
 }
 
-// boxView renders the bordered text box alone; View places the completion menu
-// between it and the footer.
 func (c Composer) boxView() string {
 	return styleInputBox.Width(max(c.width-2, 10)).Render(c.area.View())
 }
 
-// footerLine is the mode/context readout: mode on the left, context occupancy on
-// the right, with no border or background.
 func (c Composer) footerLine(f FooterData) string {
 	left := f.Mode
 	if f.Scrolled {
@@ -137,8 +119,6 @@ func (c Composer) footerLine(f FooterData) string {
 	return Dim.Render(left + strings.Repeat(" ", pad) + f.Usage)
 }
 
-// menuView renders one line per candidate, the cursor row marked and the names
-// in a shared column.
 func (c Composer) menuView(width int) string {
 	labels := make([]string, len(c.options))
 	nameWidth := 0

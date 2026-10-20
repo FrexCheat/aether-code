@@ -1,6 +1,3 @@
-// Package llm — errors: every adapter maps its HTTP/API error shapes onto these
-// six kinds so callers have a single errors.As path. Error() never embeds the
-// provider API key.
 package llm
 
 import (
@@ -10,7 +7,6 @@ import (
 	"strings"
 )
 
-// AuthenticationError indicates invalid or revoked credentials (HTTP 401/403).
 type AuthenticationError struct {
 	StatusCode int
 	Message    string
@@ -22,7 +18,6 @@ func (e *AuthenticationError) Error() string {
 }
 func (e *AuthenticationError) Unwrap() error { return e.Cause }
 
-// InvalidRequestError indicates a malformed or rejected request (400/404/422).
 type InvalidRequestError struct {
 	StatusCode int
 	Message    string
@@ -34,7 +29,6 @@ func (e *InvalidRequestError) Error() string {
 }
 func (e *InvalidRequestError) Unwrap() error { return e.Cause }
 
-// RateLimitError indicates a 429 rate-limit condition.
 type RateLimitError struct {
 	StatusCode int
 	Message    string
@@ -46,8 +40,6 @@ func (e *RateLimitError) Error() string {
 }
 func (e *RateLimitError) Unwrap() error { return e.Cause }
 
-// ServerError indicates a 5xx service failure or provider overload (including
-// overloaded_error / response.failed from the streaming APIs).
 type ServerError struct {
 	StatusCode int
 	Message    string
@@ -59,8 +51,6 @@ func (e *ServerError) Error() string {
 }
 func (e *ServerError) Unwrap() error { return e.Cause }
 
-// NetworkError indicates a transport-level failure with no HTTP status (e.g.
-// connection refused, DNS, timeout).
 type NetworkError struct {
 	Message string
 	Cause   error
@@ -78,10 +68,6 @@ func (e *NetworkError) Error() string {
 }
 func (e *NetworkError) Unwrap() error { return e.Cause }
 
-// ContextTooLongError indicates the request exceeded the model's context
-// window. Providers report it as 413 or as 400 + invalid_request_error with a
-// "prompt is too long" message, which is why it must classify before the 400
-// fallback.
 type ContextTooLongError struct {
 	StatusCode int
 	Message    string
@@ -98,7 +84,6 @@ func IsContextTooLong(err error) bool {
 	return ok
 }
 
-// describeError is the spelling the four status-carrying kinds share.
 func describeError(kind string, status int, message string) string {
 	switch {
 	case message != "" && status != 0:
@@ -110,8 +95,6 @@ func describeError(kind string, status int, message string) string {
 	}
 }
 
-// classify maps a status and API-reported type/code/message onto one of the
-// six kinds; specific matches are tried before the status-range fallbacks.
 func classify(status int, apiType, apiCode, message string, cause error) error {
 	switch {
 	case status == 401 || status == 403 || apiType == "authentication_error" || apiCode == "invalid_api_key":
@@ -133,7 +116,6 @@ func classify(status int, apiType, apiCode, message string, cause error) error {
 	}
 }
 
-// Streaming errors arrive with no status; the message is the only signal.
 func contextTooLongHint(message string) bool {
 	s := strings.ToLower(message)
 	return strings.Contains(s, "prompt is too long") ||
@@ -142,8 +124,6 @@ func contextTooLongHint(message string) bool {
 		strings.Contains(s, "context length is")
 }
 
-// isNetworkHint reports whether err is plausibly a transport-level failure that
-// carries no HTTP status.
 func isNetworkHint(err error) bool {
 	if err == nil {
 		return false
@@ -152,10 +132,6 @@ func isNetworkHint(err error) bool {
 	return ok
 }
 
-// statusHint recovers an HTTP status from an error's text when the SDK
-// surfaced none: 401/403 for auth, 429 for rate limit, 0 otherwise. Both
-// adapters share this sniff — the SDKs do not always turn the wire status
-// into a typed error on streaming paths.
 func statusHint(message string) int {
 	s := strings.ToLower(message)
 	switch {

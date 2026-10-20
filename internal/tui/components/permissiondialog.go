@@ -23,8 +23,6 @@ var permissionOptions = []permissionOption{
 	{label: "Deny", response: permissions.Reject},
 }
 
-// permissionOptionsFor drops the two options that would record a rule when the
-// call has none to record.
 func permissionOptionsFor(prompt *permissions.Prompt) []permissionOption {
 	if len(prompt.Rules) == 0 {
 		return []permissionOption{
@@ -35,8 +33,6 @@ func permissionOptionsFor(prompt *permissions.Prompt) []permissionOption {
 	return permissionOptions
 }
 
-// PermissionDialog owns the confirmation prompt. It takes over the bar, so the
-// input box and the footer step aside while it is up.
 type PermissionDialog struct {
 	id     string
 	prompt *permissions.Prompt
@@ -45,8 +41,6 @@ type PermissionDialog struct {
 
 func (d PermissionDialog) Active() bool { return d.prompt != nil }
 
-// Modal reports that the dialog takes the whole input region: the composer and
-// its footer step aside, and the output region's live tail is suspended.
 func (d PermissionDialog) Modal() bool { return true }
 
 func (d *PermissionDialog) Open(id string, prompt *permissions.Prompt) {
@@ -76,8 +70,6 @@ func (d PermissionDialog) options() []permissionOption {
 	return permissionOptionsFor(d.prompt)
 }
 
-// View renders the dialog; the footer argument is ignored — a modal owner
-// takes the whole input region.
 func (d PermissionDialog) View(width int, _ FooterData) string {
 	boxWidth := max(width-2, 20)
 	inner := max(boxWidth-2, 10)

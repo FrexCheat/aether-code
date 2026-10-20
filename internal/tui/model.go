@@ -21,11 +21,8 @@ import (
 	"github.com/FrexCheat/aether-code/internal/tui/components"
 )
 
-// gateNotice is what a keystroke gets while a turn holds the single writer's
-// lock on the history; saying so beats a swallowed Enter reading as a drop.
 const gateNotice = "Still working — your message stays in the box until the turn ends."
 
-// Compactor is the window's view of the compaction layer.
 type Compactor interface {
 	UsedTokens() int
 	ContextWindow() int
@@ -38,20 +35,16 @@ type Compactor interface {
 var _ Compactor = (*compaction.Manager)(nil)
 
 type Options struct {
-	Agent     *agent.Agent
-	Conv      *conversation.Manager
-	MCP       *mcp.Manager
-	Compactor Compactor
-	Commands  *command.Registry
-	Provider  config.Provider
-	Version   string
-	WorkDir   string
-	Session   *session.Session
-	// Skills is the loaded Skill catalog with its activation ledger. nil on a
-	// session without Skills, which the window then says instead of failing.
-	Skills *skills.State
-	// StartupNotice is shown as a status block on first render: a resume
-	// notice, a fallback when --continue found nothing, a cwd warning.
+	Agent         *agent.Agent
+	Conv          *conversation.Manager
+	MCP           *mcp.Manager
+	Compactor     Compactor
+	Commands      *command.Registry
+	Provider      config.Provider
+	Version       string
+	WorkDir       string
+	Session       *session.Session
+	Skills        *skills.State
 	StartupNotice string
 }
 
@@ -72,7 +65,6 @@ type Model struct {
 	mcpStatus     string
 }
 
-// mcpReadyMsg carries the outcome of the background settle.
 type mcpReadyMsg struct {
 	result mcp.Result
 }
@@ -99,8 +91,6 @@ func newModel(opts Options) Model {
 	}
 	m.transcript.Load(blocks)
 	if opts.Skills != nil {
-		// The dynamic layer goes up before the first render; the load report
-		// itself is already in the startup notice.
 		for _, name := range opts.Commands.SetDynamic(skillCommands(opts.Skills.Catalog())) {
 			m.transcript.Emit(block{kind: blockNotice, body: shadowNote(name), severity: noticeWarn})
 		}
@@ -179,14 +169,12 @@ func (m Model) View() tea.View {
 	return v
 }
 
-// stopClockIfIdle ends the animation clock once nothing is animating.
 func (m *Model) stopClockIfIdle() {
 	if !m.live.Active() && !m.compacting {
 		m.clock.Stop()
 	}
 }
 
-// cacheHitRate is the cached share of the prompt the last request carried.
 func cacheHitRate(u llm.Usage) int {
 	if denom := u.PromptTokens(); denom > 0 {
 		return u.CacheReadTokens * 100 / denom
@@ -222,9 +210,6 @@ func (m Model) quit() (Model, tea.Cmd) {
 	return m, tea.Sequence(m.shutdownMCP(), tea.Quit)
 }
 
-// clearSession rotates to a fresh session: the old archive keeps its file
-// and stays resumable, the new one starts its own lock and spill directory,
-// and the window starts over.
 func (m *Model) clearSession() {
 	if m.opts.Session != nil {
 		next, err := session.New(m.opts.Conv, m.opts.WorkDir)
@@ -243,9 +228,6 @@ func (m *Model) clearSession() {
 	if m.opts.Compactor != nil {
 		m.opts.Compactor.Reset()
 	}
-	// The delivered blocks went with the history; the ledger that would put them
-	// back has to go too, or the next compaction would resurrect instructions
-	// from a conversation the user just dropped.
 	cleared := m.opts.Skills.Clear()
 	m.lastUsage = llm.Usage{}
 	m.sessionWarned = false
@@ -296,10 +278,6 @@ func (m Model) shutdownMCP() tea.Cmd {
 	}
 }
 
-// mcpSummary is the one-line MCP readout: how many servers and tools settled,
-// the loading mode, and — so a broken server is not silent — their names. The
-// per-server ✓ listing is gone; the detail lives in /status's mcp field, which
-// carries this same line.
 func mcpSummary(r mcp.Result) string {
 	var total int
 	var failed []string
@@ -309,8 +287,6 @@ func mcpSummary(r mcp.Result) string {
 			failed = append(failed, s.Name)
 		}
 	}
-	// Each failed server contributes one warning; anything beyond that is a
-	// configuration warning worth a count.
 	warnings := max(len(r.Warnings)-len(failed), 0)
 	if len(r.Servers) == 0 && warnings == 0 {
 		return ""

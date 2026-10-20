@@ -20,7 +20,6 @@ import (
 	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
-// openAIClient is the llm.Client backed by the OpenAI Responses API.
 type openAIClient struct {
 	sdk          openai.Client
 	model        string
@@ -49,7 +48,6 @@ func newOpenAIClient(cfg config.Provider, httpClient *http.Client, systemPrompt 
 	}
 }
 
-// Stream implements Client.
 func (c *openAIClient) Stream(ctx context.Context, req Request) iter.Seq2[StreamEvent, error] {
 	return func(yield func(StreamEvent, error) bool) {
 		stream := c.sdk.Responses.NewStreaming(ctx, c.buildParams(req))

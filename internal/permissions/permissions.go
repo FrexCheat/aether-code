@@ -1,6 +1,4 @@
-// Package permissions decides whether a tool call may run. Every call walks one
-// ladder — blacklist, rules, workspace boundary, mode — and the first layer with
-// an answer wins; an ask is turned into a dialog by the agent and the TUI.
+// Package permissions decides whether a tool call may run.
 package permissions
 
 import (
@@ -141,10 +139,7 @@ func ruleValue(spec *tools.Spec, args map[string]any) string {
 	return value
 }
 
-// checkBlacklist is L1: hard denials, which no mode, rule or configuration can
-// lift. A command is checked whole and again per subcommand — the whole-line
-// pass catches a shape that only exists across a separator (`curl … | sh`),
-// while the per-subcommand pass names the offending segment of `ls && rm -rf /`.
+// The whole-line pass catches shapes that only exist across a separator.
 func checkBlacklist(category tools.Category, argument string, subcommands []subcommand) *Decision {
 	if category == tools.CategoryCommand {
 		hit, reason := DetectDangerous(argument)
@@ -169,16 +164,7 @@ func checkBlacklist(category tools.Category, argument string, subcommands []subc
 	return nil
 }
 
-// checkRules is L2: the one channel for everything the blacklist did not settle.
-// Rules judge paths outside the workspace too, so an explicit absolute-path rule
-// admits or denies them. A command is judged subcommand by subcommand: any deny
-// denies the line, any ask asks about it, and only a line whose every subcommand
-// matched an allow rule is allowed. One unmatched subcommand falls through, so
-// `Bash(ls *) allow` cannot carry `ls && rm -rf build` through.
-//
-// An allow rule is also held back from a subcommand that runs code its text does
-// not show — `Bash(echo *)` must not carry `echo $(rm -rf build)` through. Deny
-// and ask rules still apply to it, since those only ever tighten the answer.
+// Every subcommand must match an allow rule before the whole line is allowed.
 func checkRules(name, argument string, isCommand bool, subcommands []subcommand, spec *tools.Spec, rules []Rule) *Decision {
 	if len(rules) == 0 {
 		return nil
@@ -230,9 +216,6 @@ func checkRules(name, argument string, isCommand bool, subcommands []subcommand,
 	return matched
 }
 
-// modeDecision is L4, deciding only what nothing else covered. Bypass
-// decides first: it means every call runs, whatever its category — including
-// the unknown categories (mcp) the conservative branch below would ask about.
 func modeDecision(mode Mode, category tools.Category) Effect {
 	if mode == ModeBypass {
 		return Allow
@@ -257,11 +240,7 @@ func modeDecision(mode Mode, category tools.Category) Effect {
 	}
 }
 
-// checkWrites is the workspace boundary for a command's output redirections.
-// A rule that names a command has not named a path, so a redirect riding along
-// with it is judged on its own: `Bash(echo *)` must not carry a write to
-// anywhere on the disk. The ladder's own boundary cannot do this job — it only
-// ever sees tools whose argument is a path, and by then a rule has answered.
+// A command rule cannot authorize an output redirection to an unchecked path.
 func (c *Checker) checkWrites(subcommands []subcommand) *Decision {
 	anyRedirect := func(sub subcommand) bool { return len(sub.redirects) > 0 }
 	if !slices.ContainsFunc(subcommands, anyRedirect) {

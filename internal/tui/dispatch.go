@@ -17,10 +17,7 @@ import (
 	"github.com/FrexCheat/aether-code/internal/tui/components"
 )
 
-// hostAdapter is the Model as a command.Host: the renderer-agnostic surface a
-// command talks to. Effects the window can only perform asynchronously — a sent
-// message, a compaction, a quit — are recorded here and turned into tea.Cmds
-// by the dispatcher once the handler returns.
+// hostAdapter records asynchronous command effects for the dispatcher.
 type hostAdapter struct {
 	m          *Model
 	registry   *command.Registry
@@ -147,8 +144,6 @@ func (h *hostAdapter) NewSession() error {
 
 func (h *hostAdapter) Compact() { h.compact = true }
 
-// Skills reports the catalog with its activation ledger, in the order the
-// window would list them.
 func (h *hostAdapter) Skills() command.SkillReport {
 	state := h.m.opts.Skills
 	if state == nil {
@@ -178,9 +173,6 @@ func (h *hostAdapter) Skills() command.SkillReport {
 
 func (h *hostAdapter) ReloadSkills() { h.m.syncSkills(true) }
 
-// ActivateSkill records the Skill a slash command asked for, the way
-// SendUserMessage records a prompt: carrying it out is the dispatcher's job,
-// once the handler has returned.
 func (h *hostAdapter) ActivateSkill(name, args string) error {
 	if h.m.busy() {
 		return errors.New("a Skill cannot start while a turn is running")
@@ -198,7 +190,6 @@ func (h *hostAdapter) ActivateSkill(name, args string) error {
 
 func (h *hostAdapter) Quit() { h.quit = true }
 
-// skillsStatus is the /status line: what is active, and how much of it.
 func skillsStatus(state *skills.State) string {
 	if state == nil {
 		return ""

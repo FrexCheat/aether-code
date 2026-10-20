@@ -1,6 +1,4 @@
-// Package llm defines the protocol-agnostic abstraction over LLM providers:
-// the Client interface with a config-driven factory, the request type, the
-// unified stream event types, and classified API errors.
+// Package llm defines the protocol-neutral streaming interface and errors.
 package llm
 
 import (
@@ -16,9 +14,6 @@ import (
 	"github.com/FrexCheat/aether-code/internal/tools"
 )
 
-// Request is the per-call part of an LLM request: what actually varies from
-// one stream to the next. The system prompt and thinking toggle are session-
-// wide, so they live on the client and are applied at construction time.
 type Request struct {
 	Messages []conversation.Message
 	Tools    []tools.ToolSchema
@@ -46,9 +41,6 @@ type ThinkingDelta struct {
 	Text string
 }
 
-// ThinkingComplete is one finished reasoning block; the fields carry whatever
-// the provider needs to see again on the next request (see
-// conversation.ThinkingBlock for the per-protocol split).
 type ThinkingComplete struct {
 	Thinking  string
 	Content   string
@@ -62,10 +54,7 @@ type ToolCallComplete struct {
 	Arguments map[string]any
 }
 
-// Usage is one request's token accounting, normalized across providers:
-// InputTokens excludes cache tokens — Anthropic reports them separately, and
-// the OpenAI adapter subtracts its inclusive cached/cache-write counts — so
-// the prompt size is the three input sides summed, never a bare field read.
+// InputTokens excludes cache tokens for both providers.
 type Usage struct {
 	InputTokens         int
 	OutputTokens        int
@@ -73,8 +62,6 @@ type Usage struct {
 	CacheCreationTokens int
 }
 
-// PromptTokens is the prompt size the request carried; TotalTokens adds the
-// output, which the next request replays as input.
 func (u Usage) PromptTokens() int {
 	return u.InputTokens + u.CacheReadTokens + u.CacheCreationTokens
 }
@@ -109,9 +96,6 @@ func streamResult(ctx context.Context, streamErr, failErr error, completed bool)
 	}
 }
 
-// parseToolArgs decodes an accumulated tool-use JSON string into a map;
-// malformed (e.g. truncated) input yields an empty map rather than failing the
-// stream.
 func parseToolArgs(raw string) map[string]any {
 	args := map[string]any{}
 	if strings.TrimSpace(raw) == "" {
@@ -123,10 +107,6 @@ func parseToolArgs(raw string) map[string]any {
 	return args
 }
 
-// NewClient builds the provider client selected by cfg.Protocol. systemPrompt
-// is the session's system prompt, assembled once at startup by the prompt
-// package; it is not provider configuration, so it arrives as a parameter
-// rather than inside cfg.
 func NewClient(cfg config.Provider, httpClient *http.Client, systemPrompt string) (Client, error) {
 	switch cfg.Protocol {
 	case config.ProtocolAnthropic:

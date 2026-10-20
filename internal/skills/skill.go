@@ -1,11 +1,4 @@
-// Package skills loads Skill definitions — Markdown files whose frontmatter
-// names a reusable procedure and whose body is that procedure — from three
-// tiers, and keeps the session's record of which ones have been activated.
-//
-// Loading is two-phase on purpose: a scan reads only the frontmatter, so what
-// the model is offered costs a name and a sentence, and the body is read again
-// when the Skill is activated. Nothing here talks to the model or to the
-// conversation beyond handing a block of text back to its caller.
+// Package skills loads reusable Markdown procedures from three tiers.
 package skills
 
 import (
@@ -20,8 +13,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Source names the tier a definition came from; a higher tier replaces a lower
-// one of the same name outright, rather than merging field by field.
 type Source string
 
 const (
@@ -30,19 +21,12 @@ const (
 	SourceProject Source = "project"
 )
 
-// entryFile is the entry point of a directory-shaped Skill; the single-file
-// shape is the file itself.
 const entryFile = "SKILL.md"
 
-// fence opens and closes the frontmatter block.
 const fence = "---"
 
-// descriptionMax bounds the display field; the frontmatter's one-liner is the
-// whole of what stage one costs.
 const descriptionMax = 200
 
-// Skill is one definition: everything stage one reads, plus where the body
-// lives so that activation can read it again.
 type Skill struct {
 	Name        string
 	Description string
@@ -51,8 +35,6 @@ type Skill struct {
 	Dir         string // the directory shape's root; empty for a single file
 }
 
-// frontmatter is the YAML block at the top of an entry file. Unknown fields are
-// ignored rather than rejected: a file written for a later version still loads.
 type frontmatter struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`

@@ -8,11 +8,7 @@ import (
 	"unicode"
 )
 
-// Registry holds the commands by every spelling that selects them, in two
-// layers: the static one, fixed at startup, and the dynamic one, which the host
-// replaces wholesale (the Skill commands, one per loaded Skill). Lookup and
-// listing put the static layer first, so a file the user drops in can never take
-// a built-in's spelling away from it.
+// Static commands always win over a dynamic Skill with the same spelling.
 type Registry struct {
 	mu       sync.RWMutex
 	commands []*Command
@@ -20,9 +16,7 @@ type Registry struct {
 	dynamic  []*Command
 }
 
-// New builds a registry. It panics on a name or alias that is empty, malformed
-// or claimed twice: a conflict is a startup failure, decided before the program
-// serves a single line, not a runtime surprise.
+// New panics on invalid or duplicate spellings because that is a startup bug.
 func New(commands ...*Command) *Registry {
 	r := &Registry{byName: make(map[string]*Command)}
 	for _, c := range commands {
@@ -47,10 +41,7 @@ func New(commands ...*Command) *Registry {
 	return r
 }
 
-// SetDynamic replaces the dynamic layer and returns the names it had to drop
-// because a static command already owns them, so the caller can say so. A name
-// claimed twice inside the batch panics, like New's conflict does: that is a
-// programming error, not a user's.
+// SetDynamic returns names shadowed by static commands.
 func (r *Registry) SetDynamic(commands []*Command) []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -79,8 +70,6 @@ func (r *Registry) SetDynamic(commands []*Command) []string {
 	return shadowed
 }
 
-// normalizeKey lowercases a spelling and rejects the shapes a command name may
-// not take, so the map is never keyed by something a user could not type.
 func normalizeKey(key string) (string, error) {
 	k := strings.ToLower(strings.TrimSpace(key))
 	switch {
@@ -94,9 +83,6 @@ func normalizeKey(key string) (string, error) {
 	return k, nil
 }
 
-// Lookup resolves a command name or alias, case-insensitively. The dynamic
-// layer is scanned rather than indexed: it is small, and it is replaced as a
-// whole, so a second map would only be one more thing to keep in step.
 func (r *Registry) Lookup(name string) *Command {
 	if r == nil {
 		return nil
@@ -118,7 +104,6 @@ func (r *Registry) Lookup(name string) *Command {
 	return nil
 }
 
-// All returns the commands in registration order, the static layer first.
 func (r *Registry) All() []*Command {
 	if r == nil {
 		return nil
@@ -131,8 +116,6 @@ func (r *Registry) All() []*Command {
 	return append(slices.Clone(r.commands), r.dynamic...)
 }
 
-// Match returns the commands whose name or an alias starts with prefix, in
-// registration order. An empty prefix matches every command.
 func (r *Registry) Match(prefix string) []*Command {
 	if r == nil {
 		return nil
@@ -154,7 +137,6 @@ func (r *Registry) Match(prefix string) []*Command {
 	return matched
 }
 
-// matchesName compares a command's spellings against an already-normalized key.
 func matchesName(c *Command, key string) bool {
 	if normalized, err := normalizeKey(c.Name); err == nil && normalized == key {
 		return true
