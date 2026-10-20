@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"iter"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,26 +21,25 @@ type scriptedClient struct {
 	calls   int
 }
 
-func (c *scriptedClient) Stream(ctx context.Context, _ llm.Request) <-chan llm.StreamEvent {
-	c.mu.Lock()
-	events := []llm.StreamEvent{}
-	if c.calls < len(c.streams) {
-		events = c.streams[c.calls]
-	}
-	c.calls++
-	c.mu.Unlock()
+func (c *scriptedClient) Stream(ctx context.Context, _ llm.Request) iter.Seq2[llm.StreamEvent, error] {
+	return func(yield func(llm.StreamEvent, error) bool) {
+		c.mu.Lock()
+		events := []llm.StreamEvent{}
+		if c.calls < len(c.streams) {
+			events = c.streams[c.calls]
+		}
+		c.calls++
+		c.mu.Unlock()
 
-	ch := make(chan llm.StreamEvent, len(events))
-	for _, event := range events {
-		select {
-		case ch <- event:
-		case <-ctx.Done():
-			close(ch)
-			return ch
+		for _, event := range events {
+			if ctx.Err() != nil {
+				return
+			}
+			if !yield(event, nil) {
+				return
+			}
 		}
 	}
-	close(ch)
-	return ch
 }
 
 func (c *scriptedClient) Calls() int {
@@ -203,9 +203,7 @@ func TestRunPermission(t *testing.T) {
 
 func TestRunStreamError(t *testing.T) {
 	wantErr := errors.New("provider failed")
-	client := &scriptedClient{streams: [][]llm.StreamEvent{{
-		llm.StreamError{Err: wantErr},
-	}}}
+	client := errorClient{err: wantErr}
 	ag := New(client, tools.NewRegistry(), nil, nil, nil)
 
 	events := collectEvents(ag.Run(context.Background(), conversation.NewManager()))
@@ -215,6 +213,14 @@ func TestRunStreamError(t *testing.T) {
 	failed, ok := events[0].(LoopError)
 	if !ok || !errors.Is(failed.Err, wantErr) {
 		t.Errorf("event = %#v, want stream error", events[0])
+	}
+}
+
+type errorClient struct{ err error }
+
+func (c errorClient) Stream(context.Context, llm.Request) iter.Seq2[llm.StreamEvent, error] {
+	return func(yield func(llm.StreamEvent, error) bool) {
+		yield(nil, c.err)
 	}
 }
 

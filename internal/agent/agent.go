@@ -231,7 +231,11 @@ func (a *Agent) stream(ctx context.Context, messages []conversation.Message, sen
 		return result
 	}
 
-	for event := range events {
+	for event, err := range events {
+		if err != nil {
+			result.err = err
+			return finish()
+		}
 		switch e := event.(type) {
 		case llm.TextDelta:
 			text.WriteString(e.Text)
@@ -262,9 +266,6 @@ func (a *Agent) stream(ctx context.Context, messages []conversation.Message, sen
 			}
 		case llm.StreamEnd:
 			result.usage = e.Usage
-			return finish()
-		case llm.StreamError:
-			result.err = e.Err
 			return finish()
 		}
 	}

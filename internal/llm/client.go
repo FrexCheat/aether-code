@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"iter"
 	"net/http"
 	"strings"
 
@@ -24,7 +25,7 @@ type Request struct {
 }
 
 type Client interface {
-	Stream(ctx context.Context, req Request) <-chan StreamEvent
+	Stream(ctx context.Context, req Request) iter.Seq2[StreamEvent, error]
 }
 
 type StreamEvent interface{ streamEvent() }
@@ -32,7 +33,18 @@ type StreamEvent interface{ streamEvent() }
 type TextDelta struct{ Text string }
 type TextComplete struct{}
 
-type ThinkingDelta struct{ Text string }
+type ThinkingKind uint8
+
+const (
+	ThinkingUnknown ThinkingKind = iota
+	ThinkingSummary
+	ThinkingContent
+)
+
+type ThinkingDelta struct {
+	Kind ThinkingKind
+	Text string
+}
 
 // ThinkingComplete is one finished reasoning block; the fields carry whatever
 // the provider needs to see again on the next request (see
@@ -73,81 +85,27 @@ type StreamEnd struct {
 	Usage Usage
 }
 
-type StreamError struct{ Err error }
-
 func (TextDelta) streamEvent()        {}
 func (TextComplete) streamEvent()     {}
 func (ThinkingDelta) streamEvent()    {}
 func (ThinkingComplete) streamEvent() {}
 func (ToolCallComplete) streamEvent() {}
 func (StreamEnd) streamEvent()        {}
-func (StreamError) streamEvent()      {}
 
-// channelBuffer sizes the stream event channels: big enough to absorb a delta
-// burst without stalling the SSE reader.
-const channelBuffer = 64
-
-// forwardEvent delivers ev to ch, giving up when ctx is cancelled. False
-// means the event was not delivered: stop reading and release the connection.
-func forwardEvent(ctx context.Context, ch chan<- StreamEvent, ev StreamEvent) bool {
-	select {
-	case ch <- ev:
-		return true
-	case <-ctx.Done():
-		return false
-	}
-}
-
-// finishEvent delivers the terminal event (StreamEnd or StreamError). The
-// two-step select encodes a priority: delivery beats cancellation. A plain
-// select would pick randomly when the buffer has room AND ctx is already done,
-// silently dropping the terminal event on cancelled streams.
-func finishEvent(ctx context.Context, ch chan<- StreamEvent, ev StreamEvent) {
-	select {
-	case ch <- ev:
-		return
-	default:
-	}
-	select {
-	case ch <- ev:
-	case <-ctx.Done():
-	}
-}
-
-// stream bundles the response channel with the delivery closures both
-// adapters send through. The adapter goroutine closes ch on exit; send and
-// finish are bound to the request's ctx.
-type stream struct {
-	ch     chan StreamEvent
-	send   func(StreamEvent) bool
-	finish func(StreamEvent)
-}
-
-func newStream(ctx context.Context) stream {
-	ch := make(chan StreamEvent, channelBuffer)
-	return stream{
-		ch:     ch,
-		send:   func(ev StreamEvent) bool { return forwardEvent(ctx, ch, ev) },
-		finish: func(ev StreamEvent) { finishEvent(ctx, ch, ev) },
-	}
-}
-
-// endStream decides the terminal event once an adapter's event loop ends.
-// Priority: cancellation, the adapter's already-mapped stream error, a
-// failure recorded in-band by the protocol, completion. None of those means
-// the stream ended unexpectedly.
-func endStream(ctx context.Context, streamErr, failErr error, completed bool, usage Usage) StreamEvent {
+// streamResult decides how an adapter's event loop ended. Cancellation wins
+// over protocol errors so a cancelled turn does not surface a provider error.
+func streamResult(ctx context.Context, streamErr, failErr error, completed bool) error {
 	switch {
 	case ctx.Err() != nil:
-		return StreamError{Err: ctx.Err()}
+		return ctx.Err()
 	case streamErr != nil:
-		return StreamError{Err: streamErr}
+		return streamErr
 	case failErr != nil:
-		return StreamError{Err: failErr}
+		return failErr
 	case completed:
-		return StreamEnd{Usage: usage}
+		return nil
 	default:
-		return StreamError{Err: errors.New("stream ended unexpectedly")}
+		return errors.New("stream ended unexpectedly")
 	}
 }
 

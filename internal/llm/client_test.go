@@ -36,12 +36,13 @@ func streamUsage(t *testing.T, client Client) Usage {
 	t.Helper()
 	var usage Usage
 	sawEnd := false
-	for ev := range client.Stream(context.Background(), Request{}) {
+	for ev, err := range client.Stream(context.Background(), Request{}) {
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
 		switch e := ev.(type) {
 		case StreamEnd:
 			usage, sawEnd = e.Usage, true
-		case StreamError:
-			t.Fatalf("stream error: %v", e.Err)
 		}
 	}
 	if !sawEnd {
@@ -73,7 +74,7 @@ func TestUsageAccessors(t *testing.T) {
 	}
 }
 
-func TestEndStream(t *testing.T) {
+func TestStreamResult(t *testing.T) {
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 	background := context.Background()
@@ -85,38 +86,29 @@ func TestEndStream(t *testing.T) {
 		streamErr error
 		failErr   error
 		completed bool
-		wantEnd   bool
 		wantErr   error  // compared with errors.Is; nil means "unexpected" message expected
-		wantMsg   string // checked when wantErr is nil and wantEnd is false
+		wantMsg   string // checked when wantErr is nil
 	}{
-		{"cancellation wins", cancelled, cause, cause, true, false, context.Canceled, ""},
-		{"stream error beats in-band", background, cause, errors.New("in-band"), true, false, cause, ""},
-		{"in-band failure", background, nil, cause, true, false, cause, ""},
-		{"completed", background, nil, nil, true, true, nil, ""},
-		{"unexpected", background, nil, nil, false, false, nil, "stream ended unexpectedly"},
+		{"cancellation wins", cancelled, cause, cause, true, context.Canceled, ""},
+		{"stream error beats in-band", background, cause, errors.New("in-band"), true, cause, ""},
+		{"in-band failure", background, nil, cause, true, cause, ""},
+		{"completed", background, nil, nil, true, nil, ""},
+		{"unexpected", background, nil, nil, false, nil, "stream ended unexpectedly"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ev := endStream(tt.ctx, tt.streamErr, tt.failErr, tt.completed, contractUsage)
-			if tt.wantEnd {
-				end, ok := ev.(StreamEnd)
-				if !ok {
-					t.Fatalf("event = %T, want StreamEnd", ev)
-				}
-				if end.Usage != contractUsage {
-					t.Errorf("usage = %+v, want %+v", end.Usage, contractUsage)
+			err := streamResult(tt.ctx, tt.streamErr, tt.failErr, tt.completed)
+			if tt.wantErr == nil && tt.wantMsg == "" {
+				if err != nil {
+					t.Errorf("streamResult() = %v, want nil", err)
 				}
 				return
 			}
-			streamErr, ok := ev.(StreamError)
-			if !ok {
-				t.Fatalf("event = %T, want StreamError", ev)
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Errorf("err = %v, want %v", err, tt.wantErr)
 			}
-			if tt.wantErr != nil && !errors.Is(streamErr.Err, tt.wantErr) {
-				t.Errorf("err = %v, want %v", streamErr.Err, tt.wantErr)
-			}
-			if tt.wantMsg != "" && streamErr.Err.Error() != tt.wantMsg {
-				t.Errorf("err = %q, want %q", streamErr.Err.Error(), tt.wantMsg)
+			if tt.wantMsg != "" && err.Error() != tt.wantMsg {
+				t.Errorf("err = %q, want %q", err.Error(), tt.wantMsg)
 			}
 		})
 	}

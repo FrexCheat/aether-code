@@ -48,12 +48,13 @@ data: {"type":"response.completed","sequence_number":9,"response":{"id":"resp_1"
 func streamThinking(t *testing.T, client Client) []ThinkingComplete {
 	t.Helper()
 	var blocks []ThinkingComplete
-	for ev := range client.Stream(context.Background(), Request{}) {
+	for ev, err := range client.Stream(context.Background(), Request{}) {
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
 		switch e := ev.(type) {
 		case ThinkingComplete:
 			blocks = append(blocks, e)
-		case StreamError:
-			t.Fatalf("stream error: %v", e.Err)
 		}
 	}
 	return blocks
@@ -99,7 +100,10 @@ data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"half a 
 	// The fixture stream dies without a completed event, so the StreamError is
 	// part of the scenario; only the block matters here.
 	var blocks []ThinkingComplete
-	for ev := range openAITestClient(t, body).Stream(context.Background(), Request{}) {
+	for ev, err := range openAITestClient(t, body).Stream(context.Background(), Request{}) {
+		if err != nil {
+			continue
+		}
 		if e, ok := ev.(ThinkingComplete); ok {
 			blocks = append(blocks, e)
 		}
@@ -124,12 +128,12 @@ data: {"type":"response.function_call_arguments.done","item_id":"item_1","output
 
 ` + completedEvent
 	var calls []ToolCallComplete
-	for ev := range openAITestClient(t, body).Stream(context.Background(), Request{}) {
-		switch e := ev.(type) {
-		case ToolCallComplete:
+	for ev, err := range openAITestClient(t, body).Stream(context.Background(), Request{}) {
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		if e, ok := ev.(ToolCallComplete); ok {
 			calls = append(calls, e)
-		case StreamError:
-			t.Fatalf("stream error: %v", e.Err)
 		}
 	}
 	if len(calls) != 1 || calls[0].ToolID != "call_abc" || calls[0].ToolName != "Read" {

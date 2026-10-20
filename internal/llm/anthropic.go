@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"iter"
 	"net/http"
 	"slices"
 	"strings"
@@ -54,11 +55,8 @@ func newAnthropicClient(cfg config.Provider, httpClient *http.Client, systemProm
 }
 
 // Stream implements Client.
-func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan StreamEvent {
-	s := newStream(ctx)
-	go func() {
-		defer close(s.ch)
-
+func (c *anthropicClient) Stream(ctx context.Context, req Request) iter.Seq2[StreamEvent, error] {
+	return func(yield func(StreamEvent, error) bool) {
 		params := c.buildParams(req)
 		var opts []option.RequestOption
 		if slices.ContainsFunc(req.Tools, func(t tools.ToolSchema) bool { return t.Deferred }) {
@@ -66,6 +64,9 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 		}
 		stream := c.sdk.Messages.NewStreaming(ctx, params, opts...)
 		defer stream.Close()
+		send := func(event StreamEvent) bool {
+			return yield(event, nil)
+		}
 
 		sawStop := false
 		var usage Usage
@@ -94,7 +95,7 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 				case anthropic.RedactedThinkingBlock:
 					// Safety-redacted blocks carry no deltas: the opaque data
 					// is the whole payload and the API wants it back unchanged.
-					if !s.send(ThinkingComplete{Encrypted: block.Data}) {
+					if !send(ThinkingComplete{Encrypted: block.Data}) {
 						return
 					}
 				case anthropic.ToolUseBlock:
@@ -105,12 +106,12 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 			case anthropic.ContentBlockDeltaEvent:
 				switch d := ev.Delta.AsAny().(type) {
 				case anthropic.TextDelta:
-					if !s.send(TextDelta{Text: d.Text}) {
+					if !send(TextDelta{Text: d.Text}) {
 						return
 					}
 				case anthropic.ThinkingDelta:
 					thinkingAccum.WriteString(d.Thinking)
-					if !s.send(ThinkingDelta{Text: d.Thinking}) {
+					if !send(ThinkingDelta{Kind: ThinkingContent, Text: d.Thinking}) {
 						return
 					}
 				case anthropic.SignatureDelta:
@@ -122,11 +123,11 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 				switch {
 				case inText:
 					inText = false
-					if !s.send(TextComplete{}) {
+					if !send(TextComplete{}) {
 						return
 					}
 				case thinkingAccum.Len() > 0:
-					if !s.send(ThinkingComplete{Thinking: thinkingAccum.String(), Signature: thinkingSignature}) {
+					if !send(ThinkingComplete{Thinking: thinkingAccum.String(), Signature: thinkingSignature}) {
 						return
 					}
 					thinkingAccum.Reset()
@@ -139,7 +140,7 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 					if strings.TrimSpace(raw) == "" {
 						raw = string(toolArgsSeed)
 					}
-					if !s.send(ToolCallComplete{
+					if !send(ToolCallComplete{
 						ToolID:    toolCallID,
 						ToolName:  toolCallName,
 						Arguments: parseToolArgs(raw),
@@ -171,9 +172,12 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) <-chan Stream
 			}
 		}
 
-		s.finish(endStream(ctx, mapAnthropicError(stream.Err()), nil, sawStop, usage))
-	}()
-	return s.ch
+		if err := streamResult(ctx, mapAnthropicError(stream.Err()), nil, sawStop); err != nil {
+			yield(nil, err)
+			return
+		}
+		yield(StreamEnd{Usage: usage}, nil)
+	}
 }
 
 func anthropicUsage(input, output, cacheRead, cacheWrite int64) Usage {

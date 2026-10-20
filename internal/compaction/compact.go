@@ -152,17 +152,18 @@ func (m *Manager) summarize(ctx context.Context, region []conversation.Message) 
 		Content: summaryPrompt,
 	})
 	var text strings.Builder
-	for event := range m.client.Stream(ctx, llm.Request{
+	for event, err := range m.client.Stream(ctx, llm.Request{
 		Messages: conversation.EnsureToolPairing(msgs),
 		Tools:    m.schemas(),
 	}) {
+		if err != nil {
+			return "", err
+		}
 		switch e := event.(type) {
 		case llm.TextDelta:
 			text.WriteString(e.Text)
 		case llm.StreamEnd:
 			return text.String(), nil
-		case llm.StreamError:
-			return "", e.Err
 		}
 	}
 	return "", errors.New("compaction: summary stream ended unexpectedly")

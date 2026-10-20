@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"iter"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,11 +21,10 @@ import (
 // reached the history before the model was asked anything.
 type silentClient struct{}
 
-func (silentClient) Stream(context.Context, llm.Request) <-chan llm.StreamEvent {
-	ch := make(chan llm.StreamEvent, 1)
-	ch <- llm.StreamEnd{}
-	close(ch)
-	return ch
+func (silentClient) Stream(context.Context, llm.Request) iter.Seq2[llm.StreamEvent, error] {
+	return func(yield func(llm.StreamEvent, error) bool) {
+		yield(llm.StreamEnd{}, nil)
+	}
 }
 
 // skillModel builds a window over a project tier holding two Skills.

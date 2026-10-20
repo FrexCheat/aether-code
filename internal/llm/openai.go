@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"net/http"
 	"strings"
 
@@ -49,13 +50,13 @@ func newOpenAIClient(cfg config.Provider, httpClient *http.Client, systemPrompt 
 }
 
 // Stream implements Client.
-func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEvent {
-	s := newStream(ctx)
-	go func() {
-		defer close(s.ch)
-
+func (c *openAIClient) Stream(ctx context.Context, req Request) iter.Seq2[StreamEvent, error] {
+	return func(yield func(StreamEvent, error) bool) {
 		stream := c.sdk.Responses.NewStreaming(ctx, c.buildParams(req))
 		defer stream.Close()
+		send := func(event StreamEvent) bool {
+			return yield(event, nil)
+		}
 
 		sawCompleted := false
 		var failErr error
@@ -111,7 +112,7 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 				case responses.ResponseOutputMessage:
 					if inText {
 						inText = false
-						if !s.send(TextComplete{}) {
+						if !send(TextComplete{}) {
 							return
 						}
 					}
@@ -119,7 +120,7 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 					// The completed item is the authoritative copy, encrypted
 					// payload included; the delta accumulators only stand in
 					// for it.
-					if !s.send(ThinkingComplete{
+					if !send(ThinkingComplete{
 						Thinking:  joinReasoningSummary(item.Summary),
 						Content:   joinReasoningContent(item.Content),
 						Signature: item.ID,
@@ -140,7 +141,7 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 					// the call and its output paired.
 					id = ev.ItemID
 				}
-				if !s.send(ToolCallComplete{
+				if !send(ToolCallComplete{
 					ToolID:    id,
 					ToolName:  call.name,
 					Arguments: parseToolArgs(ev.Arguments),
@@ -149,19 +150,19 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 				}
 				delete(pendingCalls, ev.OutputIndex)
 			case responses.ResponseTextDeltaEvent:
-				if !s.send(TextDelta{Text: ev.Delta}) {
+				if !send(TextDelta{Text: ev.Delta}) {
 					return
 				}
 			case responses.ResponseReasoningTextDeltaEvent:
 				inReasoning = true
 				reasoningContent.WriteString(ev.Delta)
-				if !s.send(ThinkingDelta{Text: ev.Delta}) {
+				if !send(ThinkingDelta{Kind: ThinkingContent, Text: ev.Delta}) {
 					return
 				}
 			case responses.ResponseReasoningSummaryTextDeltaEvent:
 				inReasoning = true
 				reasoningSummary.WriteString(ev.Delta)
-				if !s.send(ThinkingDelta{Text: ev.Delta}) {
+				if !send(ThinkingDelta{Kind: ThinkingSummary, Text: ev.Delta}) {
 					return
 				}
 			case responses.ResponseCompletedEvent:
@@ -197,7 +198,7 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 		if inReasoning {
 			// The stream ended before the completed item: hand the agent what
 			// the deltas accumulated rather than dropping the reasoning.
-			if !s.send(ThinkingComplete{
+			if !send(ThinkingComplete{
 				Thinking:  reasoningSummary.String(),
 				Content:   reasoningContent.String(),
 				Signature: reasoningID,
@@ -207,9 +208,12 @@ func (c *openAIClient) Stream(ctx context.Context, req Request) <-chan StreamEve
 			resetReasoning()
 		}
 
-		s.finish(endStream(ctx, mapOpenAIError(stream.Err()), failErr, sawCompleted, usage))
-	}()
-	return s.ch
+		if err := streamResult(ctx, mapOpenAIError(stream.Err()), failErr, sawCompleted); err != nil {
+			yield(nil, err)
+			return
+		}
+		yield(StreamEnd{Usage: usage}, nil)
+	}
 }
 
 // joinReasoningSummary and joinReasoningContent flatten a reasoning item's

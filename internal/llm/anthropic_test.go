@@ -79,12 +79,13 @@ data: {"type":"message_stop"}
 
 `
 	var blocks []ThinkingComplete
-	for ev := range anthropicTestClient(t, body).Stream(context.Background(), Request{}) {
+	for ev, err := range anthropicTestClient(t, body).Stream(context.Background(), Request{}) {
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
 		switch e := ev.(type) {
 		case ThinkingComplete:
 			blocks = append(blocks, e)
-		case StreamError:
-			t.Fatalf("stream error: %v", e.Err)
 		}
 	}
 	want := ThinkingComplete{Encrypted: "opaque-blob"}

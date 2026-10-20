@@ -3,6 +3,7 @@ package compaction
 import (
 	"context"
 	"errors"
+	"iter"
 	"strings"
 	"testing"
 
@@ -64,17 +65,18 @@ type stubClient struct {
 	calls int
 }
 
-func (s *stubClient) Stream(ctx context.Context, req llm.Request) <-chan llm.StreamEvent {
-	s.calls++
-	ch := make(chan llm.StreamEvent, 2)
-	if s.fail {
-		ch <- llm.StreamError{Err: errors.New("summarizer down")}
-	} else {
-		ch <- llm.TextDelta{Text: "<summary>done</summary>"}
-		ch <- llm.StreamEnd{}
+func (s *stubClient) Stream(context.Context, llm.Request) iter.Seq2[llm.StreamEvent, error] {
+	return func(yield func(llm.StreamEvent, error) bool) {
+		s.calls++
+		if s.fail {
+			yield(nil, errors.New("summarizer down"))
+			return
+		}
+		if !yield(llm.TextDelta{Text: "<summary>done</summary>"}, nil) {
+			return
+		}
+		yield(llm.StreamEnd{}, nil)
 	}
-	close(ch)
-	return ch
 }
 
 // breakerManager builds a manager around a fixed-size history: window 20000
