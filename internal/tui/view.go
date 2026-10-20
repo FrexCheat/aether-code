@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
 	"github.com/FrexCheat/aether-code/internal/tui/components"
@@ -81,4 +82,78 @@ func (m Model) outputLines() []string {
 // owner takes the whole region, so the composer and its footer step aside.
 func (m Model) inputLines() []string {
 	return strings.Split(m.activeInput().View(m.width, m.footer()), "\n")
+}
+
+type scrollState struct {
+	follow bool
+	top    int
+}
+
+func (s scrollState) resolve(total, height int) int {
+	maxTop := max(total-height, 0)
+	if s.follow {
+		return maxTop
+	}
+	return min(max(s.top, 0), maxTop)
+}
+
+func (s *scrollState) by(delta, total, height int) {
+	maxTop := max(total-height, 0)
+	if delta == 0 {
+		return
+	}
+	if maxTop == 0 {
+		*s = scrollState{follow: true}
+		return
+	}
+	top := s.resolve(total, height) + delta
+	if top >= maxTop {
+		*s = scrollState{follow: true}
+		return
+	}
+	*s = scrollState{top: max(top, 0)}
+}
+
+type inputOwner interface {
+	Modal() bool
+	View(width int, footer components.FooterData) string
+}
+
+func (m Model) activeInput() inputOwner {
+	if m.dialog.Active() {
+		return m.dialog
+	}
+	return m.composer
+}
+
+func (m Model) liveSuspended() bool {
+	return m.activeInput().Modal()
+}
+
+func (m *Model) scrollBy(delta int) {
+	content, _, viewHeight := m.layout()
+	m.scroll.by(delta, len(content), viewHeight)
+}
+
+func (m Model) pageLines() int {
+	_, _, viewHeight := m.layout()
+	return max(viewHeight-1, 1)
+}
+
+func (m Model) handleTranscriptKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m.quit()
+	case "ctrl+o", "esc":
+		m.transcript.ToggleExpanded()
+	case "up":
+		m.transcript.Scroll(-1)
+	case "down":
+		m.transcript.Scroll(1)
+	case "pgup":
+		m.transcript.Scroll(-m.pageLines())
+	case "pgdown":
+		m.transcript.Scroll(m.pageLines())
+	}
+	return m, nil
 }

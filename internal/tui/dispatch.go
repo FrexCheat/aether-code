@@ -5,12 +5,16 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode"
+
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/FrexCheat/aether-code/internal/command"
 	"github.com/FrexCheat/aether-code/internal/compaction"
 	"github.com/FrexCheat/aether-code/internal/permissions"
 	"github.com/FrexCheat/aether-code/internal/session"
 	"github.com/FrexCheat/aether-code/internal/skills"
+	"github.com/FrexCheat/aether-code/internal/tui/components"
 )
 
 // hostAdapter is the Model as a command.Host: the renderer-agnostic surface a
@@ -208,4 +212,215 @@ func skillsStatus(state *skills.State) string {
 		names[i] = a.Name
 	}
 	return fmt.Sprintf("%s · %d active", strings.Join(names, ", "), len(active))
+}
+
+func (m Model) handleKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
+	switch {
+	case m.transcript.IsExpanded():
+		return m.handleTranscriptKey(msg)
+	case m.dialog.Active():
+		return m.handlePermissionKey(msg)
+	case m.composer.MenuActive():
+		return m.handleCompletionKey(msg)
+	}
+	switch msg.String() {
+	case "ctrl+c":
+		return m.quit()
+	case "shift+tab":
+		return m.cyclePermissionMode()
+	case "ctrl+o":
+		m.transcript.ToggleExpanded()
+		return m, nil
+	case "esc":
+		m.cancelTurn()
+		return m, nil
+	case "pgup":
+		m.scrollBy(-m.pageLines())
+		return m, nil
+	case "pgdown":
+		m.scrollBy(m.pageLines())
+		return m, nil
+	case "tab":
+		return m.handleTab()
+	case "enter":
+		return m.handleEnter()
+	}
+	var cmd tea.Cmd
+	m.composer, cmd = m.composer.Update(msg)
+	return m, cmd
+}
+
+func (m Model) handlePermissionKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		m.answerPermission(permissions.Reject)
+		return m.quit()
+	case "up":
+		m.dialog.Move(-1)
+	case "down":
+		m.dialog.Move(1)
+	case "enter":
+		m.answerPermission(m.dialog.Selected())
+	case "esc":
+		m.answerPermission(permissions.Reject)
+	}
+	return m, nil
+}
+
+func (m Model) handleEnter() (Model, tea.Cmd) {
+	text := strings.TrimSpace(m.composer.Value())
+	if text == "" {
+		return m, nil
+	}
+	m.syncSkills(false)
+	if !strings.HasPrefix(text, "/") {
+		return m.sendMessage(text)
+	}
+	inv, ok := command.Parse(text)
+	if !ok {
+		return m.unknownCommand(text)
+	}
+	cmd := m.opts.Commands.Lookup(inv.Name)
+	if cmd == nil {
+		return m.unknownCommand("/" + inv.Name)
+	}
+	if m.busy() && !cmd.Immediate {
+		m.transcript.Emit(block{kind: blockNotice, body: gateNotice})
+		return m, nil
+	}
+	m.composer.Reset()
+	h := &hostAdapter{m: &m, registry: m.opts.Commands}
+	switch cmd.Kind {
+	case command.Prompt:
+		h.SendUserMessage(command.RenderPrompt(cmd.Prompt, inv))
+	case command.Skill:
+		if err := h.ActivateSkill(cmd.Name, inv.RawArgs); err != nil {
+			h.Message(err.Error(), command.Error)
+		}
+	default:
+		if err := cmd.Run(h, inv.Args); err != nil {
+			h.Message(err.Error(), command.Error)
+		}
+	}
+	switch {
+	case h.quit:
+		return m.quit()
+	case h.compact:
+		return m.startCompact()
+	case h.activation != nil:
+		return m.activateSkill(*h.activation)
+	case h.prompt != "":
+		return m.startStream(h.prompt)
+	}
+	return m, nil
+}
+
+func (m Model) sendMessage(text string) (Model, tea.Cmd) {
+	if m.busy() {
+		m.transcript.Emit(block{kind: blockNotice, body: gateNotice})
+		return m, nil
+	}
+	return m.startStream(text)
+}
+
+func (m Model) startCompact() (Model, tea.Cmd) {
+	if m.opts.Compactor == nil {
+		m.transcript.Emit(block{kind: blockNotice, body: "Compaction is not available for this session.", severity: noticeWarn})
+		return m, nil
+	}
+	if m.compacting {
+		return m, nil
+	}
+	m.compacting = true
+	m.transcript.Emit(block{kind: blockNotice, body: "Compacting conversation…"})
+	tick := m.clock.Start()
+	return m, tea.Sequence(tick, runCompact(m.opts.Compactor))
+}
+
+func (m Model) unknownCommand(display string) (Model, tea.Cmd) {
+	m.composer.Reset()
+	m.transcript.Emit(block{kind: blockNotice, body: fmt.Sprintf("Unknown command %s. Type /help for a list.", display), severity: noticeError})
+	return m, nil
+}
+
+func (m Model) handleTab() (Model, tea.Cmd) {
+	m.composer.CloseMenu()
+	prefix, ok := commandPrefix(m.composer.Value())
+	if !ok {
+		return m, nil
+	}
+	matches := m.opts.Commands.Match(prefix)
+	switch len(matches) {
+	case 0:
+		return m, nil
+	case 1:
+		m.composer.SetValue("/" + matches[0].Name + " ")
+		return m, nil
+	default:
+		m.composer.OpenMenu(completionOptions(matches))
+		return m, nil
+	}
+}
+
+func (m Model) handleCompletionKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m.quit()
+	case "up":
+		m.composer.MoveMenu(-1)
+		return m, nil
+	case "down":
+		m.composer.MoveMenu(1)
+		return m, nil
+	case "tab", "enter":
+		if option, ok := m.composer.SelectedMenu(); ok {
+			m.composer.SetValue("/" + option.Name + " ")
+		}
+		m.composer.CloseMenu()
+		return m, nil
+	case "esc":
+		m.composer.CloseMenu()
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.composer, cmd = m.composer.Update(msg)
+	m.refreshMenu()
+	return m, cmd
+}
+
+func (m *Model) refreshMenu() {
+	prefix, ok := commandPrefix(m.composer.Value())
+	if !ok {
+		m.composer.CloseMenu()
+		return
+	}
+	matches := m.opts.Commands.Match(prefix)
+	if len(matches) < 2 {
+		m.composer.CloseMenu()
+		return
+	}
+	m.composer.OpenMenu(completionOptions(matches))
+}
+
+func commandPrefix(value string) (string, bool) {
+	s := strings.TrimSpace(value)
+	if !strings.HasPrefix(s, "/") {
+		return "", false
+	}
+	rest := s[1:]
+	if rest == "" {
+		return "", true
+	}
+	if strings.IndexFunc(rest, unicode.IsSpace) >= 0 {
+		return "", false
+	}
+	return strings.ToLower(rest), true
+}
+
+func completionOptions(cmds []*command.Command) []components.CompletionOption {
+	options := make([]components.CompletionOption, len(cmds))
+	for i, c := range cmds {
+		options[i] = components.CompletionOption{Name: c.Name, Hint: c.ArgHint, Description: c.Description}
+	}
+	return options
 }
