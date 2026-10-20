@@ -64,8 +64,11 @@ func (t *stubTool) Execute(context.Context, map[string]any) tools.ToolResult {
 }
 
 type stubCompactor struct {
-	mu     sync.Mutex
-	usages []llm.Usage
+	mu            sync.Mutex
+	usages        []llm.Usage
+	usedTokens    int
+	contextWindow int
+	level         compaction.Level
 }
 
 func (c *stubCompactor) Prepare(context.Context, func(compaction.Progress)) {}
@@ -77,9 +80,9 @@ func (c *stubCompactor) RecordUsage(usage llm.Usage) {
 	defer c.mu.Unlock()
 	c.usages = append(c.usages, usage)
 }
-func (c *stubCompactor) UsedTokens() int         { return 0 }
-func (c *stubCompactor) ContextWindow() int      { return 0 }
-func (c *stubCompactor) Level() compaction.Level { return compaction.LevelOK }
+func (c *stubCompactor) UsedTokens() int         { return c.usedTokens }
+func (c *stubCompactor) ContextWindow() int      { return c.contextWindow }
+func (c *stubCompactor) Level() compaction.Level { return c.level }
 
 func (c *stubCompactor) Usages() []llm.Usage {
 	c.mu.Lock()
@@ -97,12 +100,12 @@ func collectEvents(seq iter.Seq[TurnEvent]) []TurnEvent {
 
 func TestRunTextTurn(t *testing.T) {
 	usage := llm.Usage{InputTokens: 10, OutputTokens: 4}
+	compactor := &stubCompactor{usedTokens: 42, contextWindow: 1000, level: compaction.LevelWarn}
 	client := &scriptedClient{streams: [][]llm.StreamEvent{{
 		llm.TextDelta{Text: "hello"},
 		llm.TextComplete{},
 		llm.StreamEnd{Usage: usage},
 	}}}
-	compactor := &stubCompactor{}
 	conv := conversation.NewManager()
 	ag := New(client, tools.NewRegistry(), nil, nil, compactor)
 
@@ -117,7 +120,11 @@ func TestRunTextTurn(t *testing.T) {
 		t.Errorf("second event = %T, want TextComplete", events[1])
 	}
 	usageEvent, ok := events[2].(UsageUpdated)
-	if !ok || usageEvent.Usage != usage {
+	if !ok || usageEvent.Usage != usage || usageEvent.Context != (ContextUsage{
+		UsedTokens:   42,
+		WindowTokens: 1000,
+		Level:        compaction.LevelWarn,
+	}) {
 		t.Fatalf("third event = %#v, want usage update", events[2])
 	}
 	done, ok := events[3].(TurnCompleted)
@@ -132,6 +139,58 @@ func TestRunTextTurn(t *testing.T) {
 	}
 	if usages := compactor.Usages(); len(usages) != 1 || usages[0] != usage {
 		t.Errorf("recorded usages = %+v", usages)
+	}
+}
+
+func TestRunThinkingTurn(t *testing.T) {
+	client := &scriptedClient{streams: [][]llm.StreamEvent{{
+		llm.ThinkingDelta{Kind: llm.ThinkingSummary, Text: "summary"},
+		llm.ThinkingDelta{Kind: llm.ThinkingContent, Text: "detail"},
+		llm.ThinkingComplete{
+			Thinking:  "summary",
+			Content:   "detail",
+			Signature: "reason-1",
+			Encrypted: "opaque",
+		},
+		llm.TextDelta{Text: "answer"},
+		llm.TextComplete{},
+		llm.StreamEnd{},
+	}}}
+	ag := New(client, tools.NewRegistry(), nil, nil, nil)
+
+	events := collectEvents(ag.StartTurn(context.Background(), conversation.NewManager()).Events())
+	if !containsDelta(events, ThinkingSummary, "summary") || !containsDelta(events, ThinkingContent, "detail") {
+		t.Fatalf("thinking deltas missing from %#v", events)
+	}
+	completed, ok := firstEvent[ThinkingCompleted](events)
+	if !ok || completed.Summary != "summary" || completed.Content != "detail" {
+		t.Errorf("completed thinking = %#v", completed)
+	}
+}
+
+func TestUsagePrecedesToolExecution(t *testing.T) {
+	client := &scriptedClient{streams: [][]llm.StreamEvent{
+		{
+			llm.ToolCallComplete{ToolID: "call-1", ToolName: "read"},
+			llm.StreamEnd{Usage: llm.Usage{InputTokens: 5}},
+		},
+		{
+			llm.TextDelta{Text: "done"},
+			llm.StreamEnd{Usage: llm.Usage{InputTokens: 9}},
+		},
+	}}
+	registry := tools.NewRegistry()
+	registry.Register(&stubTool{name: "read", category: tools.CategoryRead})
+	ag := New(client, registry, nil, nil, &stubCompactor{})
+
+	events := collectEvents(ag.StartTurn(context.Background(), conversation.NewManager()).Events())
+	usageIndex := firstIndex[UsageUpdated](events)
+	finishedIndex := firstIndex[ToolFinished](events)
+	if usageIndex < 0 || finishedIndex < 0 || usageIndex > finishedIndex {
+		t.Fatalf("usage index = %d, tool finished index = %d; usage must precede tool execution", usageIndex, finishedIndex)
+	}
+	if countEvents[UsageUpdated](events) != 2 {
+		t.Errorf("usage updates = %d, want one per request", countEvents[UsageUpdated](events))
 	}
 }
 
@@ -196,6 +255,9 @@ func TestRunPermission(t *testing.T) {
 	for event := range turn.Events() {
 		events = append(events, event)
 		if request, ok := event.(PermissionRequested); ok {
+			if err := turn.AnswerPermission("stale", permissions.AllowOnce); !errors.Is(err, ErrPermissionNotPending) {
+				t.Fatalf("stale answer error = %v, want ErrPermissionNotPending", err)
+			}
 			if err := turn.AnswerPermission(request.ID, permissions.AllowOnce); err != nil {
 				t.Fatal(err)
 			}
@@ -206,6 +268,42 @@ func TestRunPermission(t *testing.T) {
 	}
 	if tool.calls.Load() != 1 {
 		t.Errorf("tool calls = %d, want 1", tool.calls.Load())
+	}
+}
+
+func TestPermissionCancellationClearsPending(t *testing.T) {
+	client := &scriptedClient{streams: [][]llm.StreamEvent{{
+		llm.ToolCallComplete{ToolID: "call-1", ToolName: "write"},
+		llm.StreamEnd{},
+	}}}
+	registry := tools.NewRegistry()
+	tool := &stubTool{name: "write", category: tools.CategoryWrite}
+	registry.Register(tool)
+	checker, err := permissions.NewChecker(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag := New(client, registry, checker, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	turn := ag.StartTurn(ctx, conversation.NewManager())
+
+	var events []TurnEvent
+	for event := range turn.Events() {
+		events = append(events, event)
+		if _, ok := event.(PermissionRequested); ok {
+			cancel()
+		}
+	}
+	if tool.calls.Load() != 0 {
+		t.Errorf("tool calls = %d, want none after cancellation", tool.calls.Load())
+	}
+	completed, ok := firstEvent[TurnCompleted](events)
+	if !ok || completed.Reason != StoppedByUser {
+		t.Errorf("terminal event = %#v, want cancelled completion", events)
+	}
+	if err := turn.AnswerPermission("call-1", permissions.AllowOnce); !errors.Is(err, ErrPermissionNotPending) {
+		t.Errorf("answer after cancellation = %v, want ErrPermissionNotPending", err)
 	}
 }
 
@@ -251,6 +349,45 @@ func TestRunCancelledBeforeRequest(t *testing.T) {
 func containsEvent[T TurnEvent](events []TurnEvent) bool {
 	for _, event := range events {
 		if _, ok := event.(T); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func firstEvent[T TurnEvent](events []TurnEvent) (T, bool) {
+	for _, event := range events {
+		if found, ok := event.(T); ok {
+			return found, true
+		}
+	}
+	var zero T
+	return zero, false
+}
+
+func firstIndex[T TurnEvent](events []TurnEvent) int {
+	for i, event := range events {
+		if _, ok := event.(T); ok {
+			return i
+		}
+	}
+	return -1
+}
+
+func countEvents[T TurnEvent](events []TurnEvent) int {
+	count := 0
+	for _, event := range events {
+		if _, ok := event.(T); ok {
+			count++
+		}
+	}
+	return count
+}
+
+func containsDelta(events []TurnEvent, kind ThinkingKind, text string) bool {
+	for _, event := range events {
+		delta, ok := event.(ThinkingDelta)
+		if ok && delta.Kind == kind && delta.Text == text {
 			return true
 		}
 	}

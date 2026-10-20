@@ -65,6 +65,30 @@ data: {"type":"message_stop"}
 	}
 }
 
+func TestAnthropicStreamStopsOnEarlyBreak(t *testing.T) {
+	const body = `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+	count := 0
+	for range anthropicTestClient(t, body).Stream(context.Background(), Request{}) {
+		count++
+		break
+	}
+	if count != 1 {
+		t.Errorf("events read = %d, want 1", count)
+	}
+}
+
 // A redacted thinking block has no deltas: the opaque data is the payload, and
 // it must be captured for the next request to hand back unchanged.
 func TestAnthropicRedactedThinkingRoundTrip(t *testing.T) {

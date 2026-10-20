@@ -87,6 +87,28 @@ data: {"type":"response.output_item.done","item":{"type":"reasoning","id":"rs_1"
 	}
 }
 
+func TestOpenAIThinkingKinds(t *testing.T) {
+	const body = `event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","output_index":0,"summary_index":0,"delta":"summary","sequence_number":1}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"detail","item_id":"rs_1","output_index":0,"sequence_number":2}
+
+` + completedEvent
+	kinds := map[ThinkingKind]string{}
+	for event, err := range openAITestClient(t, body).Stream(context.Background(), Request{}) {
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		if delta, ok := event.(ThinkingDelta); ok {
+			kinds[delta.Kind] = delta.Text
+		}
+	}
+	if kinds[ThinkingSummary] != "summary" || kinds[ThinkingContent] != "detail" {
+		t.Errorf("thinking kinds = %v", kinds)
+	}
+}
+
 // A stream that dies before the completed item still hands over what the
 // deltas accumulated rather than dropping the reasoning.
 func TestOpenAIReasoningCaptureFallsBackToDeltas(t *testing.T) {
