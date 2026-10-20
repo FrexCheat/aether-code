@@ -64,13 +64,10 @@ func Load(dir string) (*Config, error) {
 	return &cfg, nil
 }
 
-// DataRoot is the user-level aether directory: $AETHER_HOME when set,
-// otherwise ~/.aether. User settings, permission rules and sessions all live
-// under it. Empty when no home directory can be resolved.
+// DataRoot is the user-level aether directory, ~/.aether. User settings,
+// permission rules and sessions all live under it. Empty when no home
+// directory can be resolved.
 func DataRoot() string {
-	if home := os.Getenv("AETHER_HOME"); home != "" {
-		return home
-	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ""

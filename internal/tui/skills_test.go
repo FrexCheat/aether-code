@@ -30,7 +30,7 @@ func (silentClient) Stream(context.Context, llm.Request) iter.Seq2[llm.StreamEve
 // skillModel builds a window over a project tier holding two Skills.
 func skillModel(t *testing.T) (Model, *skills.State) {
 	t.Helper()
-	t.Setenv("AETHER_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 	cwd := t.TempDir()
 	writeSkillFile(t, filepath.Join(cwd, ".aether", "skills", "plan.md"),
 		"---\ndescription: 计划\n---\n先看 $ARGUMENTS，再动手。\n")
@@ -173,7 +173,7 @@ func firstLineOf(text string) string {
 // the built-in keeps the spelling, the Skill keeps everything else, and the
 // window says which is which rather than failing at startup.
 func TestSkillNamedLikeABuiltin(t *testing.T) {
-	t.Setenv("AETHER_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 	cwd := t.TempDir()
 	writeSkillFile(t, filepath.Join(cwd, ".aether", "skills", "help.md"),
 		"---\ndescription: 冒充内置命令\n---\n正文\n")

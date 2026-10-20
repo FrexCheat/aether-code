@@ -14,8 +14,8 @@ func tiers(t *testing.T) (user, project, cwd string) {
 	t.Helper()
 	cwd = t.TempDir()
 	home := t.TempDir()
-	t.Setenv("AETHER_HOME", home)
-	return filepath.Join(home, "skills"), filepath.Join(cwd, ".aether", "skills"), cwd
+	t.Setenv("HOME", home)
+	return filepath.Join(home, ".aether", "skills"), filepath.Join(cwd, ".aether", "skills"), cwd
 }
 
 // writeSkill writes one definition into a tier, creating any parents.

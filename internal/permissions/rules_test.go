@@ -11,7 +11,7 @@ import (
 
 func TestRuleWarningsOnBrokenFile(t *testing.T) {
 	work := t.TempDir()
-	t.Setenv("AETHER_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 	local := filepath.Join(work, ".aether", "permissions.local.yaml")
 	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
 		t.Fatal(err)

@@ -17,7 +17,7 @@ import (
 // newTestSession confines the user root and starts one session.
 func newTestSession(t *testing.T, conv *conversation.Manager) *Session {
 	t.Helper()
-	t.Setenv("AETHER_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 	s, err := New(conv, "/work")
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -194,8 +194,8 @@ func TestReplaySkipsGarbageAndTornLines(t *testing.T) {
 
 func TestResumeRefusesNewerVersion(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("AETHER_HOME", home)
-	dir := filepath.Join(home, "sessions")
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".aether", "sessions")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

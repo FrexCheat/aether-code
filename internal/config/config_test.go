@@ -1,10 +1,19 @@
 package config
 
 import (
+	"path/filepath"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
+
+func TestDataRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if got, want := DataRoot(), filepath.Join(home, ".aether"); got != want {
+		t.Errorf("DataRoot() = %q, want %q", got, want)
+	}
+}
 
 func TestApplyDefaults(t *testing.T) {
 	tests := []struct {

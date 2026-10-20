@@ -26,7 +26,7 @@ func (f *fakeTool) Execute(context.Context, map[string]any) tools.ToolResult {
 func newTestChecker(t *testing.T, workDir string) *Checker {
 	t.Helper()
 	// Keep the user rule layer out of the test's world.
-	t.Setenv("AETHER_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 	c, err := NewChecker(workDir)
 	if err != nil {
 		t.Fatalf("NewChecker: %v", err)
